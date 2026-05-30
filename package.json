@@ -1,0 +1,16 @@
+{
+  "name": "lark-codex-bridge",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "lark-codex-bridge": "./lark-codex-bridge.mjs"
+  },
+  "scripts": {
+    "check": "node --check lark-codex-bridge.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}

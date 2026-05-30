@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.lark-codex-bridge</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/YOUR_USER/lark-codex-bridge/lark-codex-bridge.mjs</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOUR_USER/lark-codex-bridge</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/YOUR_USER</string>
+
+    <key>BRIDGE_MODE</key>
+    <string>codex</string>
+    <key>BRIDGE_EVENT_ENABLED</key>
+    <string>1</string>
+    <key>BRIDGE_HTTP_HOST</key>
+    <string>127.0.0.1</string>
+    <key>BRIDGE_HTTP_PORT</key>
+    <string>8787</string>
+    <key>BRIDGE_HTTP_TOKEN_FILE</key>
+    <string>/Users/YOUR_USER/.lark-codex-bridge-http-token</string>
+
+    <key>LARK_CLI_BIN</key>
+    <string>/opt/homebrew/bin/lark-cli</string>
+    <key>LARK_EVENT_TYPES</key>
+    <string>im.message.receive_v1,card.action.trigger</string>
+
+    <key>BOT_OPEN_ID</key>
+    <string>ou_xxx</string>
+    <key>BOT_MENTION_NAMES</key>
+    <string>Codex Bot</string>
+    <key>REQUIRE_MENTION_IN_GROUP</key>
+    <string>1</string>
+
+    <key>CODEX_BIN</key>
+    <string>codex</string>
+    <key>CODEX_CWD</key>
+    <string>/Users/YOUR_USER/lark-codex-bridge</string>
+    <key>CODEX_SANDBOX</key>
+    <string>read-only</string>
+    <key>CODEX_TIMEOUT_MS</key>
+    <string>600000</string>
+    <key>CODEX_EPHEMERAL</key>
+    <string>1</string>
+
+    <key>PROGRESS_CARD_ENABLED</key>
+    <string>1</string>
+    <key>PROGRESS_CARD_UPDATE_INTERVAL_MS</key>
+    <string>8000</string>
+    <key>PROGRESS_CARD_MAX_ITEMS</key>
+    <string>8</string>
+    <key>PROGRESS_CARD_FINAL_REPLY</key>
+    <string>0</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USER/lark-codex-bridge/logs/lark-codex-bridge.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USER/lark-codex-bridge/logs/lark-codex-bridge.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+logs/
+node_modules/
+.lark-codex-bridge/
+session-shares/
+pending-approvals.json
+*-token
+*-secret
+*.pem
+*.key
+*.crt

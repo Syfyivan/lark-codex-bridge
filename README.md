@@ -46,19 +46,30 @@ card.action.trigger
 ## Quick Start
 
 The easiest path is to run the bridge directly from GitHub. This does not
-require a published npm package:
+require a published npm package.
+
+Use a dedicated run directory so your `.env`, token files, logs, and generated
+session-share pages stay separate from other projects:
 
 ```bash
-npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge init
+mkdir -p ~/lark-codex-bridge-run
+cd ~/lark-codex-bridge-run
+
+npm exec --yes --package github:Syfyivan/lark-codex-bridge#main -- lark-codex-bridge init
 nano .env
-npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge doctor
-npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge
+npm exec --yes --package github:Syfyivan/lark-codex-bridge#main -- lark-codex-bridge doctor
+npm exec --yes --package github:Syfyivan/lark-codex-bridge#main -- lark-codex-bridge
 ```
 
-Or install it globally from GitHub when you want a stable long-running command:
+`npm exec` downloads a temporary copy each time. If you want a stable command for
+long-running usage, install it globally from GitHub:
 
 ```bash
-npm install -g github:Syfyivan/lark-codex-bridge
+npm install -g github:Syfyivan/lark-codex-bridge#main
+
+mkdir -p ~/lark-codex-bridge-run
+cd ~/lark-codex-bridge-run
+
 lark-codex-bridge init
 nano .env
 lark-codex-bridge doctor
@@ -68,8 +79,13 @@ lark-codex-bridge
 To update a global GitHub install later, reinstall it:
 
 ```bash
-npm install -g github:Syfyivan/lark-codex-bridge
+npm install -g github:Syfyivan/lark-codex-bridge#main
 ```
+
+Only run one bridge process for each Lark/Feishu bot app. `lark-cli` allows a
+single active `event +subscribe` consumer per app to avoid competing message
+handlers. If you already run the bridge as a background service, do not start a
+second foreground copy for the same app.
 
 For local development from this repository:
 
@@ -90,7 +106,7 @@ BRIDGE_HTTP_PORT=8787 \
 CODEX_BIN=codex \
 CODEX_CWD="$PWD" \
 CODEX_SANDBOX=read-only \
-npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge
+npm exec --yes --package github:Syfyivan/lark-codex-bridge#main -- lark-codex-bridge
 ```
 
 Then:
@@ -113,6 +129,28 @@ curl -sS http://127.0.0.1:8787/v1/codex/tasks \
   -H 'Content-Type: application/json' \
   -d '{"source":"local-test","prompt":"Reply with one short sentence."}'
 ```
+
+## Troubleshooting
+
+If startup fails with:
+
+```text
+another event +subscribe instance is already running for app cli_xxx
+```
+
+another bridge or `lark-cli event +subscribe` process is already consuming
+events for the same bot app. Stop the existing process before starting a new
+one, or keep using the existing bridge instance.
+
+For a foreground terminal run, press `Ctrl-C` in the terminal that started it.
+For a macOS LaunchAgent, unload it with:
+
+```bash
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.example.lark-codex-bridge.plist
+```
+
+Then start the new copy, or reload the LaunchAgent after updating its
+configuration.
 
 ## Important Options
 

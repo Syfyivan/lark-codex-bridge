@@ -1,16 +1,45 @@
 {
-  "name": "lark-codex-bridge",
+  "name": "@syfyivan/lark-codex-bridge",
   "version": "0.1.0",
+  "description": "Bridge Feishu/Lark bot events to the local Codex CLI.",
   "private": false,
   "type": "module",
   "bin": {
     "lark-codex-bridge": "./lark-codex-bridge.mjs"
   },
+  "files": [
+    "lark-codex-bridge.mjs",
+    ".env.example",
+    "launchagent.example.plist",
+    "README.md"
+  ],
   "scripts": {
-    "check": "node --check lark-codex-bridge.mjs"
+    "start": "node lark-codex-bridge.mjs",
+    "doctor": "node lark-codex-bridge.mjs doctor",
+    "check": "node --check lark-codex-bridge.mjs",
+    "pack:dry": "npm pack --dry-run"
   },
   "engines": {
     "node": ">=20"
+  },
+  "keywords": [
+    "codex",
+    "lark",
+    "feishu",
+    "bot",
+    "bridge",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syfyivan/lark-codex-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Syfyivan/lark-codex-bridge/issues"
+  },
+  "homepage": "https://github.com/Syfyivan/lark-codex-bridge#readme",
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {}
 }

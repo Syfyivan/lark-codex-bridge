@@ -45,9 +45,37 @@ card.action.trigger
 
 ## Quick Start
 
+The easiest path is to run the bridge directly from GitHub. This does not
+require a published npm package:
+
+```bash
+npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge init
+nano .env
+npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge doctor
+npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge
+```
+
+Or install it globally from GitHub when you want a stable long-running command:
+
+```bash
+npm install -g github:Syfyivan/lark-codex-bridge
+lark-codex-bridge init
+nano .env
+lark-codex-bridge doctor
+lark-codex-bridge
+```
+
+To update a global GitHub install later, reinstall it:
+
+```bash
+npm install -g github:Syfyivan/lark-codex-bridge
+```
+
+For local development from this repository:
+
 ```bash
 cp .env.example .env
-$EDITOR .env
+nano .env
 npm run check
 node lark-codex-bridge.mjs
 ```
@@ -62,7 +90,7 @@ BRIDGE_HTTP_PORT=8787 \
 CODEX_BIN=codex \
 CODEX_CWD="$PWD" \
 CODEX_SANDBOX=read-only \
-node lark-codex-bridge.mjs
+npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge
 ```
 
 Then:
@@ -168,6 +196,35 @@ To reload after edits:
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.example.lark-codex-bridge.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.example.lark-codex-bridge.plist
 ```
+
+If you installed globally, use `which lark-codex-bridge` to find the
+absolute CLI path and put that path in `ProgramArguments` instead of the local
+repository script path.
+
+## Publishing to npm
+
+Publishing to npm is optional. GitHub install works without it. If you do want a
+public npm package, this repository is prepared as a scoped package:
+
+```bash
+npm login
+npm whoami
+npm run check
+npm run pack:dry
+npm publish --access public
+```
+
+Users can then run:
+
+```bash
+npx @syfyivan/lark-codex-bridge init
+npx @syfyivan/lark-codex-bridge doctor
+npx @syfyivan/lark-codex-bridge
+```
+
+If your npm account or organization is not `syfyivan`, change the `name` field
+in `package.json` to your own scope, such as `@your-npm-name/lark-codex-bridge`,
+and publish with `npm publish --access public`.
 
 ## Custom Service Modes
 

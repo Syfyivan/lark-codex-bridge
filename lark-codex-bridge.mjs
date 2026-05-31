@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   existsSync,
@@ -13,7 +13,198 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:http';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const packageDir = dirname(fileURLToPath(import.meta.url));
+const defaultEnvFile = join(process.cwd(), '.env');
+
+function packageInfo() {
+  const fallback = {
+    name: 'lark-codex-bridge',
+    version: '0.0.0',
+  };
+  try {
+    return JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function printHelp() {
+  const info = packageInfo();
+  console.log(`Lark Codex Bridge ${info.version}
+
+Usage:
+  lark-codex-bridge [start] [--env <file>]
+  lark-codex-bridge init [--env <file>] [--force]
+  lark-codex-bridge doctor [--env <file>]
+  lark-codex-bridge --help
+  lark-codex-bridge --version
+
+Commands:
+  start   Start the Lark event bridge and optional HTTP server. This is the default.
+  init    Create a starter .env file in the current directory.
+  doctor  Check local Node.js, Codex CLI, lark-cli, and key configuration.
+
+Examples:
+  npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge init
+  npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge doctor
+  npm exec --yes --package github:Syfyivan/lark-codex-bridge -- lark-codex-bridge
+`);
+}
+
+function parseCliArgs(args) {
+  const result = {
+    command: 'start',
+    envFile: defaultEnvFile,
+    envExplicit: false,
+    force: false,
+    help: false,
+    version: false,
+    errors: [],
+  };
+  const commands = new Set(['start', 'init', 'doctor', 'help', 'version']);
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--help' || arg === '-h') {
+      result.help = true;
+      continue;
+    }
+    if (arg === '--version' || arg === '-v') {
+      result.version = true;
+      continue;
+    }
+    if (arg === '--force') {
+      result.force = true;
+      continue;
+    }
+    if (arg === '--env' || arg === '--env-file') {
+      const value = args[index + 1];
+      if (!value) {
+        result.errors.push(`${arg} requires a file path`);
+      } else {
+        result.envFile = resolve(value);
+        result.envExplicit = true;
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith('--env=')) {
+      result.envFile = resolve(arg.slice('--env='.length));
+      result.envExplicit = true;
+      continue;
+    }
+    if (!arg.startsWith('-') && commands.has(arg)) {
+      result.command = arg;
+      continue;
+    }
+    result.errors.push(`Unknown argument: ${arg}`);
+  }
+
+  if (result.help || result.command === 'help') result.command = 'help';
+  if (result.version || result.command === 'version') result.command = 'version';
+  return result;
+}
+
+function parseEnvLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+
+  const cleaned = trimmed.startsWith('export ') ? trimmed.slice('export '.length).trim() : trimmed;
+  const equalsIndex = cleaned.indexOf('=');
+  if (equalsIndex <= 0) return null;
+
+  const key = cleaned.slice(0, equalsIndex).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
+
+  let value = cleaned.slice(equalsIndex + 1).trim();
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+    value = value.slice(1, -1);
+    if (quote === '"') {
+      value = value
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+    }
+  } else {
+    value = value.replace(/\s+#.*$/, '').trim();
+  }
+
+  return { key, value };
+}
+
+function loadEnvFile(envFile, { explicit = false } = {}) {
+  if (process.env.BRIDGE_DOTENV === '0') return { loaded: false, path: envFile };
+  if (!existsSync(envFile)) {
+    if (explicit) throw new Error(`Env file not found: ${envFile}`);
+    return { loaded: false, path: envFile };
+  }
+
+  const lines = readFileSync(envFile, 'utf8').split(/\r?\n/);
+  let count = 0;
+  for (const line of lines) {
+    const parsed = parseEnvLine(line);
+    if (!parsed || Object.hasOwn(process.env, parsed.key)) continue;
+    process.env[parsed.key] = parsed.value;
+    count += 1;
+  }
+  return { loaded: true, path: envFile, count };
+}
+
+function createEnvFile(envFile, { force = false } = {}) {
+  if (existsSync(envFile) && !force) {
+    throw new Error(`${envFile} already exists. Use --force to overwrite it.`);
+  }
+  const templatePath = join(packageDir, '.env.example');
+  const template = readFileSync(templatePath, 'utf8');
+  mkdirSync(dirname(envFile), { recursive: true });
+  writeFileSync(envFile, template);
+  console.log(`Created ${envFile}`);
+  console.log('Edit it, then run: lark-codex-bridge doctor');
+}
+
+const cli = parseCliArgs(process.argv.slice(2));
+
+if (cli.errors.length) {
+  console.error(cli.errors.join('\n'));
+  console.error('');
+  printHelp();
+  process.exit(2);
+}
+
+if (cli.command === 'help') {
+  printHelp();
+  process.exit(0);
+}
+
+if (cli.command === 'version') {
+  console.log(packageInfo().version);
+  process.exit(0);
+}
+
+if (cli.command === 'init') {
+  try {
+    createEnvFile(cli.envFile, { force: cli.force });
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+let loadedEnvInfo = { loaded: false, path: cli.envFile, count: 0 };
+
+try {
+  loadedEnvInfo = loadEnvFile(cli.envFile, { explicit: cli.envExplicit });
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 
 const env = process.env;
 const defaultCodexHome = env.CODEX_HOME || join(homedir(), '.codex');
@@ -3048,6 +3239,117 @@ function startHttpServer() {
   return server;
 }
 
+function isPlaceholder(value) {
+  return /^(?:ou_xxx|oc_xxx|\/path\/to\/workspace|Codex Bot)$/i.test(String(value || '').trim());
+}
+
+function checkCommand(command, args = ['--version']) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    env,
+  });
+  if (result.error?.code === 'ENOENT') {
+    return {
+      ok: false,
+      detail: 'not found on PATH',
+    };
+  }
+  if (result.error) {
+    return {
+      ok: false,
+      detail: result.error.message,
+    };
+  }
+  const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+  return {
+    ok: true,
+    detail: output.split(/\r?\n/)[0] || 'found',
+  };
+}
+
+function runDoctor() {
+  let failures = 0;
+  let warnings = 0;
+
+  const report = (level, message) => {
+    const marker = level === 'ok' ? 'OK' : level === 'warn' ? 'WARN' : 'FAIL';
+    console.log(`[${marker}] ${message}`);
+    if (level === 'warn') warnings += 1;
+    if (level === 'fail') failures += 1;
+  };
+
+  console.log(`Lark Codex Bridge doctor (${packageInfo().version})`);
+  console.log('');
+
+  const nodeMajor = Number(process.versions.node.split('.')[0]);
+  report(nodeMajor >= 20 ? 'ok' : 'fail', `Node.js ${process.version}${nodeMajor >= 20 ? '' : ' (requires >=20)'}`);
+
+  if (loadedEnvInfo.loaded) {
+    report('ok', `Loaded ${loadedEnvInfo.count} value(s) from ${loadedEnvInfo.path}`);
+  } else {
+    report('warn', `No .env file loaded at ${loadedEnvInfo.path}; using shell environment only`);
+  }
+
+  if (config.mode === 'codex') {
+    const codex = checkCommand(config.codexBin);
+    report(codex.ok ? 'ok' : 'fail', `Codex CLI (${config.codexBin}): ${codex.detail}`);
+  }
+
+  if (config.eventEnabled || config.mode !== 'codex') {
+    const larkCli = checkCommand(config.larkCliBin);
+    report(larkCli.ok ? 'ok' : 'fail', `lark-cli (${config.larkCliBin}): ${larkCli.detail}`);
+  }
+
+  if (!existsSync(config.codexCwd)) {
+    report('fail', `CODEX_CWD does not exist: ${config.codexCwd}`);
+  } else if (isPlaceholder(config.codexCwd)) {
+    report('warn', `CODEX_CWD still looks like a template value: ${config.codexCwd}`);
+  } else {
+    report('ok', `CODEX_CWD exists: ${config.codexCwd}`);
+  }
+
+  if (config.eventEnabled) {
+    if (!config.botOpenId || isPlaceholder(config.botOpenId)) {
+      report('warn', 'BOT_OPEN_ID is empty or still a template value; group @ detection may be unreliable');
+    } else {
+      report('ok', 'BOT_OPEN_ID is configured');
+    }
+
+    if (!config.botMentionNames.length || config.botMentionNames.some(isPlaceholder)) {
+      report('warn', 'BOT_MENTION_NAMES is empty or still a template value; text fallback @ detection may be unreliable');
+    } else {
+      report('ok', `BOT_MENTION_NAMES configured: ${config.botMentionNames.join(', ')}`);
+    }
+
+    if (config.progressCardEnabled && !config.larkEventTypes.includes('card.action.trigger')) {
+      report('warn', 'PROGRESS_CARD_ENABLED=1 but LARK_EVENT_TYPES does not include card.action.trigger');
+    }
+  }
+
+  if (!config.eventEnabled && !config.httpPort) {
+    report('fail', 'BRIDGE_EVENT_ENABLED=0 requires BRIDGE_HTTP_PORT');
+  }
+
+  if (config.httpPort) {
+    report('ok', `HTTP server configured on ${config.httpHost}:${config.httpPort}`);
+    const hostLooksPublic = !['127.0.0.1', 'localhost', '::1'].includes(config.httpHost);
+    if (hostLooksPublic && !config.httpToken) {
+      report('warn', 'HTTP server is not localhost-scoped and has no BRIDGE_HTTP_TOKEN');
+    }
+  }
+
+  if (config.mode !== 'codex' && !['jwt-check', 'agent', 'api'].includes(config.mode)) {
+    report('fail', `Unsupported BRIDGE_MODE: ${config.mode}`);
+  }
+
+  console.log('');
+  if (failures) {
+    console.log(`Doctor found ${failures} failure(s) and ${warnings} warning(s).`);
+    process.exit(1);
+  }
+  console.log(`Doctor passed${warnings ? ` with ${warnings} warning(s)` : ''}.`);
+}
+
 function progressStatusMeta(status) {
   if (status === 'done') return { template: 'green', title: '分析完成' };
   if (status === 'failed') return { template: 'red', title: '分析失败' };
@@ -3595,6 +3897,11 @@ function startEventSubscription() {
 }
 
 function main() {
+  if (cli.command === 'doctor') {
+    runDoctor();
+    return;
+  }
+
   console.error(
     `[bridge] starting, mode=${config.mode}, eventEnabled=${config.eventEnabled}, httpPort=${config.httpPort || 'off'}`,
   );

@@ -1675,6 +1675,257 @@ function makeWebShareId(sessionId) {
   return `${sessionId}-${randomUUID().split('-')[0]}`;
 }
 
+function sessionShareEnhancementCss() {
+  return `
+    .bubble-body,
+    .share-content {
+      position: relative;
+      max-height: none;
+      overflow: visible;
+    }
+    .bubble.is-collapsible:not(.is-expanded) .bubble-body,
+    .bubble.is-collapsible:not(.is-expanded) .share-content {
+      max-height: 15.2rem;
+      overflow: hidden;
+    }
+    .bubble.is-collapsible:not(.is-expanded) .bubble-body::after,
+    .bubble.is-collapsible:not(.is-expanded) .share-content::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 4.4rem;
+      pointer-events: none;
+      background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--assistant-soft, var(--assistant, #fff)));
+    }
+    .turn-user .bubble.is-collapsible:not(.is-expanded) .bubble-body::after,
+    .turn.user .bubble.is-collapsible:not(.is-expanded) .share-content::after {
+      background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--user-soft, var(--user, #e9f2ff)));
+    }
+    .bubble-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 10px 12px 12px;
+    }
+    .bubble-button {
+      min-height: 30px;
+      border: 1px solid rgba(37, 37, 37, .13);
+      border-radius: 999px;
+      padding: 0 11px;
+      color: var(--ink, var(--text, #172033));
+      background: rgba(255, 253, 249, .72);
+      font: inherit;
+      font-size: 13px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .bubble-button:hover {
+      border-color: rgba(37, 37, 37, .28);
+      background: rgba(255, 253, 249, .95);
+    }
+    .bubble-button:focus-visible {
+      outline: 2px solid rgba(11, 107, 203, .4);
+      outline-offset: 2px;
+    }
+    .copy-button.is-copied {
+      color: #0d6b4f;
+      border-color: rgba(31, 122, 100, .28);
+      background: rgba(229, 243, 237, .9);
+    }
+  `.trim();
+}
+
+function sessionShareEnhancementScript() {
+  return `
+    (() => {
+      const copyDataEl = document.getElementById('copy-data');
+      const copyData = copyDataEl ? JSON.parse(copyDataEl.textContent || '{}') : {};
+      const collapsedHeight = 260;
+
+      const writeClipboard = async text => {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        textarea.remove();
+        if (!ok) throw new Error('copy command failed');
+      };
+
+      const findOrWrapContent = bubble => {
+        const modern = bubble.querySelector(':scope > .bubble-body');
+        if (modern) return modern;
+        const existing = bubble.querySelector(':scope > .share-content');
+        if (existing) return existing;
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'share-content';
+        const children = Array.from(bubble.childNodes).filter(node => {
+          return !(node.nodeType === 1 && node.classList?.contains('bubble-actions'));
+        });
+        children.forEach(node => wrapper.appendChild(node));
+        bubble.insertBefore(wrapper, bubble.firstChild);
+        return wrapper;
+      };
+
+      const ensureActions = (bubble, index) => {
+        let actions = bubble.querySelector(':scope > .bubble-actions');
+        if (!actions) {
+          actions = document.createElement('div');
+          actions.className = 'bubble-actions';
+          bubble.appendChild(actions);
+        }
+
+        const turn = bubble.closest('.turn') || bubble.closest('article');
+        const turnId = turn?.id || bubble.id || 'turn-' + (index + 1);
+
+        let toggle = actions.querySelector('.toggle-button');
+        if (!toggle) {
+          toggle = document.createElement('button');
+          toggle.className = 'bubble-button toggle-button';
+          toggle.type = 'button';
+          toggle.textContent = '展开';
+          actions.insertBefore(toggle, actions.firstChild);
+        }
+        toggle.dataset.turnId = toggle.dataset.turnId || turnId;
+
+        let copy = actions.querySelector('.copy-button');
+        if (!copy) {
+          copy = document.createElement('button');
+          copy.className = 'bubble-button copy-button';
+          copy.type = 'button';
+          actions.appendChild(copy);
+        }
+        if (!copy.classList.contains('is-copied')) copy.textContent = '复制整段';
+        copy.dataset.turnId = copy.dataset.turnId || turnId;
+
+        return { toggle, copy, turnId };
+      };
+
+      const refreshBubble = (bubble, index) => {
+        const content = findOrWrapContent(bubble);
+        const { toggle } = ensureActions(bubble, index);
+        const expanded = bubble.classList.contains('is-expanded');
+
+        content.style.maxHeight = 'none';
+        const shouldCollapse = content.scrollHeight > collapsedHeight + 24;
+        content.style.maxHeight = '';
+
+        if (shouldCollapse) {
+          bubble.classList.add('is-collapsible');
+          toggle.hidden = false;
+          toggle.textContent = expanded ? '收起' : '展开';
+          toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        } else {
+          bubble.classList.remove('is-collapsible', 'is-expanded');
+          toggle.hidden = true;
+          toggle.setAttribute('aria-expanded', 'false');
+        }
+      };
+
+      const refreshAll = () => {
+        document.querySelectorAll('.bubble').forEach(refreshBubble);
+      };
+
+      requestAnimationFrame(refreshAll);
+      window.setTimeout(refreshAll, 120);
+      window.addEventListener('load', refreshAll, { once: true });
+      window.addEventListener('resize', refreshAll);
+
+      document.addEventListener('click', async event => {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        if (!target) return;
+
+        const toggle = target.closest('.toggle-button');
+        if (toggle) {
+          const bubble = toggle.closest('.bubble');
+          if (!bubble) return;
+          const expanded = bubble.classList.toggle('is-expanded');
+          toggle.textContent = expanded ? '收起' : '展开';
+          toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+          return;
+        }
+
+        const copyButton = target.closest('.copy-button');
+        if (!copyButton) return;
+
+        const bubble = copyButton.closest('.bubble');
+        const content = bubble ? findOrWrapContent(bubble) : null;
+        const text = copyData[copyButton.dataset.turnId] || content?.innerText || '';
+        try {
+          await writeClipboard(text);
+          copyButton.textContent = '已复制';
+          copyButton.classList.add('is-copied');
+          window.setTimeout(() => {
+            copyButton.textContent = '复制整段';
+            copyButton.classList.remove('is-copied');
+          }, 1600);
+        } catch {
+          copyButton.textContent = '复制失败';
+          window.setTimeout(() => {
+            copyButton.textContent = '复制整段';
+          }, 1800);
+        }
+      });
+    })();
+  `.trim();
+}
+
+function stripLegacySessionShareScript(html) {
+  const copyDataStart = html.indexOf('id="copy-data"');
+  if (copyDataStart < 0) return html;
+
+  const copyDataEnd = html.indexOf('</script>', copyDataStart);
+  if (copyDataEnd < 0) return html;
+
+  const scriptStart = html.indexOf('<script>', copyDataEnd + '</script>'.length);
+  if (scriptStart < 0) return html;
+
+  const scriptEnd = html.indexOf('</script>', scriptStart);
+  if (scriptEnd < 0) return html;
+
+  const scriptText = html.slice(scriptStart, scriptEnd);
+  if (
+    !scriptText.includes('copyData') ||
+    !scriptText.includes('toggle-button') ||
+    !scriptText.includes('copy-button')
+  ) {
+    return html;
+  }
+
+  return html.slice(0, scriptStart) + html.slice(scriptEnd + '</script>'.length);
+}
+
+function normalizeLegacySessionShareMarkup(html) {
+  return html
+    .replaceAll(' hidden>展开</button>', '>展开</button>')
+    .replaceAll('>复制气泡</button>', '>复制整段</button>');
+}
+
+function enhanceSessionShareHtml(html) {
+  if (html.includes('data-session-share-enhancer="v2"')) return html;
+
+  const normalizedHtml = normalizeLegacySessionShareMarkup(stripLegacySessionShareScript(html));
+  const style = `<style data-session-share-enhancer="v2">\n${sessionShareEnhancementCss()}\n</style>`;
+  const script = `<script data-session-share-enhancer="v2">\n${sessionShareEnhancementScript()}\n</script>`;
+  const withStyle = normalizedHtml.includes('</head>')
+    ? normalizedHtml.replace('</head>', `${style}\n</head>`)
+    : `${style}\n${normalizedHtml}`;
+  return withStyle.includes('</body>')
+    ? withStyle.replace('</body>', `${script}\n</body>`)
+    : `${withStyle}\n${script}`;
+}
+
 function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
   const displayedTurns = transcript.turns.slice(0, snapshot.includedTurns);
   const copyData = {};
@@ -1696,8 +1947,8 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
         '<div class="bubble">',
         `<div class="bubble-body">${renderSessionMessagePartsHtml(turn.parts)}</div>`,
         '<div class="bubble-actions">',
-        `<button class="bubble-button toggle-button" type="button" data-turn-id="${turnId}" hidden>展开</button>`,
-        `<button class="bubble-button copy-button" type="button" data-turn-id="${turnId}">复制气泡</button>`,
+        `<button class="bubble-button toggle-button" type="button" data-turn-id="${turnId}">展开</button>`,
+        `<button class="bubble-button copy-button" type="button" data-turn-id="${turnId}">复制整段</button>`,
         '</div>',
         '</div>',
         '</div>',
@@ -2002,6 +2253,9 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
       .bubble-actions { justify-content: flex-start; padding: 9px 10px 11px; }
     }
   </style>
+  <style data-session-share-enhancer="v2">
+${sessionShareEnhancementCss()}
+  </style>
 </head>
 <body>
   <main class="shell">
@@ -2030,78 +2284,8 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
     <footer>Generated by Lark Codex Bridge · ${escapeHtml(shareId)}</footer>
   </main>
   <script id="copy-data" type="application/json">${copyDataJson}</script>
-  <script>
-    (() => {
-      const copyDataEl = document.getElementById('copy-data');
-      const copyData = copyDataEl ? JSON.parse(copyDataEl.textContent || '{}') : {};
-      const writeClipboard = async text => {
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(text);
-          return;
-        }
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.left = '-9999px';
-        document.body.appendChild(textarea);
-        textarea.select();
-        const ok = document.execCommand('copy');
-        textarea.remove();
-        if (!ok) {
-          throw new Error('copy command failed');
-        }
-      };
-
-      document.querySelectorAll('.bubble').forEach(bubble => {
-        const body = bubble.querySelector('.bubble-body');
-        const toggle = bubble.querySelector('.toggle-button');
-        if (!body || !toggle) return;
-
-        const updateCollapsible = () => {
-          if (body.scrollHeight > body.clientHeight + 4) {
-            bubble.classList.add('is-collapsible');
-            toggle.hidden = false;
-          }
-        };
-        requestAnimationFrame(updateCollapsible);
-        window.setTimeout(updateCollapsible, 80);
-      });
-
-      document.addEventListener('click', async event => {
-        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (!target) return;
-
-        const toggle = target.closest('.toggle-button');
-        if (toggle) {
-          const bubble = toggle.closest('.bubble');
-          if (!bubble) return;
-          const expanded = bubble.classList.toggle('is-expanded');
-          toggle.textContent = expanded ? '收起' : '展开';
-          return;
-        }
-
-        const copyButton = target.closest('.copy-button');
-        if (!copyButton) return;
-
-        const turnId = copyButton.dataset.turnId;
-        const text = copyData[turnId] || '';
-        try {
-          await writeClipboard(text);
-          copyButton.textContent = '已复制';
-          copyButton.classList.add('is-copied');
-          window.setTimeout(() => {
-            copyButton.textContent = '复制气泡';
-            copyButton.classList.remove('is-copied');
-          }, 1600);
-        } catch {
-          copyButton.textContent = '复制失败';
-          window.setTimeout(() => {
-            copyButton.textContent = '复制气泡';
-          }, 1800);
-        }
-      });
-    })();
+  <script data-session-share-enhancer="v2">
+${sessionShareEnhancementScript()}
   </script>
 </body>
 </html>`;
@@ -3420,7 +3604,7 @@ function serveSessionSharePage(url, response) {
     return true;
   }
 
-  textResponse(response, 200, readFileSync(file, 'utf8'), 'text/html; charset=utf-8');
+  textResponse(response, 200, enhanceSessionShareHtml(readFileSync(file, 'utf8')), 'text/html; charset=utf-8');
   return true;
 }
 

@@ -17,6 +17,7 @@ Lark bot event -> lark-cli -> Codex CLI -> Lark reply or progress card
 - Show an interactive progress card while Codex is working.
 - Replace the progress card with the final answer when the task finishes.
 - Render final answers with card Markdown so fenced code blocks display cleanly.
+- Find local Codex sessions and generate snapshot links from a card button.
 - Optional delegated-user approval flow for messages that mention another user.
 - Optional local HTTP endpoint: `POST /v1/codex/tasks`.
 - Optional generic service/JWT and API gateway modes for custom backends.
@@ -179,7 +180,23 @@ PROGRESS_CARD_ENABLED=1
 PROGRESS_CARD_UPDATE_INTERVAL_MS=8000
 PROGRESS_CARD_MAX_ITEMS=8
 PROGRESS_CARD_FINAL_REPLY=0       # final answer stays in the card
+
+SESSION_SHARE_ENABLED=1
+SESSION_SHARE_OUTPUT=web
+SESSION_SHARE_STORE_DIR=~/.lark-codex-bridge/session-shares
+SESSION_SHARE_REPLY_STYLE=card
 ```
+
+## Session Lookup
+
+The bridge can find local Codex sessions from `CODEX_HOME` and show a result card.
+Find-style commands such as `find session ...`, `找出 ... session`, `查找 ...
+session`, or `搜索 ... 会话` do not export immediately. They return a card with
+a `生成链接` button when `SESSION_SHARE_OUTPUT=web`, or a `生成文档` button when
+`SESSION_SHARE_OUTPUT=doc`.
+
+Clicking the button creates the snapshot and updates the same card with an open
+button.
 
 ## Progress Cards
 

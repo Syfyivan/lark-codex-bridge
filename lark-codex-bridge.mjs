@@ -492,7 +492,7 @@ function extractText(event) {
 }
 
 function extractMessageId(event) {
-  return findStringDeep(event, ['message_id', 'messageId']);
+  return findStringDeep(event, ['message_id', 'messageId', 'open_message_id', 'openMessageId']);
 }
 
 function extractEventType(event) {
@@ -504,7 +504,7 @@ function extractEventId(event) {
 }
 
 function extractChatId(event) {
-  return findStringDeep(event, ['chat_id', 'chatId']);
+  return findStringDeep(event, ['chat_id', 'chatId', 'open_chat_id', 'openChatId']);
 }
 
 function extractChatType(event) {
@@ -963,12 +963,17 @@ function parseSessionShareCommand(rawText) {
     return {
       query: parseExplicitSessionTitleQuery(rest) || cleanSessionTitleQuery(rest),
       raw: text,
+      intent: 'share',
     };
   }
 
+  const asksForSession = /(?:session|会话)/i.test(text);
+  if (!asksForSession) return null;
+
+  const asksToCreateShare = /(?:分享|导出|快照|文档|写入|生成|创建|链接|link)/i.test(text);
+  const asksToFind = /(?:找一下|找下|查一下|查找|找到|找出|找找|搜一下|搜索)/i.test(text);
   const asksForSnapshot =
-    /(?:分享|导出|快照|文档|找一下|找下|查一下|查找|找到|写入|生成|创建)/i.test(text) &&
-    /(?:session|会话)/i.test(text);
+    asksToCreateShare || asksToFind;
   if (!asksForSnapshot) return null;
 
   const explicitTitleQuery = parseExplicitSessionTitleQuery(text);
@@ -976,6 +981,7 @@ function parseSessionShareCommand(rawText) {
     return {
       query: explicitTitleQuery,
       raw: text,
+      intent: asksToCreateShare ? 'share' : 'find',
     };
   }
 
@@ -986,6 +992,7 @@ function parseSessionShareCommand(rawText) {
     return {
       query: cleanSessionTitleQuery(suffixMatch[1]),
       raw: text,
+      intent: asksToCreateShare ? 'share' : 'find',
     };
   }
 
@@ -1440,7 +1447,7 @@ function makeSessionShareDocTitle(threadName) {
 
 function buildSessionShareCard({ session, doc, snapshot, matchType }) {
   const docRef = doc.docUrl || doc.docId || '';
-  const matchText = matchType === 'fuzzy' ? '标题包含匹配' : matchType === 'id' ? 'Session ID 匹配' : '标题精确匹配';
+  const matchText = formatSessionMatchType(matchType);
   const elements = [
     {
       tag: 'div',
@@ -1505,6 +1512,7 @@ function buildSessionShareCard({ session, doc, snapshot, matchType }) {
   return {
     config: {
       wide_screen_mode: true,
+      update_multi: true,
     },
     header: {
       template: 'green',
@@ -2099,11 +2107,112 @@ async function createSessionShareWebPage(session, transcript, snapshot) {
   };
 }
 
-function buildSessionShareWebCard({ session, share, snapshot, matchType }) {
-  const matchText = matchType === 'fuzzy' ? '标题包含匹配' : matchType === 'id' ? 'Session ID 匹配' : '标题精确匹配';
+function isSessionShareWebOutput() {
+  return config.sessionShareOutput === 'web' || config.sessionShareOutput === 'html';
+}
+
+function formatSessionMatchType(matchType) {
+  if (matchType === 'fuzzy') return '标题包含匹配';
+  if (matchType === 'id') return 'Session ID 匹配';
+  return '标题精确匹配';
+}
+
+function buildSessionFoundCard({ session, snapshot, matchType }) {
+  const actionText = isSessionShareWebOutput() ? '生成链接' : '生成文档';
   return {
     config: {
       wide_screen_mode: true,
+      update_multi: true,
+    },
+    header: {
+      template: 'blue',
+      title: {
+        tag: 'plain_text',
+        content: '找到 Codex session',
+      },
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**Codex session**\n${clampCardText(session.threadName, 500)}`,
+        },
+      },
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: [
+            `**匹配方式**：${formatSessionMatchType(matchType)}`,
+            `**Session ID**：\`${session.id}\``,
+            `**更新时间**：${formatSessionUpdatedAt(session.updatedAt)}`,
+            snapshot ? `**消息数量**：${snapshot.includedTurns}/${snapshot.totalTurns}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
+      },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            type: 'primary',
+            text: {
+              tag: 'plain_text',
+              content: actionText,
+            },
+            value: {
+              bridge_action: 'session_generate_link',
+              session_id: session.id,
+              output: config.sessionShareOutput,
+            },
+          },
+        ],
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: `只做了查找，点击“${actionText}”后才会导出可打开的快照。`,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function formatSessionFoundText({ session, snapshot, matchType }) {
+  return [
+    `找到 Codex session「${session.threadName}」。`,
+    `匹配方式：${formatSessionMatchType(matchType)}`,
+    `Session ID：${session.id}`,
+    `更新时间：${formatSessionUpdatedAt(session.updatedAt)}`,
+    snapshot ? `消息数量：${snapshot.includedTurns}/${snapshot.totalTurns}` : '',
+    `如需链接，请发送：生成 ${session.id} 的 session 快照`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function replyWithSessionFoundCard(event, payload) {
+  const idempotencyKey = `session-found-${payload.session.id}-${extractMessageId(event) || randomUUID()}`;
+  try {
+    await sendCardToLark(event, buildSessionFoundCard(payload), idempotencyKey);
+  } catch (error) {
+    console.error(`[bridge] failed to send session found card, falling back to text: ${error.message}`);
+    await replyToLark(event, formatSessionFoundText(payload));
+  }
+}
+
+function buildSessionShareWebCard({ session, share, snapshot, matchType }) {
+  const matchText = formatSessionMatchType(matchType);
+  return {
+    config: {
+      wide_screen_mode: true,
+      update_multi: true,
     },
     header: {
       template: 'green',
@@ -2264,7 +2373,16 @@ async function handleSessionShareCommand(event, command) {
   }
 
   const snapshot = buildSessionSnapshotMarkdown(result.session, sessionFile, transcript);
-  if (config.sessionShareOutput === 'web' || config.sessionShareOutput === 'html') {
+  if (command.intent === 'find') {
+    await replyWithSessionFoundCard(event, {
+      session: result.session,
+      snapshot,
+      matchType: result.matchType,
+    });
+    return;
+  }
+
+  if (isSessionShareWebOutput()) {
     const share = await createSessionShareWebPage(result.session, transcript, snapshot);
     await replyWithSessionShareWebPage(event, {
       session: result.session,
@@ -2285,6 +2403,79 @@ async function handleSessionShareCommand(event, command) {
     snapshot,
     matchType: result.matchType,
   });
+}
+
+async function updateOrSendSessionShareCard(event, card, idempotencyKey, fallbackText) {
+  const cardMessageId = extractMessageId(event);
+  if (cardMessageId) {
+    try {
+      await updateCardMessage(cardMessageId, card);
+      return;
+    } catch (error) {
+      console.error(`[bridge] failed to update session card, falling back to new card: ${error.message}`);
+    }
+  }
+
+  try {
+    await sendCardToLark(event, card, idempotencyKey);
+  } catch (error) {
+    console.error(`[bridge] failed to send generated session card, falling back to text: ${error.message}`);
+    await replyToLark(event, fallbackText);
+  }
+}
+
+async function handleSessionGenerateLinkAction(event, value) {
+  const sessionId = String(value.session_id || value.sessionId || '').trim();
+  if (!sessionId) return false;
+
+  const result = findCodexSession(sessionId);
+  if (result.status !== 'ok') {
+    await replyToLark(event, `生成链接失败：找不到 session ${sessionId}`);
+    return true;
+  }
+
+  const sessionFile = findCodexSessionFile(result.session);
+  const transcript = parseCodexSessionTranscript(sessionFile);
+  if (!transcript.turns.length) {
+    await replyToLark(event, `找到了 session「${result.session.threadName}」，但没有提取到可见对话消息。`);
+    return true;
+  }
+
+  const snapshot = buildSessionSnapshotMarkdown(result.session, sessionFile, transcript);
+  if (isSessionShareWebOutput()) {
+    const share = await createSessionShareWebPage(result.session, transcript, snapshot);
+    const payload = {
+      session: result.session,
+      share,
+      snapshot,
+      matchType: result.matchType,
+    };
+    await updateOrSendSessionShareCard(
+      event,
+      buildSessionShareWebCard(payload),
+      `session-generate-web-${share.shareId}`,
+      formatSessionShareWebSuccessText(payload),
+    );
+    return true;
+  }
+
+  const doc = await createSessionShareDocument(
+    makeSessionShareDocTitle(result.session.threadName),
+    snapshot.markdown,
+  );
+  const payload = {
+    session: result.session,
+    doc,
+    snapshot,
+    matchType: result.matchType,
+  };
+  await updateOrSendSessionShareCard(
+    event,
+    buildSessionShareCard(payload),
+    `session-generate-doc-${result.session.id}-${extractEventId(event) || randomUUID()}`,
+    formatSessionShareSuccessText(payload),
+  );
+  return true;
 }
 
 function loadApprovalStore() {
@@ -2704,6 +2895,11 @@ function extractCardOperatorOpenId(event) {
 async function handleCardActionEvent(event) {
   const value = extractCardActionValue(event);
   const action = value.bridge_action;
+  if (action === 'session_generate_link') {
+    await handleSessionGenerateLinkAction(event, value);
+    return;
+  }
+
   const id = value.approval_id;
   if (!id || !['delegate_approve', 'delegate_cancel'].includes(action)) return;
 

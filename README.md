@@ -229,6 +229,8 @@ DELEGATE_POLL_ENABLED=0
 DELEGATE_WATCH_CHAT_IDS=oc_xxx
 DELEGATE_ALLOW_BOT_SENDERS=1
 DELEGATE_REPLY_IN_THREAD=1
+DELEGATE_AUTO_REPLY_ENABLED=0
+DELEGATE_AUTO_REPLY_MIN_CONFIDENCE=high
 ```
 
 When someone mentions the delegated user, the bridge asks Codex to draft a reply
@@ -238,6 +240,11 @@ approved replies are sent inside the original-message thread/topic instead of
 as a normal main-stream group reply. `DELEGATE_ALLOW_BOT_SENDERS=1` allows
 app/bot-authored messages to trigger the delegated workflow when they explicitly
 mention the delegated user.
+
+Keep `DELEGATE_AUTO_REPLY_ENABLED=0` unless the delegated user has explicitly
+chosen to let the bridge send on their behalf. In the default state, the bridge
+only drafts and sends a private approval card; nothing is posted to the group or
+thread until the approver clicks the card button or replies `同意发送 <id>`.
 
 ## LaunchAgent
 

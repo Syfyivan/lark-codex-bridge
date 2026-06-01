@@ -330,6 +330,8 @@ const config = {
   delegateMinTextLength: Math.max(0, Number(env.DELEGATE_MIN_TEXT_LENGTH || 1)),
   delegateAllowBotSenders: envFlag('DELEGATE_ALLOW_BOT_SENDERS', true),
   delegateReplyInThread: envFlag('DELEGATE_REPLY_IN_THREAD', true),
+  delegateAutoReplyEnabled: envFlag('DELEGATE_AUTO_REPLY_ENABLED', false),
+  delegateAutoReplyMinConfidence: (env.DELEGATE_AUTO_REPLY_MIN_CONFIDENCE || 'high').toLowerCase(),
   eventEnabled: envFlag('BRIDGE_EVENT_ENABLED', true),
   httpHost: env.BRIDGE_HTTP_HOST || '127.0.0.1',
   httpPort: Number(env.BRIDGE_HTTP_PORT || 0),
@@ -2617,6 +2619,9 @@ function buildApprovalCard(approval) {
   const plan = clampCardText(approval.operationPlan || '无额外操作建议', 900);
   const reply = clampCardText(approval.replyText || '未生成可发送回复', 1200);
   const evidence = clampCardText(approval.evidence || '无', 700);
+  const consentNote = config.delegateAutoReplyEnabled
+    ? '自动回复开关已开启；本条因未满足自动发送条件，仍需你同意后才会发送。'
+    : '自动回复开关关闭；未经过你同意不会发送。';
   return {
     config: {
       wide_screen_mode: true,
@@ -2665,7 +2670,7 @@ function buildApprovalCard(approval) {
         elements: [
           {
             tag: 'plain_text',
-            content: `同意后会回复到原消息话题/线程，不刷主群。按钮不可用时，直接回复：同意发送 ${approval.id} / 取消发送 ${approval.id}`,
+            content: `${consentNote} 同意后会回复到原消息话题/线程，不刷主群。按钮不可用时，直接回复：同意发送 ${approval.id} / 取消发送 ${approval.id}`,
           },
         ],
       },
@@ -2700,6 +2705,22 @@ function buildApprovalCard(approval) {
       },
     ],
   };
+}
+
+function confidenceRank(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'high') return 3;
+  if (normalized === 'medium') return 2;
+  if (normalized === 'low') return 1;
+  return 0;
+}
+
+function shouldAutoSendDelegateReply(approval) {
+  if (!config.delegateAutoReplyEnabled) return false;
+  return (
+    confidenceRank(approval.confidence) >=
+    Math.max(1, confidenceRank(config.delegateAutoReplyMinConfidence))
+  );
 }
 
 async function sendApprovalRequest(approval) {
@@ -2798,6 +2819,20 @@ async function createDelegateDraft(event, rawText) {
   };
   saveApproval(approval);
   console.error(`[bridge] delegate draft ${id} saved`);
+  if (shouldAutoSendDelegateReply(approval)) {
+    const sent = await sendApprovedReply(approval);
+    updateApproval(id, {
+      status: 'sent',
+      decidedAt: new Date().toISOString(),
+      decidedBy: 'auto',
+      autoSent: true,
+      sentMessageId: sent.messageId || '',
+      sentThreadId: sent.threadId || '',
+      sentInThread: config.delegateReplyInThread,
+    });
+    console.error(`[bridge] delegate draft ${id} auto sent`);
+    return;
+  }
   await sendApprovalRequest(approval);
   console.error(`[bridge] delegate draft ${id} approval request sent`);
 }
@@ -2823,7 +2858,7 @@ async function sendApprovedReply(approval) {
     ? `<at user_id="${approval.requesterOpenId}">${approval.requesterName || '你'}</at> `
     : '';
   const text = `${requesterMention}${approval.replyText}`.trim();
-  await runCli([
+  const stdout = await runCli([
     'im',
     '+messages-reply',
     '--as',
@@ -2836,6 +2871,11 @@ async function sendApprovedReply(approval) {
     '--idempotency-key',
     `delegate-approved-${approval.id}`,
   ]);
+  const payload = tryJsonLoose(stdout) || {};
+  return {
+    messageId: payload?.data?.message_id || payload?.message_id || '',
+    threadId: payload?.data?.thread_id || payload?.thread_id || '',
+  };
 }
 
 async function handleApprovalDecision(command, operatorOpenId, respond) {
@@ -2864,11 +2904,14 @@ async function handleApprovalDecision(command, operatorOpenId, respond) {
     return;
   }
 
-  await sendApprovedReply(approval);
+  const sent = await sendApprovedReply(approval);
   updateApproval(command.id, {
     status: 'sent',
     decidedAt: new Date().toISOString(),
     decidedBy: operatorOpenId,
+    sentMessageId: sent.messageId || '',
+    sentThreadId: sent.threadId || '',
+    sentInThread: config.delegateReplyInThread,
   });
   await respond(
     config.delegateReplyInThread

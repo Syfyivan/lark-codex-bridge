@@ -64,6 +64,10 @@
     <string>8</string>
     <key>PROGRESS_CARD_FINAL_REPLY</key>
     <string>0</string>
+    <key>DELEGATE_AUTO_REPLY_ENABLED</key>
+    <string>0</string>
+    <key>DELEGATE_AUTO_REPLY_MIN_CONFIDENCE</key>
+    <string>high</string>
   </dict>
 
   <key>RunAtLoad</key>

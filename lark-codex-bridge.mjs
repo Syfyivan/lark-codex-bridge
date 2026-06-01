@@ -328,6 +328,8 @@ const config = {
   delegatePollPageSize: Math.max(5, Number(env.DELEGATE_POLL_PAGE_SIZE || 20)),
   delegatePollMaxAgeMs: Math.max(60 * 1000, Number(env.DELEGATE_POLL_MAX_AGE_MS || 60 * 60 * 1000)),
   delegateMinTextLength: Math.max(0, Number(env.DELEGATE_MIN_TEXT_LENGTH || 1)),
+  delegateAllowBotSenders: envFlag('DELEGATE_ALLOW_BOT_SENDERS', true),
+  delegateReplyInThread: envFlag('DELEGATE_REPLY_IN_THREAD', true),
   eventEnabled: envFlag('BRIDGE_EVENT_ENABLED', true),
   httpHost: env.BRIDGE_HTTP_HOST || '127.0.0.1',
   httpPort: Number(env.BRIDGE_HTTP_PORT || 0),
@@ -538,6 +540,10 @@ function extractSenderName(event) {
     rawSender?.sender_id?.name,
   ];
   return names.find(value => typeof value === 'string' && value.trim()) || '';
+}
+
+function isMentionableUserOpenId(value) {
+  return typeof value === 'string' && value.startsWith('ou_');
 }
 
 function mentionMatchesBot(mention) {
@@ -785,7 +791,14 @@ function shouldSkipSender(event, rawText) {
     return 'max_turns_reached';
   }
 
-  if (isKnownBotSender(event) && !config.loopRespondToBotSenders) return 'bot_sender_ignored';
+  if (isKnownBotSender(event) && !config.loopRespondToBotSenders) {
+    const delegateMentionFromBot =
+      config.delegateAllowBotSenders &&
+      config.delegateMentionEnabled &&
+      hasActionableDelegateText(rawText) &&
+      (eventMentionsDelegateUser(event) || textMentionsDelegateUser(rawText));
+    if (!delegateMentionFromBot) return 'bot_sender_ignored';
+  }
   return '';
 }
 
@@ -2590,8 +2603,9 @@ function buildDelegateDraftPrompt(event, rawText) {
     '请完成：',
     `1. 判断对方要${delegatedName}做什么。`,
     '2. 根据群历史、相关文档、文件或上下文找出最可能需要的材料；如果找不到，要明确写“需要人工补充”。',
-    '3. 给出建议操作。',
-    '4. 写好一段可以直接发回群里的回复，不要在回复中伪装成机器人，不要泄露 token/secret。',
+    '3. 如果对方请求 review/approve MR 或变更，只做只读 review：阅读链接、diff、评论、CI/测试状态和相关上下文，指出风险或确认未发现明显问题；不要直接在代码平台点 approve，除非审批人后续明确确认。',
+    '4. 给出建议操作。',
+    '5. 写好一段可以发到原消息话题/线程里的回复，不要在回复中伪装成机器人，不要泄露 token/secret。',
     '',
     '只输出一个 JSON 对象，不要输出 Markdown 解释。字段：',
     '{"operation_plan":["..."],"reply_text":"...","evidence":["..."],"confidence":"high|medium|low"}',
@@ -2651,7 +2665,7 @@ function buildApprovalCard(approval) {
         elements: [
           {
             tag: 'plain_text',
-            content: `按钮不可用时，直接回复：同意发送 ${approval.id} / 取消发送 ${approval.id}`,
+            content: `同意后会回复到原消息话题/线程，不刷主群。按钮不可用时，直接回复：同意发送 ${approval.id} / 取消发送 ${approval.id}`,
           },
         ],
       },
@@ -2663,7 +2677,7 @@ function buildApprovalCard(approval) {
             type: 'primary',
             text: {
               tag: 'plain_text',
-              content: '同意发送',
+              content: config.delegateReplyInThread ? '同意发到话题' : '同意发送',
             },
             value: {
               bridge_action: 'delegate_approve',
@@ -2746,8 +2760,11 @@ async function shouldHandleDelegateMention(event, rawText) {
   if (!config.delegateUserOpenId && !config.delegateUserNames.length) return false;
   if (!config.delegateApproverOpenId) return false;
   if (extractChatType(event) === 'p2p') return false;
-  if (extractSenderId(event) === config.delegateUserOpenId) return false;
-  if (isKnownBotSender(event)) return false;
+  const senderId = extractSenderId(event);
+  if (senderId === config.delegateUserOpenId) return false;
+  if (config.botOpenId && senderId === config.botOpenId) return false;
+  if (senderId && config.loopIgnoreSenderIds.includes(senderId)) return false;
+  if (isKnownBotSender(event) && !config.delegateAllowBotSenders) return false;
   if (!hasActionableDelegateText(rawText)) return false;
 
   if (eventMentionsDelegateUser(event) || textMentionsDelegateUser(rawText)) return true;
@@ -2770,6 +2787,7 @@ async function createDelegateDraft(event, rawText) {
     chatId: extractChatId(event),
     originalMessageId: extractMessageId(event),
     requesterOpenId: extractSenderId(event),
+    requesterSenderType: extractSenderType(event),
     requesterName: extractSenderName(event),
     requestText: rawText,
     operationPlan: draft.operationPlan,
@@ -2801,7 +2819,7 @@ function parseApprovalCommand(rawText) {
 }
 
 async function sendApprovedReply(approval) {
-  const requesterMention = approval.requesterOpenId
+  const requesterMention = isMentionableUserOpenId(approval.requesterOpenId)
     ? `<at user_id="${approval.requesterOpenId}">${approval.requesterName || '你'}</at> `
     : '';
   const text = `${requesterMention}${approval.replyText}`.trim();
@@ -2814,6 +2832,7 @@ async function sendApprovedReply(approval) {
     approval.originalMessageId,
     '--text',
     text,
+    ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
     '--idempotency-key',
     `delegate-approved-${approval.id}`,
   ]);
@@ -2851,7 +2870,11 @@ async function handleApprovalDecision(command, operatorOpenId, respond) {
     decidedAt: new Date().toISOString(),
     decidedBy: operatorOpenId,
   });
-  await respond(`已发送到原群并回复原消息：${command.id}`);
+  await respond(
+    config.delegateReplyInThread
+      ? `已发送到原消息话题：${command.id}`
+      : `已发送到原群并回复原消息：${command.id}`,
+  );
 }
 
 function isCardActionEvent(event) {
@@ -3011,7 +3034,11 @@ function startDelegatePolling() {
     running = true;
     try {
       for (const chatId of config.delegateWatchChatIds) {
-        await pollDelegateMentionsInChat(chatId);
+        try {
+          await pollDelegateMentionsInChat(chatId);
+        } catch (error) {
+          console.error(`[bridge] delegate poll failed for ${chatId}: ${error.stack || error.message}`);
+        }
       }
     } catch (error) {
       console.error(`[bridge] delegate poll failed: ${error.stack || error.message}`);

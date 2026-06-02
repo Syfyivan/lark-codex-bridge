@@ -956,6 +956,24 @@ function parseExplicitSessionTitleQuery(value) {
   return match?.[1] ? cleanSessionTitleQuery(match[1]) : '';
 }
 
+function parseSessionIdQuery(value) {
+  const match = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.exec(
+    String(value || ''),
+  );
+  return match?.[0] || '';
+}
+
+function parseNaturalSessionReferenceQuery(value) {
+  const text = stripWrappingQuotes(value);
+  const sessionId = parseSessionIdQuery(text);
+  if (sessionId) return sessionId;
+
+  const leadingReference = /^(.+?)\s*(?:这个|该)?(?:的)?\s*(?:codex\s*)?(?:session|会话)(?=\s*(?:帮|请|给|生成|创建|分享|导出|快照|链接|link|文档|$))/i.exec(
+    text,
+  );
+  return leadingReference?.[1] ? cleanSessionTitleQuery(leadingReference[1]) : '';
+}
+
 function parseSessionShareCommand(rawText) {
   if (!config.sessionShareEnabled) return null;
 
@@ -995,6 +1013,15 @@ function parseSessionShareCommand(rawText) {
   if (explicitTitleQuery) {
     return {
       query: explicitTitleQuery,
+      raw: text,
+      intent: asksToCreateShare ? 'share' : 'find',
+    };
+  }
+
+  const naturalReferenceQuery = parseNaturalSessionReferenceQuery(text);
+  if (naturalReferenceQuery) {
+    return {
+      query: naturalReferenceQuery,
       raw: text,
       intent: asksToCreateShare ? 'share' : 'find',
     };

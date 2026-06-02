@@ -198,6 +198,12 @@ a `生成链接` button when `SESSION_SHARE_OUTPUT=web`, or a `生成文档` but
 Clicking the button creates the snapshot and updates the same card with an open
 button.
 
+Natural direct messages also work when they include a session ID, for example:
+
+```text
+019e7228-4b13-7c50-bbe4-f085e5c9b401 这个 session 帮我生成分享链接
+```
+
 ## Progress Cards
 
 When `PROGRESS_CARD_ENABLED=1`, the bridge sends a card as soon as a Codex task

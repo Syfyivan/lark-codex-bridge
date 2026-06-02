@@ -1227,6 +1227,29 @@ function redactSessionMessageParts(parts) {
   );
 }
 
+function stripLeadingCodexContextText(text) {
+  return String(text || '')
+    .replace(/^# AGENTS\.md instructions for [^\n]*\n\n<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/i, '')
+    .replace(/^<environment_context>[\s\S]*?<\/environment_context>\s*/i, '')
+    .trim();
+}
+
+function stripLeadingCodexContextParts(parts, role) {
+  if (role !== 'user') return parts;
+
+  let strippedLeadingText = false;
+  return parts
+    .map(part => {
+      if (strippedLeadingText || part.type !== 'text') return part;
+      strippedLeadingText = true;
+      return {
+        ...part,
+        text: stripLeadingCodexContextText(part.text),
+      };
+    })
+    .filter(part => part.type !== 'text' || part.text.trim());
+}
+
 function sessionMessagePartsToCopyText(parts) {
   return parts
     .map(part => {
@@ -1308,7 +1331,10 @@ function parseCodexSessionTranscript(sessionFile) {
     if (payload.type !== 'message') continue;
     if (!['user', 'assistant'].includes(payload.role)) continue;
 
-    const parts = redactSessionMessageParts(extractCodexMessageParts(payload.content));
+    const parts = stripLeadingCodexContextParts(
+      redactSessionMessageParts(extractCodexMessageParts(payload.content)),
+      payload.role,
+    );
     const text = sessionMessagePartsToCopyText(parts).trim();
     if (!text) continue;
 
@@ -1778,6 +1804,26 @@ function sessionShareEnhancementScript() {
         return wrapper;
       };
 
+      const isInjectedContextText = text => {
+        const normalized = String(text || '').trim();
+        const withoutLegacyTime = normalized.replace(
+          /^\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\s+·[^\\n]+)?\\s*/u,
+          '',
+        );
+        return (
+          withoutLegacyTime.startsWith('# AGENTS.md instructions for ') &&
+          withoutLegacyTime.includes('<INSTRUCTIONS>') &&
+          !withoutLegacyTime.includes('My request for Codex:')
+        );
+      };
+
+      const updateVisibleCount = () => {
+        const count = document.querySelector('.count-card strong');
+        if (!count) return;
+        const turns = Array.from(document.querySelectorAll('.conversation .turn, main > .turn, main section.turn'));
+        count.textContent = String(turns.filter(turn => !turn.hidden).length);
+      };
+
       const ensureActions = (bubble, index) => {
         let actions = bubble.querySelector(':scope > .bubble-actions');
         if (!actions) {
@@ -1834,7 +1880,19 @@ function sessionShareEnhancementScript() {
       };
 
       const refreshAll = () => {
-        document.querySelectorAll('.bubble').forEach(refreshBubble);
+        let visibleIndex = 0;
+        document.querySelectorAll('.bubble').forEach(bubble => {
+          const turn = bubble.closest('.turn') || bubble.closest('article');
+          const content = findOrWrapContent(bubble);
+          if (isInjectedContextText(content.innerText)) {
+            if (turn) turn.hidden = true;
+            return;
+          }
+          if (turn) turn.hidden = false;
+          refreshBubble(bubble, visibleIndex);
+          visibleIndex += 1;
+        });
+        updateVisibleCount();
       };
 
       requestAnimationFrame(refreshAll);

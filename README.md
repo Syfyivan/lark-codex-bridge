@@ -182,8 +182,13 @@ PROGRESS_CARD_MAX_ITEMS=8
 PROGRESS_CARD_FINAL_REPLY=0       # final answer stays in the card
 
 SESSION_SHARE_ENABLED=1
-SESSION_SHARE_OUTPUT=web
+SESSION_SHARE_OUTPUT=goofy              # goofy deploys snapshots to Goofy Preview; web uses local 10.* links
 SESSION_SHARE_STORE_DIR=~/.lark-codex-bridge/session-shares
+SESSION_SHARE_GOOFY_ALIAS=codex-session-shares-syf
+SESSION_SHARE_GOOFY_DESCRIPTION="Codex session share snapshots"
+SESSION_SHARE_GOOFY_EXPIRY_DAYS=365
+SESSION_SHARE_GOOFY_TIMEOUT_MS=180000
+BYTEDCLI_BIN=bytedcli
 SESSION_SHARE_REPLY_STYLE=card
 ```
 
@@ -192,11 +197,21 @@ SESSION_SHARE_REPLY_STYLE=card
 The bridge can find local Codex sessions from `CODEX_HOME` and show a result card.
 Find-style commands such as `find session ...`, `找出 ... session`, `查找 ...
 session`, or `搜索 ... 会话` do not export immediately. They return a card with
-a `生成链接` button when `SESSION_SHARE_OUTPUT=web`, or a `生成文档` button when
-`SESSION_SHARE_OUTPUT=doc`.
+a `生成链接` button when `SESSION_SHARE_OUTPUT=web` or `goofy`, or a `生成文档`
+button when `SESSION_SHARE_OUTPUT=doc`.
 
 Clicking the button creates the snapshot and updates the same card with an open
 button.
+
+For company-intranet sharing, prefer `SESSION_SHARE_OUTPUT=goofy`. The bridge
+still writes a local HTML snapshot first, then runs:
+
+```text
+bytedcli --json goofy preview deploy <snapshot-dir> --alias <alias> --override
+```
+
+The returned card points to a Goofy Preview HTTPS URL instead of a local
+`http://10.*:8787` URL, so coworkers do not need to reach your Mac directly.
 
 Natural direct messages also work when they include a session ID, for example:
 

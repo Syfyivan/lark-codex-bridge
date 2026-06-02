@@ -3,6 +3,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -310,6 +311,14 @@ const config = {
   sessionShareStoreDir:
     env.SESSION_SHARE_STORE_DIR || join(homedir(), '.lark-codex-bridge', 'session-shares'),
   sessionSharePublicBaseUrl: env.SESSION_SHARE_PUBLIC_BASE_URL || '',
+  sessionShareGoofyAlias: env.SESSION_SHARE_GOOFY_ALIAS || '',
+  sessionShareGoofyDescription:
+    env.SESSION_SHARE_GOOFY_DESCRIPTION || 'Codex session share snapshots',
+  sessionShareGoofyPreviewDir:
+    env.SESSION_SHARE_GOOFY_PREVIEW_DIR ||
+    join(homedir(), '.lark-codex-bridge', 'goofy-session-share-preview'),
+  sessionShareGoofyExpiryDays: Math.max(1, Number(env.SESSION_SHARE_GOOFY_EXPIRY_DAYS || 365)),
+  sessionShareGoofyTimeoutMs: Math.max(60_000, Number(env.SESSION_SHARE_GOOFY_TIMEOUT_MS || 180_000)),
   sessionShareReplyStyle: env.SESSION_SHARE_REPLY_STYLE || 'card',
   sessionShareMaxChars: Math.max(20_000, Number(env.SESSION_SHARE_MAX_CHARS || 180_000)),
   sessionShareChunkChars: Math.max(5000, Number(env.SESSION_SHARE_CHUNK_CHARS || 30_000)),
@@ -337,6 +346,7 @@ const config = {
   httpPort: Number(env.BRIDGE_HTTP_PORT || 0),
   httpToken: readOptionalSecret(env.BRIDGE_HTTP_TOKEN || '', env.BRIDGE_HTTP_TOKEN_FILE || ''),
   larkCliBin: env.LARK_CLI_BIN || 'lark-cli',
+  bytedCliBin: env.BYTEDCLI_BIN || 'bytedcli',
   jwtEndpoint: env.SERVICE_JWT_ENDPOINT || '',
   serviceAccountSecret: readSecretFromEnv(),
   larkEventTypes: env.LARK_EVENT_TYPES || 'im.message.receive_v1',
@@ -1724,6 +1734,76 @@ function sessionShareBaseUrl() {
   return `http://${host}:${config.httpPort}`;
 }
 
+function isSessionShareGoofyOutput() {
+  return config.sessionShareOutput === 'goofy' || config.sessionShareOutput === 'goofy-preview';
+}
+
+function prepareSessionShareGoofyPreviewSource(currentShareFile) {
+  const deployDir = config.sessionShareGoofyPreviewDir;
+  const routeDir = join(deployDir, 'session-shares');
+  rmSync(deployDir, { recursive: true, force: true });
+  mkdirSync(routeDir, { recursive: true });
+
+  const htmlFiles = readdirSync(config.sessionShareStoreDir, { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.html'))
+    .map(entry => entry.name);
+
+  for (const fileName of htmlFiles) {
+    const source = join(config.sessionShareStoreDir, fileName);
+    const shareId = fileName.slice(0, -'.html'.length);
+    copyFileSync(source, join(deployDir, fileName));
+    copyFileSync(source, join(routeDir, shareId));
+    copyFileSync(source, join(routeDir, fileName));
+  }
+
+  copyFileSync(currentShareFile, join(deployDir, 'index.html'));
+  return deployDir;
+}
+
+function extractGoofyPreviewBaseUrl(stdout) {
+  const parsed = tryJsonLoose(stdout) || {};
+  const preview = parsed?.data?.preview || {};
+  const host =
+    (Array.isArray(preview.domainPrefixes) && preview.domainPrefixes[0]) ||
+    preview.domain ||
+    preview.host ||
+    '';
+  if (!host) {
+    throw new Error(`Goofy preview 部署成功，但返回值里没有预览域名：${stdout.slice(0, 500)}`);
+  }
+
+  return `https://${String(host).replace(/^https?:\/\//i, '').replace(/\/+$/, '')}`;
+}
+
+async function deploySessionShareGoofyPreview(currentShareFile) {
+  const alias = String(config.sessionShareGoofyAlias || '').trim();
+  if (!alias) {
+    throw new Error('SESSION_SHARE_OUTPUT=goofy 需要配置 SESSION_SHARE_GOOFY_ALIAS');
+  }
+
+  const sourceDir = prepareSessionShareGoofyPreviewSource(currentShareFile);
+  const args = [
+    '--json',
+    'goofy',
+    'preview',
+    'deploy',
+    sourceDir,
+    '--alias',
+    alias,
+    '--override',
+    '--description',
+    config.sessionShareGoofyDescription,
+    '--expiry-days',
+    String(config.sessionShareGoofyExpiryDays),
+  ];
+
+  const { stdout } = await runProcess(config.bytedCliBin, args, {
+    timeoutMs: config.sessionShareGoofyTimeoutMs,
+    cwd: config.codexCwd,
+  });
+  return extractGoofyPreviewBaseUrl(stdout);
+}
+
 function makeWebShareId(sessionId) {
   return `${sessionId}-${randomUUID().split('-')[0]}`;
 }
@@ -2377,14 +2457,24 @@ ${sessionShareEnhancementScript()}
 }
 
 async function createSessionShareWebPage(session, transcript, snapshot) {
-  if (!config.httpPort) {
+  if (!config.httpPort && !isSessionShareGoofyOutput()) {
     throw new Error('SESSION_SHARE_OUTPUT=web 需要配置 BRIDGE_HTTP_PORT');
   }
 
   const shareId = makeWebShareId(session.id);
   const html = makeSessionSharePageHtml({ session, transcript, snapshot, shareId });
   mkdirSync(config.sessionShareStoreDir, { recursive: true });
-  writeFileSync(join(config.sessionShareStoreDir, `${shareId}.html`), html);
+  const file = join(config.sessionShareStoreDir, `${shareId}.html`);
+  writeFileSync(file, html);
+
+  if (isSessionShareGoofyOutput()) {
+    const baseUrl = await deploySessionShareGoofyPreview(file);
+    return {
+      shareId,
+      url: `${baseUrl}/session-shares/${shareId}`,
+    };
+  }
+
   return {
     shareId,
     url: `${sessionShareBaseUrl()}/session-shares/${shareId}`,
@@ -2392,7 +2482,11 @@ async function createSessionShareWebPage(session, transcript, snapshot) {
 }
 
 function isSessionShareWebOutput() {
-  return config.sessionShareOutput === 'web' || config.sessionShareOutput === 'html';
+  return (
+    config.sessionShareOutput === 'web' ||
+    config.sessionShareOutput === 'html' ||
+    isSessionShareGoofyOutput()
+  );
 }
 
 function formatSessionMatchType(matchType) {

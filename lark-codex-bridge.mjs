@@ -370,6 +370,7 @@ const config = {
     env.CODEX_PROMPT_PREFIX ||
     [
       '你是通过飞书机器人被调用的 Codex。请用中文简洁回答。',
+      '私聊机器人或群里 @机器人时，最终回答会原样发回飞书；只输出给提问者看的回复正文，不要输出“建议操作”“待发送回复”“操作计划”“草稿”等代理审批包装。',
       '你可以使用本机可用的 CLI 工具和 lark-cli 完成查询，优先使用结构化输出，例如 lark-cli ... --format json。',
       '读取飞书群消息、历史消息、搜索消息时，优先使用 lark-cli 的 user 身份：lark-cli im +chat-messages-list --as user --chat-id <oc_xxx> 或 lark-cli im +messages-search --as user --chat-id <oc_xxx>；发送、回复、表情回复才使用 bot 身份。',
       '当用户说“本群”“群消息”“最近消息”时，优先使用飞书事件上下文里的 chat_id，不要只做全局搜索；筛选 DDL/通知类内容时要排除机器人/应用自己的历史回复，避免把权限报错或自己的总结当成结果。',
@@ -2945,6 +2946,41 @@ function normalizeDraftResult(output) {
   };
 }
 
+function stripTrailingDraftMetadata(value) {
+  const text = String(value || '')
+    .trim()
+    .replace(/^```(?:text|markdown)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  const metaIndex = text.search(
+    /\n\s*(?:证据|依据|参考信息|置信度|confidence|evidence)\s*[：:]/iu,
+  );
+  return (metaIndex >= 0 ? text.slice(0, metaIndex) : text).trim();
+}
+
+function normalizeDirectBotReply(output) {
+  const text = clampReply(output);
+  const parsed = parseJsonObjectLoose(text);
+  const hasDraftFields =
+    parsed &&
+    ['operation_plan', 'action_plan', 'plan', 'evidence', 'confidence'].some(key =>
+      Object.prototype.hasOwnProperty.call(parsed, key),
+    );
+  const parsedReply = String(parsed?.reply_text || parsed?.reply || parsed?.message || '').trim();
+  if (hasDraftFields && parsedReply) return clampReply(parsedReply);
+
+  const wrapperStartPattern =
+    /^\s*(?:建议操作|操作计划|行动计划|operation[_\s-]?plan|action[_\s-]?plan)\s*[：:]/iu;
+  if (!wrapperStartPattern.test(text)) return text;
+
+  const replyLabelPattern =
+    /(?:^|[\r\n])\s*(?:待发送回复|回复内容|reply_text)\s*[：:]\s*([\s\S]+)$/iu;
+  const inlineReplyLabelPattern = /(?:待发送回复|回复内容|reply_text)\s*[：:]\s*([\s\S]+)$/iu;
+  const match = replyLabelPattern.exec(text) || inlineReplyLabelPattern.exec(text);
+  const directReply = stripTrailingDraftMetadata(match?.[1] || '');
+  return directReply ? clampReply(directReply) : text;
+}
+
 function buildDelegateDraftPrompt(event, rawText) {
   const chatId = extractChatId(event);
   const messageId = extractMessageId(event);
@@ -4474,14 +4510,18 @@ async function handleEvent(event) {
     `message_id=${messageId || 'unknown'}`,
     `sender_id=${extractSenderId(event) || 'unknown'}`,
     `sender_type=${extractSenderType(event) || 'unknown'}`,
+    '',
+    '当前处理模式：直接 @机器人 / 私聊机器人，bridge 会把你的最终回答原样发回飞书。',
+    '回复格式要求：直接写给提问者；不要套用“建议操作 / 待发送回复 / 操作计划 / 草稿”等代理审批包装。',
   ].join('\n');
   const codexPrompt = `${eventContext}\n\n${prompt || stripBridgeTraceText(rawText)}`;
   const progress = await createProgressReporter(event, prompt || stripBridgeTraceText(rawText));
   try {
     const reply = await buildReply(codexPrompt, { progress });
-    if (progress) await progress.finish(reply);
+    const finalReply = normalizeDirectBotReply(reply);
+    if (progress) await progress.finish(finalReply);
     if (config.progressCardFinalReply || !progress) {
-      await replyToLark(event, trace ? appendBridgeTrace(reply, nextTrace(trace)) : reply);
+      await replyToLark(event, trace ? appendBridgeTrace(finalReply, nextTrace(trace)) : finalReply);
     }
   } catch (error) {
     console.error(`[bridge] ${error.stack || error.message}`);

@@ -1,6 +1,6 @@
 {
   "name": "@syfyivan/lark-codex-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bridge Feishu/Lark bot events to the local Codex CLI.",
   "private": false,
   "type": "module",

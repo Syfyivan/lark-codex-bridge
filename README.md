@@ -168,6 +168,13 @@ LARK_EVENT_TYPES=im.message.receive_v1,card.action.trigger
 BOT_OPEN_ID=ou_xxx
 BOT_MENTION_NAMES=Codex Bot
 REQUIRE_MENTION_IN_GROUP=1
+BRIDGE_REPLY_MARKDOWN=1           # send normal replies as Lark post Markdown
+
+LOOP_MAX_TURNS=3                  # cap bridge_trace bot-to-bot turns
+LOOP_RESPOND_TO_BOT_SENDERS=0     # ignore bot senders unless they explicitly @ this bot/delegate
+LOOP_BOT_SENDER_IDS=
+LOOP_IGNORE_SENDER_IDS=
+LOOP_ALLOW_SENDER_IDS=
 
 CODEX_BIN=codex
 CODEX_CWD=/path/to/workspace
@@ -218,6 +225,23 @@ Natural direct messages also work when they include a session ID, for example:
 ```text
 019e7228-4b13-7c50-bbe4-f085e5c9b401 这个 session 帮我生成分享链接
 ```
+
+## Reply Rendering And Bot Loops
+
+Normal bot replies use `BRIDGE_REPLY_MARKDOWN=1` by default. The bridge sends
+the final text through `lark-cli --markdown`, which lets Lark render headings,
+lists, links, and fenced code blocks as a post-format rich text message. If that
+send fails, the bridge falls back to plain `--text` so the reply is not lost.
+
+Bot-authored messages are ignored by default when
+`LOOP_RESPOND_TO_BOT_SENDERS=0`. There are two explicit exceptions:
+
+- a bot message mentions the delegated user and the delegated flow allows bot
+  senders;
+- a bot message explicitly mentions this bot and has non-empty actionable text.
+
+Those exceptions are still bounded by `bridge_trace` and `LOOP_MAX_TURNS`, which
+keeps bot-to-bot relay tests from running forever.
 
 ## Progress Cards
 

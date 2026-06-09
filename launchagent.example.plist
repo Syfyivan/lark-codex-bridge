@@ -44,6 +44,13 @@
     <string>Codex Bot</string>
     <key>REQUIRE_MENTION_IN_GROUP</key>
     <string>1</string>
+    <key>BRIDGE_REPLY_MARKDOWN</key>
+    <string>1</string>
+
+    <key>LOOP_MAX_TURNS</key>
+    <string>3</string>
+    <key>LOOP_RESPOND_TO_BOT_SENDERS</key>
+    <string>0</string>
 
     <key>CODEX_BIN</key>
     <string>codex</string>

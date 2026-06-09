@@ -284,6 +284,7 @@ const config = {
   prefix: env.BRIDGE_PREFIX || '',
   reactionOnReceive: env.REACTION_ON_RECEIVE || '',
   reactionOnReceiveRules: parseReactionRules(env.REACTION_ON_RECEIVE_RULES),
+  replyMarkdownEnabled: envFlag('BRIDGE_REPLY_MARKDOWN', true),
   requireMentionInGroup: env.REQUIRE_MENTION_IN_GROUP !== '0',
   botOpenId: env.BOT_OPEN_ID || '',
   botMentionNames: splitCsv(env.BOT_MENTION_NAMES),
@@ -810,7 +811,9 @@ function shouldSkipSender(event, rawText) {
       config.delegateMentionEnabled &&
       hasActionableDelegateText(rawText) &&
       (eventMentionsDelegateUser(event) || textMentionsDelegateUser(rawText));
-    if (!delegateMentionFromBot) return 'bot_sender_ignored';
+    const botMentionFromBot =
+      hasActionableDelegateText(rawText) && (eventMentionsBot(event) || textMentionsBot(rawText));
+    if (!delegateMentionFromBot && !botMentionFromBot) return 'bot_sender_ignored';
   }
   return '';
 }
@@ -4313,17 +4316,30 @@ async function createProgressReporter(event, prompt) {
 }
 
 async function replyToLark(event, text) {
+  const sendReply = async baseArgs => {
+    const replyText = String(text || '');
+    if (!config.replyMarkdownEnabled) {
+      await runCli([...baseArgs, '--text', replyText]);
+      return;
+    }
+
+    try {
+      await runCli([...baseArgs, '--markdown', closeUnclosedCodeFence(replyText)]);
+    } catch (error) {
+      console.error(`[bridge] failed to send markdown reply, falling back to text: ${error.message}`);
+      await runCli([...baseArgs, '--text', replyText]);
+    }
+  };
+
   const messageId = extractMessageId(event);
   if (messageId) {
-    await runCli([
+    await sendReply([
       'im',
       '+messages-reply',
       '--as',
       'bot',
       '--message-id',
       messageId,
-      '--text',
-      text,
       '--idempotency-key',
       `bridge-${messageId}`,
     ]);
@@ -4332,15 +4348,13 @@ async function replyToLark(event, text) {
 
   const chatId = extractChatId(event);
   if (!chatId) throw new Error('event has neither message_id nor chat_id');
-  await runCli([
+  await sendReply([
     'im',
     '+messages-send',
     '--as',
     'bot',
     '--chat-id',
     chatId,
-    '--text',
-    text,
     '--idempotency-key',
     `bridge-${randomUUID()}`,
   ]);

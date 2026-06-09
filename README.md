@@ -94,7 +94,30 @@ For local development from this repository:
 cp .env.example .env
 nano .env
 npm run check
+npm test
 node lark-codex-bridge.mjs
+```
+
+## Project Layout
+
+```text
+lark-codex-bridge.mjs   CLI entrypoint, Lark event loop, Codex execution, HTTP API
+src/env.mjs             Environment parsing and option normalization
+src/lark-format.mjs     Lark reply formatting helpers
+src/sender-policy.mjs   Sender filtering and bot-loop policy
+test/*.test.mjs         Node.js unit tests for extracted bridge policy helpers
+```
+
+The entrypoint still owns the runtime workflow, while reusable pure logic lives
+under `src/`. Keep new policy or formatting behavior in small modules when it
+can be tested without starting `lark-cli`, Codex, or the HTTP server.
+
+Recommended local verification before pushing:
+
+```bash
+npm run check
+npm test
+npm run pack:dry
 ```
 
 For a local HTTP-only smoke test:
@@ -323,6 +346,7 @@ public npm package, this repository is prepared as a scoped package:
 npm login
 npm whoami
 npm run check
+npm test
 npm run pack:dry
 npm publish --access public
 ```

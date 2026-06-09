@@ -17,6 +17,17 @@ import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  envFlag as readEnvFlag,
+  parseReactionRules,
+  splitCsv,
+} from './src/env.mjs';
+import { closeUnclosedCodeFence } from './src/lark-format.mjs';
+import {
+  isKnownBotSender as isKnownBotSenderPolicy,
+  shouldSkipSenderPolicy,
+} from './src/sender-policy.mjs';
+
 const packageDir = dirname(fileURLToPath(import.meta.url));
 const defaultEnvFile = join(process.cwd(), '.env');
 
@@ -210,60 +221,8 @@ try {
 const env = process.env;
 const defaultCodexHome = env.CODEX_HOME || join(homedir(), '.codex');
 
-function splitCsv(value) {
-  return String(value || '')
-    .split(',')
-    .map(item => item.trim())
-    .filter(Boolean);
-}
-
 function envFlag(name, defaultValue = false) {
-  const value = env[name];
-  if (value === undefined) return defaultValue;
-  return !['', '0', 'false', 'no', 'off'].includes(value.trim().toLowerCase());
-}
-
-function parseReactionRules(value) {
-  const text = String(value || '').trim();
-  if (!text) return [];
-  const parsed = JSON.parse(text);
-  if (!Array.isArray(parsed)) {
-    throw new Error('REACTION_ON_RECEIVE_RULES must be a JSON array');
-  }
-
-  return parsed
-    .map((rule, index) => {
-      if (!rule || typeof rule !== 'object') return null;
-      const emoji = String(rule.emoji || rule.emoji_type || '').trim();
-      if (!emoji) return null;
-
-      const contains = Array.isArray(rule.contains)
-        ? rule.contains
-        : rule.contains
-          ? [rule.contains]
-          : [];
-      const containsText = contains
-        .map(item => String(item || '').trim())
-        .filter(Boolean);
-      const pattern = String(rule.pattern || rule.regex || '').trim();
-
-      if (!containsText.length && !pattern) return null;
-      return {
-        index,
-        emoji,
-        contains: containsText,
-        pattern,
-        flags: String(rule.flags || 'i'),
-        caseSensitive: envFlagValue(rule.case_sensitive ?? rule.caseSensitive, false),
-      };
-    })
-    .filter(Boolean);
-}
-
-function envFlagValue(value, defaultValue = false) {
-  if (value === undefined || value === null) return defaultValue;
-  if (typeof value === 'boolean') return value;
-  return !['', '0', 'false', 'no', 'off'].includes(String(value).trim().toLowerCase());
+  return readEnvFlag(env, name, defaultValue);
 }
 
 function readSecretFromEnv() {
@@ -782,40 +741,31 @@ function nextTrace(parentTrace = null) {
 }
 
 function isKnownBotSender(event) {
-  const senderType = extractSenderType(event);
-  const senderId = extractSenderId(event);
-  return (
-    senderType === 'bot' ||
-    senderType === 'app' ||
-    senderId.startsWith('cli_') ||
-    config.loopBotSenderIds.includes(senderId)
-  );
+  return isKnownBotSenderPolicy({
+    senderType: extractSenderType(event),
+    senderId: extractSenderId(event),
+    loopBotSenderIds: config.loopBotSenderIds,
+  });
 }
 
 function shouldSkipSender(event, rawText) {
   const senderId = extractSenderId(event);
-  if (config.botOpenId && senderId === config.botOpenId) return 'self_sender';
-  if (senderId && config.loopIgnoreSenderIds.includes(senderId)) return 'ignored_sender';
-  if (config.loopAllowSenderIds.length && !config.loopAllowSenderIds.includes(senderId)) {
-    return 'sender_not_allowed';
-  }
-
-  const trace = extractBridgeTrace(rawText);
-  if (trace && trace.turn >= Math.min(trace.maxTurns || config.loopMaxTurns, config.loopMaxTurns)) {
-    return 'max_turns_reached';
-  }
-
-  if (isKnownBotSender(event) && !config.loopRespondToBotSenders) {
-    const delegateMentionFromBot =
-      config.delegateAllowBotSenders &&
-      config.delegateMentionEnabled &&
-      hasActionableDelegateText(rawText) &&
-      (eventMentionsDelegateUser(event) || textMentionsDelegateUser(rawText));
-    const botMentionFromBot =
-      hasActionableDelegateText(rawText) && (eventMentionsBot(event) || textMentionsBot(rawText));
-    if (!delegateMentionFromBot && !botMentionFromBot) return 'bot_sender_ignored';
-  }
-  return '';
+  return shouldSkipSenderPolicy({
+    senderId,
+    senderType: extractSenderType(event),
+    trace: extractBridgeTrace(rawText),
+    botOpenId: config.botOpenId,
+    loopIgnoreSenderIds: config.loopIgnoreSenderIds,
+    loopAllowSenderIds: config.loopAllowSenderIds,
+    loopBotSenderIds: config.loopBotSenderIds,
+    loopRespondToBotSenders: config.loopRespondToBotSenders,
+    loopMaxTurns: config.loopMaxTurns,
+    delegateAllowBotSenders: config.delegateAllowBotSenders,
+    delegateMentionEnabled: config.delegateMentionEnabled,
+    hasActionableText: hasActionableDelegateText(rawText),
+    mentionsDelegate: eventMentionsDelegateUser(event) || textMentionsDelegateUser(rawText),
+    mentionsBot: eventMentionsBot(event) || textMentionsBot(rawText),
+  });
 }
 
 function parseBotSendCommand(rawText, event) {
@@ -4022,11 +3972,6 @@ function progressStatusMeta(status) {
   if (status === 'done') return { template: 'green', title: '分析完成' };
   if (status === 'failed') return { template: 'red', title: '分析失败' };
   return { template: 'blue', title: '正在分析' };
-}
-
-function closeUnclosedCodeFence(text) {
-  const fenceCount = (text.match(/```/g) || []).length;
-  return fenceCount % 2 === 1 ? `${text}\n\`\`\`` : text;
 }
 
 function cardMarkdownElement(content, maxLength = 2400) {

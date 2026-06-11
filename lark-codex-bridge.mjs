@@ -23,6 +23,8 @@ import {
   splitCsv,
 } from './src/env.mjs';
 import { closeUnclosedCodeFence } from './src/lark-format.mjs';
+import { renderSessionMarkdownBlockHtml } from './src/session-markdown.mjs';
+import { classifyDirectExecution } from './src/sensitive-policy.mjs';
 import {
   isKnownBotSender as isKnownBotSenderPolicy,
   shouldSkipSenderPolicy,
@@ -394,6 +396,7 @@ const config = {
 };
 
 const seenMessages = new Set();
+const bridgeStartedAtMs = Date.now();
 let mentionLookupWarningLogged = false;
 
 function requireEnv(name, value) {
@@ -554,6 +557,14 @@ function extractSenderName(event) {
 
 function isMentionableUserOpenId(value) {
   return typeof value === 'string' && value.startsWith('ou_');
+}
+
+function isApprovalOwnerOpenId(openId) {
+  return Boolean(openId && config.delegateApproverOpenId && openId === config.delegateApproverOpenId);
+}
+
+function isApprovalOwnerEvent(event) {
+  return isApprovalOwnerOpenId(extractSenderId(event));
 }
 
 function mentionMatchesBot(mention) {
@@ -1772,140 +1783,6 @@ function formatLarkMarkdownLink(label, url) {
   return `[${safeLabel}](${href})`;
 }
 
-function splitTrailingUrlPunctuation(value) {
-  let url = String(value || '');
-  let suffix = '';
-  while (url && /[.,!?;:，。！？；：、)\]}]$/u.test(url)) {
-    suffix = `${url.slice(-1)}${suffix}`;
-    url = url.slice(0, -1);
-  }
-  return { url, suffix };
-}
-
-function linkifyEscapedHtml(value) {
-  return String(value || '').replace(/https?:\/\/[^\s<]+/g, rawUrl => {
-    const { url, suffix } = splitTrailingUrlPunctuation(rawUrl);
-    const href = safeMarkdownUrl(url.replace(/&amp;/g, '&'));
-    if (!href) return rawUrl;
-    return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${url}</a>${suffix}`;
-  });
-}
-
-function renderInlineMarkdown(text) {
-  const tokens = [];
-  const stash = html => {
-    const index = tokens.push(html) - 1;
-    return `\u0000${index}\u0000`;
-  };
-
-  const withProtectedInline = String(text || '')
-    .replace(/`([^`\n]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`))
-    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/gi, (match, label, url) => {
-      const href = safeMarkdownUrl(url);
-      if (!href) return match;
-      return stash(
-        `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`,
-      );
-    });
-
-  let html = escapeHtml(withProtectedInline)
-    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
-    .replace(/(^|[^\*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-    .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
-
-  html = linkifyEscapedHtml(html);
-  return html.replace(/\u0000(\d+)\u0000/g, (_, index) => tokens[Number(index)] || '');
-}
-
-function renderMarkdownListItem(text) {
-  const checklist = /^\[([ xX])\]\s+(.+)$/.exec(String(text || '').trim());
-  if (!checklist) return renderInlineMarkdown(text);
-  const checked = checklist[1].toLowerCase() === 'x';
-  return `<span class="md-task" aria-hidden="true">${checked ? '☑' : '☐'}</span> ${renderInlineMarkdown(checklist[2])}`;
-}
-
-function renderSessionMarkdownBlockHtml(text) {
-  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
-  const blocks = [];
-  let paragraph = [];
-  let listType = '';
-  let listItems = [];
-
-  const flushParagraph = () => {
-    if (!paragraph.length) return;
-    blocks.push(`<p>${paragraph.map(renderInlineMarkdown).join('<br>')}</p>`);
-    paragraph = [];
-  };
-
-  const flushList = () => {
-    if (!listType) return;
-    const tag = listType === 'ol' ? 'ol' : 'ul';
-    blocks.push(`<${tag}>${listItems.map(item => `<li>${renderMarkdownListItem(item)}</li>`).join('')}</${tag}>`);
-    listType = '';
-    listItems = [];
-  };
-
-  const startList = (type, item) => {
-    flushParagraph();
-    if (listType && listType !== type) flushList();
-    listType = type;
-    listItems.push(item);
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
-    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
-    if (heading) {
-      flushParagraph();
-      flushList();
-      const level = Math.min(6, heading[1].length);
-      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
-      continue;
-    }
-
-    if (/^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)) {
-      flushParagraph();
-      flushList();
-      blocks.push('<hr>');
-      continue;
-    }
-
-    const unordered = /^[-*+]\s+(.+)$/.exec(trimmed);
-    if (unordered) {
-      startList('ul', unordered[1]);
-      continue;
-    }
-
-    const ordered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
-    if (ordered) {
-      startList('ol', ordered[1]);
-      continue;
-    }
-
-    const quote = /^>\s?(.*)$/.exec(line);
-    if (quote) {
-      flushParagraph();
-      flushList();
-      blocks.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
-      continue;
-    }
-
-    flushList();
-    paragraph.push(line);
-  }
-
-  flushParagraph();
-  flushList();
-  return blocks.join('\n');
-}
-
 function renderSessionMarkdownHtml(text) {
   return `<div class="message-text message-markdown">${renderSessionMarkdownBlockHtml(text)}</div>`;
 }
@@ -2172,10 +2049,12 @@ function sessionShareEnhancementCss() {
     .message-markdown p + p,
     .message-markdown p + ul,
     .message-markdown p + ol,
+    .message-markdown p + .md-table-wrap,
     .message-markdown ul + p,
     .message-markdown ol + p,
     .message-markdown blockquote + p,
-    .message-markdown p + blockquote {
+    .message-markdown p + blockquote,
+    .message-markdown .md-table-wrap + p {
       margin-top: 10px;
     }
     .message-markdown h1,
@@ -2221,6 +2100,30 @@ function sessionShareEnhancementCss() {
       margin: 12px 0;
       border: 0;
       background: rgba(51, 65, 85, .16);
+    }
+    .message-markdown .md-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      margin: 10px 0;
+    }
+    .message-markdown table {
+      width: 100%;
+      min-width: 520px;
+      border-collapse: collapse;
+      font-size: .94em;
+      line-height: 1.55;
+    }
+    .message-markdown th,
+    .message-markdown td {
+      padding: 7px 9px;
+      border: 1px solid rgba(51, 65, 85, .16);
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .message-markdown th {
+      background: rgba(51, 65, 85, .06);
+      font-weight: 700;
+      text-align: left;
     }
     .md-task {
       color: var(--muted, #6d716f);
@@ -2291,7 +2194,7 @@ function sessionShareEnhancementCss() {
   `.trim();
 }
 
-const SESSION_SHARE_ENHANCER_VERSION = 'v4';
+const SESSION_SHARE_ENHANCER_VERSION = 'v5';
 
 function sessionShareEnhancementScript() {
   return `
@@ -2361,9 +2264,9 @@ function sessionShareEnhancementScript() {
           .replace(inlineCodePattern, (_, code) => {
             return stash('<code>' + escapeMarkdownHtml(code) + '</code>');
           })
-          .replace(/\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/gi, (match, label, url) => {
+          .replace(/\\[([^\\]\\n]+)\\]\\(([^\\s)]+)\\)/g, (match, label, url) => {
             const href = safeMarkdownUrl(url);
-            if (!href) return match;
+            if (!href) return stash(escapeMarkdownHtml(match));
             return stash(
               '<a href="' + escapeMarkdownHtml(href) + '" target="_blank" rel="noreferrer">' +
                 escapeMarkdownHtml(label) +
@@ -2386,6 +2289,99 @@ function sessionShareEnhancementScript() {
         if (!checklist) return renderInlineMarkdown(text);
         const checked = checklist[1].toLowerCase() === 'x';
         return '<span class="md-task" aria-hidden="true">' + (checked ? '☑' : '☐') + '</span> ' + renderInlineMarkdown(checklist[2]);
+      };
+
+      const splitMarkdownTableRow = line => {
+        let source = String(line || '').trim();
+        if (!source.includes('|')) return null;
+        if (source.startsWith('|')) source = source.slice(1);
+        if (source.endsWith('|')) source = source.slice(0, -1);
+
+        const cells = [];
+        let current = '';
+        for (let index = 0; index < source.length; index += 1) {
+          const char = source[index];
+          const next = source[index + 1];
+          if (char === '\\\\' && next === '|') {
+            current += '|';
+            index += 1;
+            continue;
+          }
+          if (char === '|') {
+            cells.push(current.trim());
+            current = '';
+            continue;
+          }
+          current += char;
+        }
+        cells.push(current.trim());
+        return cells.length >= 2 ? cells : null;
+      };
+
+      const markdownTableAlignments = line => {
+        const cells = splitMarkdownTableRow(line);
+        if (!cells || !cells.every(cell => /^:?-{3,}:?$/.test(cell.replace(/\\s+/g, '')))) {
+          return null;
+        }
+        return cells.map(cell => {
+          const normalized = cell.replace(/\\s+/g, '');
+          if (normalized.startsWith(':') && normalized.endsWith(':')) return 'center';
+          if (normalized.endsWith(':')) return 'right';
+          if (normalized.startsWith(':')) return 'left';
+          return '';
+        });
+      };
+
+      const normalizeTableCells = (cells, size) => {
+        const normalized = cells.slice(0, size);
+        while (normalized.length < size) normalized.push('');
+        return normalized;
+      };
+
+      const renderMarkdownTableHtml = (headerCells, alignments, rows) => {
+        const alignAttr = index => {
+          const align = alignments[index];
+          return align ? ' style="text-align:' + align + '"' : '';
+        };
+        const renderCell = (tag, cell, index) => {
+          return '<' + tag + alignAttr(index) + '>' + renderInlineMarkdown(cell) + '</' + tag + '>';
+        };
+        const width = headerCells.length;
+        const header = normalizeTableCells(headerCells, width)
+          .map((cell, index) => renderCell('th', cell, index))
+          .join('');
+        const body = rows
+          .map(row => {
+            const cells = normalizeTableCells(row, width)
+              .map((cell, index) => renderCell('td', cell, index))
+              .join('');
+            return '<tr>' + cells + '</tr>';
+          })
+          .join('');
+        return '<div class="md-table-wrap"><table><thead><tr>' + header + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+      };
+
+      const parseMarkdownTable = (lines, startIndex) => {
+        const headerCells = splitMarkdownTableRow(lines[startIndex]);
+        const alignments = markdownTableAlignments(lines[startIndex + 1]);
+        if (!headerCells || !alignments) return null;
+
+        const width = headerCells.length;
+        const rows = [];
+        let index = startIndex + 2;
+        while (index < lines.length) {
+          const trimmed = String(lines[index] || '').trim();
+          if (!trimmed) break;
+          const row = splitMarkdownTableRow(lines[index]);
+          if (!row) break;
+          rows.push(row);
+          index += 1;
+        }
+
+        return {
+          nextIndex: index,
+          html: renderMarkdownTableHtml(headerCells, normalizeTableCells(alignments, width), rows),
+        };
       };
 
       const renderMarkdownBlockHtml = text => {
@@ -2416,11 +2412,21 @@ function sessionShareEnhancementScript() {
           listItems.push(item);
         };
 
-        for (const line of lines) {
+        for (let index = 0; index < lines.length; index += 1) {
+          const line = lines[index];
           const trimmed = line.trim();
           if (!trimmed) {
             flushParagraph();
             flushList();
+            continue;
+          }
+
+          const table = parseMarkdownTable(lines, index);
+          if (table) {
+            flushParagraph();
+            flushList();
+            blocks.push(table.html);
+            index = table.nextIndex - 1;
             continue;
           }
 
@@ -2499,6 +2505,15 @@ function sessionShareEnhancementScript() {
         textBlocks.forEach(block => {
           const template = document.createElement('template');
           template.innerHTML = renderMarkdownMessageHtml(block.innerText || '');
+          block.replaceWith(...Array.from(template.content.childNodes));
+        });
+        const tablePattern = /(^|\\n)\\s*\\|?.+\\|.+\\|?\\s*\\n\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*(\\n|$)/;
+        const markdownBlocks = Array.from(content.querySelectorAll(':scope > .message-markdown'));
+        markdownBlocks.forEach(block => {
+          const text = block.innerText || '';
+          if (!tablePattern.test(text)) return;
+          const template = document.createElement('template');
+          template.innerHTML = renderMarkdownMessageHtml(text);
           block.replaceWith(...Array.from(template.content.childNodes));
         });
         content.dataset.markdownHydrated = '1';
@@ -3098,10 +3113,12 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
     .message-markdown p + p,
     .message-markdown p + ul,
     .message-markdown p + ol,
+    .message-markdown p + .md-table-wrap,
     .message-markdown ul + p,
     .message-markdown ol + p,
     .message-markdown blockquote + p,
-    .message-markdown p + blockquote {
+    .message-markdown p + blockquote,
+    .message-markdown .md-table-wrap + p {
       margin-top: 10px;
     }
     .message-markdown h1,
@@ -3147,6 +3164,30 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
       margin: 12px 0;
       border: 0;
       background: rgba(51, 65, 85, .16);
+    }
+    .message-markdown .md-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      margin: 10px 0;
+    }
+    .message-markdown table {
+      width: 100%;
+      min-width: 520px;
+      border-collapse: collapse;
+      font-size: .94em;
+      line-height: 1.55;
+    }
+    .message-markdown th,
+    .message-markdown td {
+      padding: 7px 9px;
+      border: 1px solid rgba(51, 65, 85, .16);
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .message-markdown th {
+      background: rgba(51, 65, 85, .06);
+      font-weight: 700;
+      text-align: left;
     }
     .md-task {
       color: var(--muted);
@@ -4217,6 +4258,234 @@ function buildApprovalCard(approval) {
   };
 }
 
+function buildSensitiveOperationApprovalCard(approval) {
+  const labels = Array.isArray(approval.sensitiveLabels) && approval.sensitiveLabels.length
+    ? approval.sensitiveLabels.join('、')
+    : '疑似非只读操作';
+  return {
+    config: {
+      wide_screen_mode: true,
+    },
+    header: {
+      template: 'orange',
+      title: {
+        tag: 'plain_text',
+        content: '需要你确认本机操作',
+      },
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: [
+            `**请求人**：${approval.requesterName || approval.requesterOpenId || '未知'}`,
+            `**来源群**：${approval.chatId || 'unknown'}`,
+            `**请求 ID**：${approval.id}`,
+            `**风险类型**：${labels}`,
+          ].join('\n'),
+        },
+      },
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**原消息**\n${clampCardText(approval.requestText, 1200)}`,
+        },
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: `确认前不会启动 Codex 执行。按钮不可用时，私聊回复：同意执行 ${approval.id} / 取消执行 ${approval.id}`,
+          },
+        ],
+      },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            type: 'primary',
+            text: {
+              tag: 'plain_text',
+              content: '同意执行',
+            },
+            value: {
+              bridge_action: 'sensitive_approve',
+              approval_id: approval.id,
+            },
+          },
+          {
+            tag: 'button',
+            type: 'danger',
+            text: {
+              tag: 'plain_text',
+              content: '拒绝',
+            },
+            value: {
+              bridge_action: 'sensitive_cancel',
+              approval_id: approval.id,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function sendSensitiveOperationApprovalRequest(approval) {
+  const card = buildSensitiveOperationApprovalCard(approval);
+  try {
+    await runCli([
+      'im',
+      '+messages-send',
+      '--as',
+      'bot',
+      '--user-id',
+      approval.approverOpenId,
+      '--msg-type',
+      'interactive',
+      '--content',
+      JSON.stringify(card),
+      '--idempotency-key',
+      `sensitive-card-${approval.id}`,
+    ]);
+    return;
+  } catch (error) {
+    console.error(`[bridge] failed to send sensitive approval card, falling back to text: ${error.message}`);
+  }
+
+  await runCli([
+    'im',
+    '+messages-send',
+    '--as',
+    'bot',
+    '--user-id',
+    approval.approverOpenId,
+    '--text',
+    [
+      `有人请求操作你的电脑，等待你确认。请求 ID：${approval.id}`,
+      '',
+      `请求人：${approval.requesterName || approval.requesterOpenId || '未知'}`,
+      `来源群：${approval.chatId || 'unknown'}`,
+      `风险类型：${(approval.sensitiveLabels || []).join('、') || '疑似非只读操作'}`,
+      '',
+      '原消息：',
+      approval.requestText,
+      '',
+      `同意请回复：同意执行 ${approval.id}`,
+      `取消请回复：取消执行 ${approval.id}`,
+    ].join('\n'),
+    '--idempotency-key',
+    `sensitive-text-${approval.id}`,
+  ]);
+}
+
+async function createSensitiveOperationApproval(event, rawText, classification) {
+  if (!config.delegateApproverOpenId) {
+    await replyToLark(
+      event,
+      '这个请求涉及非只读操作，但当前没有配置审批人，已拒绝执行。',
+      { idempotencyKey: `sensitive-rejected-${extractMessageId(event) || randomUUID()}` },
+    );
+    return;
+  }
+
+  const id = `op-${shortApprovalId()}`;
+  const approval = {
+    id,
+    kind: 'sensitive_operation',
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+    approverOpenId: config.delegateApproverOpenId,
+    chatId: extractChatId(event),
+    chatType: extractChatType(event),
+    originalMessageId: extractMessageId(event),
+    requesterOpenId: extractSenderId(event),
+    requesterSenderType: extractSenderType(event),
+    requesterName: extractSenderName(event),
+    requestText: rawText,
+    sensitiveLabels: classification.labels,
+    executionKind: classification.executionKind,
+  };
+  saveApproval(approval);
+  await sendSensitiveOperationApprovalRequest(approval);
+  await replyToLark(
+    event,
+    `这个请求涉及非只读操作，已发给宋一凡确认；确认前不会执行。请求 ID：${id}`,
+    { idempotencyKey: `sensitive-pending-${id}` },
+  );
+  console.error(`[bridge] sensitive operation ${id} awaiting approval for message ${approval.originalMessageId}`);
+}
+
+function snapshotEventForApproval(event) {
+  return {
+    type: event?.type || '',
+    message_id: extractMessageId(event) || '',
+    id: extractMessageId(event) || extractEventId(event) || '',
+    chat_id: extractChatId(event) || '',
+    chat_type: extractChatType(event) || '',
+    content: extractText(event) || '',
+    sender_id: extractSenderId(event) || '',
+    sender_type: extractSenderType(event) || '',
+    sender_name: extractSenderName(event) || '',
+    mentions: Array.isArray(event?.mentions) ? event.mentions : [],
+  };
+}
+
+async function createReviewFollowupApproval(rootEvent, rootText, replyEvent, replyText, round) {
+  if (!config.delegateApproverOpenId) {
+    console.error('[bridge] review follow-up requires owner approval but no approver is configured');
+    return;
+  }
+
+  const rootMessageId = extractMessageId(rootEvent);
+  const replyMessageId = extractMessageId(replyEvent);
+  const id = `op-${shortApprovalId()}`;
+  const approval = {
+    id,
+    kind: 'sensitive_operation',
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+    approverOpenId: config.delegateApproverOpenId,
+    chatId: extractChatId(rootEvent),
+    chatType: extractChatType(rootEvent),
+    originalMessageId: replyMessageId || rootMessageId,
+    requesterOpenId: extractSenderId(replyEvent),
+    requesterSenderType: extractSenderType(replyEvent),
+    requesterName: extractSenderName(replyEvent),
+    requestText: replyText,
+    sensitiveLabels: ['Reviewer 回复闭环自动化可能改代码、提交或 push'],
+    executionKind: 'review_followup',
+    reviewFollowup: {
+      rootMessageId,
+      replyMessageId,
+      rootText,
+      replyText,
+      round,
+      rootEvent: snapshotEventForApproval(rootEvent),
+      replyEvent: snapshotEventForApproval(replyEvent),
+    },
+  };
+  saveApproval(approval);
+  saveReviewFollowupReply(rootMessageId, replyMessageId, {
+    id,
+    status: 'awaiting_owner_approval',
+    createdAt: new Date().toISOString(),
+    chatId: extractChatId(rootEvent),
+    reviewerSenderId: extractSenderId(replyEvent),
+    reviewerName: extractSenderName(replyEvent),
+    round,
+    requestText: rootText,
+    replyText,
+    mrUrls: extractCodebaseMrUrls(rootText),
+  });
+  await sendSensitiveOperationApprovalRequest(approval);
+  console.error(`[bridge] review follow-up ${id} awaiting owner approval for reply ${replyMessageId}`);
+}
+
 function confidenceRank(value) {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'high') return 3;
@@ -4306,7 +4575,7 @@ async function shouldHandleDelegateMention(event, rawText) {
 async function createDelegateDraft(event, rawText) {
   const id = shortApprovalId();
   console.error(`[bridge] delegate draft ${id} starting for message ${extractMessageId(event)}`);
-  const draftOutput = await buildReply(buildDelegateDraftPrompt(event, rawText));
+  const draftOutput = await buildReply(buildDelegateDraftPrompt(event, rawText), { sandbox: 'read-only' });
   console.error(`[bridge] delegate draft ${id} codex completed`);
   const draft = normalizeDraftResult(draftOutput);
   const replyText = draft.replyText || '我看到了，我稍后处理。';
@@ -4395,14 +4664,19 @@ async function createDelegateReviewAutomation(event, rawText) {
 
 function parseApprovalCommand(rawText) {
   const text = stripBridgeTraceText(stripBotMentionText(rawText)).trim();
-  const match = /^(同意发送|确认发送|发送|approve|\/approve|取消发送|拒绝发送|cancel|\/cancel)\s+([A-Za-z0-9_-]+)\s*$/i.exec(
+  const match = /^(同意发送|确认发送|发送|同意执行|确认执行|执行|approve|\/approve|取消发送|拒绝发送|取消执行|拒绝执行|cancel|\/cancel)\s+([A-Za-z0-9_-]+)\s*$/i.exec(
     text,
   );
   if (!match) return null;
   const verb = match[1].toLowerCase();
   return {
     action:
-      verb === '取消发送' || verb === '拒绝发送' || verb === 'cancel' || verb === '/cancel'
+      verb === '取消发送' ||
+      verb === '拒绝发送' ||
+      verb === '取消执行' ||
+      verb === '拒绝执行' ||
+      verb === 'cancel' ||
+      verb === '/cancel'
         ? 'cancel'
         : 'approve',
     id: match[2],
@@ -4434,6 +4708,166 @@ async function sendApprovedReply(approval) {
   };
 }
 
+function eventFromApproval(approval) {
+  return {
+    type: 'approval.sensitive_operation',
+    message_id: approval.originalMessageId || '',
+    id: approval.originalMessageId || approval.id || '',
+    chat_id: approval.chatId || '',
+    chat_type: approval.chatType || 'group',
+    content: approval.requestText || '',
+    sender_id: approval.requesterOpenId || '',
+    sender_type: approval.requesterSenderType || '',
+    sender_name: approval.requesterName || '',
+  };
+}
+
+function buildDirectCodexPrompt(event, rawText, options = {}) {
+  const trace = extractBridgeTrace(rawText);
+  const promptBase = config.prefix ? rawText.slice(config.prefix.length).trim() : rawText;
+  const prompt = stripBotMentionText(stripBridgeTraceText(promptBase));
+  const readOnlyNotice = options.readOnly
+    ? [
+        '',
+        '安全限制：请求人不是本机 owner，本次 Codex sandbox 已强制设为 read-only。',
+        '只能做查询、读取、总结、诊断和说明；不得删除/修改文件，不得提交/push/deploy，不得向外部系统写评论、审批、发消息或改配置。',
+        '如果用户要求非只读操作，直接说明需要宋一凡审批，不要尝试执行。',
+      ].join('\n')
+    : '';
+  const approvalNotice = options.approvedBy
+    ? `\n安全审批：这个非只读请求已经由 ${options.approvedBy} 通过 bridge 卡片确认，可以按原请求执行。`
+    : '';
+  const eventContext = [
+    '飞书事件上下文：',
+    `chat_id=${extractChatId(event) || 'unknown'}`,
+    `chat_type=${extractChatType(event) || 'unknown'}`,
+    `message_id=${extractMessageId(event) || 'unknown'}`,
+    `sender_id=${extractSenderId(event) || 'unknown'}`,
+    `sender_type=${extractSenderType(event) || 'unknown'}`,
+    '',
+    '当前处理模式：直接 @机器人 / 私聊机器人，bridge 会把你的最终回答原样发回飞书。',
+    '回复格式要求：直接写给提问者；不要套用“建议操作 / 待发送回复 / 操作计划 / 草稿”等代理审批包装。',
+    readOnlyNotice,
+    approvalNotice,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return {
+    trace,
+    prompt,
+    codexPrompt: `${eventContext}\n\n${prompt || stripBridgeTraceText(rawText)}`,
+  };
+}
+
+async function executeDirectCodexTask(event, rawText, options = {}) {
+  const { trace, prompt, codexPrompt } = buildDirectCodexPrompt(event, rawText, options);
+  const progress = options.progress === false
+    ? null
+    : await createProgressReporter(event, prompt || stripBridgeTraceText(rawText));
+  try {
+    const reply = await buildReply(codexPrompt, {
+      progress,
+      sandbox: options.sandbox || config.codexSandbox,
+    });
+    const finalReply = normalizeDirectBotReply(reply);
+    if (progress) await progress.finish(finalReply);
+    if (config.progressCardFinalReply || !progress) {
+      await replyToLark(
+        event,
+        trace ? appendBridgeTrace(finalReply, nextTrace(trace)) : finalReply,
+        options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {},
+      );
+    }
+    return { ok: true };
+  } catch (error) {
+    console.error(`[bridge] ${error.stack || error.message}`);
+    if (progress) await progress.fail(error.message || error);
+    await replyToLark(
+      event,
+      `执行失败：${clampReply(error.message || error)}`,
+      options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-failed` } : {},
+    );
+    return { ok: false, error: String(error?.stack || error?.message || error) };
+  }
+}
+
+async function executeApprovedSensitiveOperation(approval, operatorOpenId) {
+  const event = eventFromApproval(approval);
+  const executionKind = approval.executionKind || 'direct_codex';
+
+  if (executionKind === 'bot_send') {
+    const command = parseBotSendCommand(approval.requestText, event);
+    if (!command) throw new Error('审批通过后解析发送给机器人命令失败');
+    const confirmation = await sendBotMessage(command);
+    await replyToLark(event, confirmation, { idempotencyKey: `sensitive-approved-${approval.id}` });
+    return { ok: true };
+  }
+
+  if (executionKind === 'session_share') {
+    const command = parseSessionShareCommand(approval.requestText);
+    if (!command) throw new Error('审批通过后解析 session 分享命令失败');
+    await handleSessionShareCommand(event, command);
+    return { ok: true };
+  }
+
+  if (executionKind === 'review_automation') {
+    await createDelegateReviewAutomation(event, approval.requestText);
+    return { ok: true };
+  }
+
+  if (executionKind === 'review_followup') {
+    const followup = approval.reviewFollowup || {};
+    await createReviewFollowupAutomation(
+      followup.rootEvent || event,
+      followup.rootText || approval.requestText,
+      followup.replyEvent || event,
+      followup.replyText || '',
+      followup.round || 1,
+    );
+    return { ok: true };
+  }
+
+  return executeDirectCodexTask(event, approval.requestText, {
+    approvedBy: operatorOpenId,
+    sandbox: config.codexSandbox,
+    idempotencyKey: `sensitive-approved-${approval.id}`,
+  });
+}
+
+async function handleSensitiveOperationDecision(approval, command, operatorOpenId, respond) {
+  if (command.action === 'cancel') {
+    updateApproval(command.id, {
+      status: 'cancelled',
+      decidedAt: new Date().toISOString(),
+      decidedBy: operatorOpenId,
+    });
+    await replyToLark(
+      eventFromApproval(approval),
+      `宋一凡已拒绝执行这个非只读请求：${command.id}`,
+      { idempotencyKey: `sensitive-cancel-${command.id}` },
+    ).catch(error => {
+      console.error(`[bridge] failed to notify sensitive cancellation: ${error.message}`);
+    });
+    await respond(`已拒绝执行：${command.id}`);
+    return;
+  }
+
+  updateApproval(command.id, {
+    status: 'running',
+    decidedAt: new Date().toISOString(),
+    decidedBy: operatorOpenId,
+  });
+  await respond(`已同意执行：${command.id}，开始处理。`);
+  const result = await executeApprovedSensitiveOperation(approval, operatorOpenId);
+  updateApproval(command.id, {
+    status: result.ok ? 'done' : 'failed',
+    completedAt: new Date().toISOString(),
+    decidedBy: operatorOpenId,
+    error: result.error || '',
+  });
+  await respond(result.ok ? `执行完成：${command.id}` : `执行失败：${command.id}`);
+}
+
 async function handleApprovalDecision(command, operatorOpenId, respond) {
   if (!operatorOpenId || operatorOpenId !== config.delegateApproverOpenId) {
     await respond('这个确认只能由被代理用户本人操作。');
@@ -4447,6 +4881,11 @@ async function handleApprovalDecision(command, operatorOpenId, respond) {
   }
   if (approval.status !== 'pending') {
     await respond(`请求 ${command.id} 已经是 ${approval.status} 状态，不会重复发送。`);
+    return;
+  }
+
+  if (approval.kind === 'sensitive_operation') {
+    await handleSensitiveOperationDecision(approval, command, operatorOpenId, respond);
     return;
   }
 
@@ -4523,12 +4962,17 @@ async function handleCardActionEvent(event) {
   }
 
   const id = value.approval_id;
-  if (!id || !['delegate_approve', 'delegate_cancel'].includes(action)) return;
+  if (
+    !id ||
+    !['delegate_approve', 'delegate_cancel', 'sensitive_approve', 'sensitive_cancel'].includes(action)
+  ) {
+    return;
+  }
 
   await handleApprovalDecision(
     {
       id,
-      action: action === 'delegate_cancel' ? 'cancel' : 'approve',
+      action: action === 'delegate_cancel' || action === 'sensitive_cancel' ? 'cancel' : 'approve',
     },
     extractCardOperatorOpenId(event),
     async message => {
@@ -4543,7 +4987,7 @@ async function handleCardActionEvent(event) {
           '--text',
           message,
           '--idempotency-key',
-          `delegate-action-${id}-${action}`,
+          `delegate-action-${id}-${action}-${randomUUID()}`,
         ]);
       }
     },
@@ -4619,7 +5063,7 @@ async function pollReviewFollowupsInChat(chatId, messages, now = Date.now()) {
         continue;
       }
 
-      await createReviewFollowupAutomation(rootEvent, rootText, replyEvent, replyText, round);
+      await createReviewFollowupApproval(rootEvent, rootText, replyEvent, replyText, round);
     }
   }
 }
@@ -4657,6 +5101,7 @@ async function pollDelegateMentionsInChat(chatId) {
 
     const createdAt = parseMessageTimeMs(message);
     if (createdAt && now - createdAt > config.delegatePollMaxAgeMs) continue;
+    if (createdAt && createdAt < bridgeStartedAtMs - config.delegatePollIntervalMs) continue;
 
     if (await shouldHandleDelegateMention(event, rawText)) {
       seenMessages.add(messageId);
@@ -4668,7 +5113,11 @@ async function pollDelegateMentionsInChat(chatId) {
         console.error(`[bridge] failed to add reaction for polled message: ${error.message}`);
       }
       if (shouldHandleDelegateReviewAutomation(rawText)) {
-        await createDelegateReviewAutomation(event, rawText);
+        await createSensitiveOperationApproval(
+          event,
+          rawText,
+          classifyDirectExecution(rawText, { reviewAutomation: true }),
+        );
       } else {
         await createDelegateDraft(event, rawText);
       }
@@ -4845,7 +5294,7 @@ function runProcess(command, args, options = {}) {
 }
 
 async function callCodex(prompt, options = {}) {
-  const { progress = null } = options;
+  const { progress = null, sandbox = config.codexSandbox } = options;
   const tmp = mkdtempSync(join(tmpdir(), 'lark-codex-'));
   const outputFile = join(tmp, 'last-message.txt');
   const progressPrompt = progress
@@ -4866,7 +5315,7 @@ async function callCodex(prompt, options = {}) {
       '--cd',
       config.codexCwd,
       '--sandbox',
-      config.codexSandbox,
+      sandbox,
       '--output-last-message',
       outputFile,
       '--color',
@@ -5530,7 +5979,7 @@ async function createProgressReporter(event, prompt) {
   return reporter.updateDisabled ? null : reporter;
 }
 
-async function replyToLark(event, text) {
+async function replyToLark(event, text, options = {}) {
   const sendReply = async baseArgs => {
     if (!config.replyMarkdownEnabled) {
       await runCli([...baseArgs, '--text', text]);
@@ -5556,7 +6005,7 @@ async function replyToLark(event, text) {
       messageId,
       ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
       '--idempotency-key',
-      `bridge-${messageId}`,
+      options.idempotencyKey || `bridge-${messageId}`,
     ]);
     return;
   }
@@ -5574,7 +6023,7 @@ async function replyToLark(event, text) {
     '--chat-id',
     chatId,
     '--idempotency-key',
-    `bridge-${randomUUID()}`,
+    options.idempotencyKey || `bridge-${randomUUID()}`,
   ]);
 }
 
@@ -5654,8 +6103,12 @@ async function handleEvent(event) {
 
   const approvalCommand = parseApprovalCommand(rawText);
   if (approvalCommand && extractChatType(event) === 'p2p') {
+    let approvalResponseCount = 0;
     await handleApprovalDecision(approvalCommand, extractSenderId(event), async message => {
-      await replyToLark(event, message);
+      approvalResponseCount += 1;
+      await replyToLark(event, message, {
+        idempotencyKey: `approval-command-${approvalCommand.id}-${approvalCommand.action}-${approvalResponseCount}`,
+      });
     });
     return;
   }
@@ -5668,6 +6121,14 @@ async function handleEvent(event) {
     }
     try {
       if (shouldHandleDelegateReviewAutomation(rawText)) {
+        if (!isApprovalOwnerEvent(event)) {
+          await createSensitiveOperationApproval(
+            event,
+            rawText,
+            classifyDirectExecution(rawText, { reviewAutomation: true }),
+          );
+          return;
+        }
         await createDelegateReviewAutomation(event, rawText);
       } else {
         await createDelegateDraft(event, rawText);
@@ -5715,6 +6176,19 @@ async function handleEvent(event) {
     console.error(`[bridge] failed to add reaction: ${error.stack || error.message}`);
   }
 
+  const reviewAutomation = shouldHandleDelegateReviewAutomation(rawText);
+  const classification = classifyDirectExecution(rawText, {
+    botSendCommand,
+    sessionShareCommand,
+    reviewAutomation,
+  });
+  const requesterIsOwner = isApprovalOwnerEvent(event);
+
+  if (classification.sensitive && !requesterIsOwner) {
+    await createSensitiveOperationApproval(event, rawText, classification);
+    return;
+  }
+
   if (botSendCommand) {
     try {
       const confirmation = await sendBotMessage(botSendCommand);
@@ -5726,7 +6200,7 @@ async function handleEvent(event) {
     return;
   }
 
-  if (shouldHandleDelegateReviewAutomation(rawText)) {
+  if (reviewAutomation) {
     await createDelegateReviewAutomation(event, rawText);
     return;
   }
@@ -5741,34 +6215,16 @@ async function handleEvent(event) {
     return;
   }
 
-  const trace = extractBridgeTrace(rawText);
-  const promptBase = config.prefix ? rawText.slice(config.prefix.length).trim() : rawText;
-  const prompt = stripBotMentionText(stripBridgeTraceText(promptBase));
-  const eventContext = [
-    '飞书事件上下文：',
-    `chat_id=${extractChatId(event) || 'unknown'}`,
-    `chat_type=${extractChatType(event) || 'unknown'}`,
-    `message_id=${messageId || 'unknown'}`,
-    `sender_id=${extractSenderId(event) || 'unknown'}`,
-    `sender_type=${extractSenderType(event) || 'unknown'}`,
-    '',
-    '当前处理模式：直接 @机器人 / 私聊机器人，bridge 会把你的最终回答原样发回飞书。',
-    '回复格式要求：直接写给提问者；不要套用“建议操作 / 待发送回复 / 操作计划 / 草稿”等代理审批包装。',
-  ].join('\n');
-  const codexPrompt = `${eventContext}\n\n${prompt || stripBridgeTraceText(rawText)}`;
-  const progress = await createProgressReporter(event, prompt || stripBridgeTraceText(rawText));
-  try {
-    const reply = await buildReply(codexPrompt, { progress });
-    const finalReply = normalizeDirectBotReply(reply);
-    if (progress) await progress.finish(finalReply);
-    if (config.progressCardFinalReply || !progress) {
-      await replyToLark(event, trace ? appendBridgeTrace(finalReply, nextTrace(trace)) : finalReply);
-    }
-  } catch (error) {
-    console.error(`[bridge] ${error.stack || error.message}`);
-    if (progress) await progress.fail(error.message || error);
-    await replyToLark(event, `执行失败：${clampReply(error.message || error)}`);
-  }
+  await executeDirectCodexTask(
+    event,
+    rawText,
+    requesterIsOwner
+      ? {}
+      : {
+          readOnly: true,
+          sandbox: 'read-only',
+        },
+  );
 }
 
 function startEventSubscription() {

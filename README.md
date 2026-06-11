@@ -102,9 +102,14 @@ node lark-codex-bridge.mjs
 
 ```text
 lark-codex-bridge.mjs   CLI entrypoint, Lark event loop, Codex execution, HTTP API
+docs/architecture.md    Runtime boundaries and Codex cold-start roadmap
+src/codex-runner.mjs    Codex exec runner, sandbox policy, non-owner scratch guard
 src/env.mjs             Environment parsing and option normalization
 src/lark-format.mjs     Lark reply formatting helpers
+src/process-manager.mjs Child process execution helper
 src/sender-policy.mjs   Sender filtering and bot-loop policy
+src/sensitive-policy.mjs Sensitive operation classification
+src/session-markdown.mjs Session-share Markdown rendering
 test/*.test.mjs         Node.js unit tests for extracted bridge policy helpers
 ```
 

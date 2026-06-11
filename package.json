@@ -10,6 +10,7 @@
   "files": [
     "lark-codex-bridge.mjs",
     "src",
+    "docs",
     ".env.example",
     "launchagent.example.plist",
     "README.md"

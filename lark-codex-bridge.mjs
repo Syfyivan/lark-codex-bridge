@@ -6,7 +6,6 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -22,7 +21,15 @@ import {
   parseReactionRules,
   splitCsv,
 } from './src/env.mjs';
+import {
+  callCodexExec,
+  createNonOwnerCodexExecutionContext,
+  nonOwnerGuardNotice,
+  normalizeNonOwnerSandboxMode,
+  normalizeSandboxMode,
+} from './src/codex-runner.mjs';
 import { closeUnclosedCodeFence } from './src/lark-format.mjs';
+import { runProcess } from './src/process-manager.mjs';
 import { renderSessionMarkdownBlockHtml } from './src/session-markdown.mjs';
 import { classifyDirectExecution } from './src/sensitive-policy.mjs';
 import {
@@ -250,20 +257,6 @@ function readSecretFromEnv() {
   const file = env.SERVICE_ACCOUNT_SECRET_FILE || env.BYTECLOUD_SA_SECRET_FILE;
   if (!file) return '';
   return readFileSync(file, 'utf8').trim();
-}
-
-function normalizeSandboxMode(value, fallback = 'read-only') {
-  const normalized = String(value || '').trim();
-  if (['read-only', 'workspace-write', 'danger-full-access'].includes(normalized)) {
-    return normalized;
-  }
-  return fallback;
-}
-
-function normalizeNonOwnerSandboxMode(value) {
-  const normalized = normalizeSandboxMode(value || 'workspace-write', 'workspace-write');
-  if (normalized === 'danger-full-access') return 'workspace-write';
-  return normalized;
 }
 
 function readOptionalSecret(value, file) {
@@ -4593,11 +4586,11 @@ async function shouldHandleDelegateMention(event, rawText) {
 async function createDelegateDraft(event, rawText) {
   const id = shortApprovalId();
   console.error(`[bridge] delegate draft ${id} starting for message ${extractMessageId(event)}`);
-  const nonOwnerContext = createNonOwnerCodexExecutionContext();
+  const nonOwnerContext = createNonOwnerCodexExecutionContext(config);
   let draftOutput = '';
   try {
     draftOutput = await buildReply(
-      `${buildDelegateDraftPrompt(event, rawText)}\n${nonOwnerGuardNotice(nonOwnerContext)}`,
+      `${buildDelegateDraftPrompt(event, rawText)}\n${nonOwnerGuardNotice(config, nonOwnerContext)}`,
       {
         sandbox: nonOwnerContext.sandbox,
         cwd: nonOwnerContext.cwd,
@@ -4752,37 +4745,11 @@ function eventFromApproval(approval) {
   };
 }
 
-function createNonOwnerCodexExecutionContext() {
-  const scratchRoot = resolve(config.codexNonOwnerScratchRoot);
-  mkdirSync(scratchRoot, { recursive: true });
-  const scratchCwd = mkdtempSync(join(scratchRoot, 'lark-codex-non-owner-'));
-  return {
-    cwd: scratchCwd,
-    sandbox: config.codexNonOwnerSandbox,
-    realWorkspace: config.codexCwd,
-    cleanup() {
-      rmSync(scratchCwd, { recursive: true, force: true });
-    },
-  };
-}
-
-function nonOwnerGuardNotice(context = {}) {
-  return [
-    '',
-    '安全限制：请求人不是本机 owner。本次允许做查询、读取、总结、诊断和说明，但禁止改真实仓库或真实文件。',
-    `真实工作区：${context.realWorkspace || config.codexCwd}`,
-    `当前命令工作目录是一次性临时目录：${context.cwd || 'unknown'}`,
-    '可以读取真实工作区中的文件，也可以运行不会落盘修改真实工作区的诊断命令，例如 rg、ls、sed、git status、git log、git diff、只读 bytedcli/lark-cli 查询。',
-    '不要执行会修改真实工作区或外部系统的动作，包括写文件、apply_patch、格式化、安装依赖、生成构建产物、git commit/push/rebase/reset、deploy/publish、飞书外发、代码平台 comment/approve、改配置。',
-    '如用户要求这些非只读操作，直接说明需要宋一凡审批，不要尝试执行。',
-  ].join('\n');
-}
-
 function buildDirectCodexPrompt(event, rawText, options = {}) {
   const trace = extractBridgeTrace(rawText);
   const promptBase = config.prefix ? rawText.slice(config.prefix.length).trim() : rawText;
   const prompt = stripBotMentionText(stripBridgeTraceText(promptBase));
-  const nonOwnerQueryNotice = options.nonOwnerQuery ? nonOwnerGuardNotice(options) : '';
+  const nonOwnerQueryNotice = options.nonOwnerQuery ? nonOwnerGuardNotice(config, options) : '';
   const approvalNotice = options.approvedBy
     ? `\n安全审批：这个非只读请求已经由 ${options.approvedBy} 通过 bridge 卡片确认，可以按原请求执行。`
     : '';
@@ -4812,7 +4779,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
   let nonOwnerContext = null;
   const executionOptions = { ...options };
   if (executionOptions.nonOwnerQuery && !executionOptions.cwd) {
-    nonOwnerContext = createNonOwnerCodexExecutionContext();
+    nonOwnerContext = createNonOwnerCodexExecutionContext(config);
     executionOptions.cwd = nonOwnerContext.cwd;
     executionOptions.realWorkspace = nonOwnerContext.realWorkspace;
     executionOptions.sandbox = executionOptions.sandbox || nonOwnerContext.sandbox;
@@ -5296,114 +5263,12 @@ async function callByteCloudApi(prompt) {
   return text.length > 3500 ? `${text.slice(0, 3500)}\n...` : text;
 }
 
-function runProcess(command, args, options = {}) {
-  const {
-    stdin = '',
-    timeoutMs = 0,
-    cwd = process.cwd(),
-    onStdoutChunk = null,
-    onStderrChunk = null,
-  } = options;
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-      cwd,
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    let timeout = null;
-
-    if (timeoutMs > 0) {
-      timeout = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill('SIGTERM');
-        setTimeout(() => child.kill('SIGKILL'), 3000).unref();
-        reject(new Error(`${command} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      timeout.unref();
-    }
-
-    child.stdout.on('data', chunk => {
-      const text = chunk.toString('utf8');
-      stdout += text;
-      if (onStdoutChunk) onStdoutChunk(text);
-    });
-    child.stderr.on('data', chunk => {
-      const text = chunk.toString('utf8');
-      stderr += text;
-      if (onStderrChunk) onStderrChunk(text);
-    });
-    child.on('error', error => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      reject(error);
-    });
-    child.on('close', code => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      if (code === 0) {
-        resolve({ stdout, stderr });
-      } else {
-        reject(new Error(`${command} ${args.join(' ')} failed (${code}): ${stderr || stdout}`));
-      }
-    });
-    child.stdin.end(stdin);
-  });
-}
-
 async function callCodex(prompt, options = {}) {
-  const { progress = null, sandbox = config.codexSandbox, cwd = config.codexCwd } = options;
-  const tmp = mkdtempSync(join(tmpdir(), 'lark-codex-'));
-  const outputFile = join(tmp, 'last-message.txt');
-  const progressPrompt = progress
-    ? '\n\n执行时请在关键阶段用简短中文说明当前动作、已确认事实、下一步。这里只展示可见进展，不要输出隐藏推理、token、secret 或 cookie。'
-    : '';
-  const fullPrompt = `${config.codexPromptPrefix}${progressPrompt}\n\n飞书用户消息：\n${prompt}`;
-
-  const args = ['exec'];
-  if (config.codexResume) {
-    args.push('resume');
-    if (config.codexResume === 'last') args.push('--last');
-    else args.push(config.codexResume);
-    if (config.codexModel) args.push('--model', config.codexModel);
-    if (progress) args.push('--json');
-    args.push('--output-last-message', outputFile, '-');
-  } else {
-    args.push(
-      '--cd',
-      cwd,
-      '--sandbox',
-      sandbox,
-      '--output-last-message',
-      outputFile,
-      '--color',
-      'never',
-    );
-    if (config.codexModel) args.push('--model', config.codexModel);
-    if (progress) args.push('--json');
-    if (config.codexSkipGitRepoCheck) args.push('--skip-git-repo-check');
-    if (config.codexEphemeral) args.push('--ephemeral');
-    args.push('-');
-  }
-
-  try {
-    const onStdoutChunk = progress ? createCodexProgressLineHandler(progress) : null;
-    const { stdout } = await runProcess(config.codexBin, args, {
-      stdin: fullPrompt,
-      timeoutMs: config.codexTimeoutMs,
-      cwd,
-      onStdoutChunk,
-    });
-    const finalMessage = existsSync(outputFile) ? readFileSync(outputFile, 'utf8') : stdout;
-    return clampReply(finalMessage || stdout || 'Codex 执行完成，但没有返回文本。');
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
+  return callCodexExec(prompt, {
+    ...options,
+    config,
+    clampReply,
+  });
 }
 
 async function buildReply(prompt, options = {}) {
@@ -5900,75 +5765,6 @@ async function updateCardMessage(cardMessageId, card) {
     '--data',
     JSON.stringify({ content: JSON.stringify(card) }),
   ]);
-}
-
-function extractTextFromCodexMessageContent(content) {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .map(item => {
-      if (typeof item === 'string') return item;
-      if (!item || typeof item !== 'object') return '';
-      return item.text || item.output_text || item.content || '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-function summarizeFunctionCall(payload) {
-  const name = payload?.name || payload?.function_name || 'tool';
-  const args = typeof payload?.arguments === 'string' ? tryJson(payload.arguments) : payload?.arguments;
-  if (name === 'exec_command' && args?.cmd) return `运行命令：${args.cmd}`;
-  if (name === 'web_search' || name === 'search_query') return '检索资料';
-  if (name === 'apply_patch') return '修改本地文件';
-  return `调用工具：${name}`;
-}
-
-function summarizeFunctionCallOutput(payload) {
-  const output = String(payload?.output || '').trim();
-  const codeMatch = /Process exited with code (\d+)/.exec(output);
-  if (codeMatch && codeMatch[1] !== '0') return `工具返回异常：exit ${codeMatch[1]}`;
-  if (/timed out after \d+ms/i.test(output)) return '工具超时，准备换方式继续';
-  return '';
-}
-
-function parseCodexProgressLine(line) {
-  const parsed = tryJson(line);
-  if (!parsed || typeof parsed !== 'object') return '';
-
-  const payload = parsed.payload || {};
-  if (parsed.type === 'event_msg' && payload.type === 'agent_message') {
-    return payload.message || '';
-  }
-  if (parsed.type === 'turn.started') return 'Codex 已开始分析。';
-  if (parsed.type === 'item.completed') {
-    const item = parsed.item || {};
-    if (item.type === 'agent_message') return item.text || '';
-    if (item.type === 'function_call') return summarizeFunctionCall(item);
-    if (item.type === 'function_call_output') return summarizeFunctionCallOutput(item);
-    return '';
-  }
-  if (parsed.type !== 'response_item') return '';
-
-  if (payload.type === 'message') return extractTextFromCodexMessageContent(payload.content);
-  if (payload.type === 'function_call') return summarizeFunctionCall(payload);
-  if (payload.type === 'function_call_output') return summarizeFunctionCallOutput(payload);
-  return '';
-}
-
-function createCodexProgressLineHandler(progress) {
-  let buffer = '';
-  return chunk => {
-    buffer += chunk;
-    for (;;) {
-      const index = buffer.indexOf('\n');
-      if (index === -1) break;
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      const message = parseCodexProgressLine(line);
-      if (message) progress.add(message);
-    }
-  };
 }
 
 async function createProgressReporter(event, prompt) {

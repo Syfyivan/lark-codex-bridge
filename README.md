@@ -205,7 +205,9 @@ LOOP_ALLOW_SENDER_IDS=
 
 CODEX_BIN=codex
 CODEX_CWD=/path/to/workspace
-CODEX_SANDBOX=read-only           # use a stricter sandbox by default
+CODEX_SANDBOX=read-only           # owner / approved sensitive operations use this sandbox
+CODEX_NON_OWNER_SANDBOX=workspace-write  # non-owner ordinary queries run in a disposable scratch cwd
+CODEX_NON_OWNER_SCRATCH_ROOT=     # defaults to the OS temp directory
 CODEX_MODEL=
 CODEX_TIMEOUT_MS=600000
 CODEX_EPHEMERAL=1
@@ -411,6 +413,12 @@ secrets, token files, concrete internal URLs, or production chat IDs.
 ## Security Notes
 
 - Prefer token files over inline environment variables for long-running agents.
-- Keep `CODEX_SANDBOX=read-only` unless the bot is explicitly allowed to edit.
+- Use `CODEX_SANDBOX` for owner-approved execution. If it is `danger-full-access`,
+  non-owner sensitive requests must still pass the owner approval card first.
+- Non-owner ordinary queries run with `CODEX_NON_OWNER_SANDBOX=workspace-write`
+  from a disposable scratch directory, so they can inspect and diagnose but
+  should not be able to write directly into the real workspace.
+- `CODEX_NON_OWNER_SANDBOX=danger-full-access` is intentionally downgraded to
+  `workspace-write`.
 - Do not upload logs, `.env`, token files, session exports, or approval stores.
 - Review any custom prompt prefix before enabling write-capable tools.

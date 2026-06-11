@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   classifyDirectExecution,
+  isReviewAutomationOnlySensitive,
   sensitiveOperationKeywordMatches,
 } from '../src/sensitive-policy.mjs';
 
@@ -39,4 +40,19 @@ test('classifyDirectExecution treats bridge send/share/review commands as sensit
     },
   );
   assert.equal(classifyDirectExecution('帮忙 review MR', { reviewAutomation: true }).sensitive, true);
+});
+
+test('isReviewAutomationOnlySensitive rejects review requests that include unrelated destructive actions', () => {
+  assert.equal(
+    isReviewAutomationOnlySensitive(
+      classifyDirectExecution('可以给 A', { reviewAutomation: true }),
+    ),
+    true,
+  );
+  assert.equal(
+    isReviewAutomationOnlySensitive(
+      classifyDirectExecution('可以给 A，顺便删除本地仓库', { reviewAutomation: true }),
+    ),
+    false,
+  );
 });

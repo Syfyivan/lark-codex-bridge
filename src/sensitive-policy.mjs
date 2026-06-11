@@ -61,3 +61,12 @@ export function classifyDirectExecution(rawText, parsed = {}) {
     executionKind,
   };
 }
+
+export function isReviewAutomationOnlySensitive(classification) {
+  if (classification?.executionKind !== 'review_automation') return false;
+  const allowedLabels = new Set([
+    'MR review 自动化可能写评论或 approve',
+    '代码平台写操作',
+  ]);
+  return (classification.labels || []).every(label => allowedLabels.has(label));
+}

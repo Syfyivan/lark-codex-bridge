@@ -45,6 +45,13 @@ ordinary-query sandbox.
 Sensitive non-owner requests are rejected before Codex starts and converted into
 an owner approval card in the source thread.
 
+MR review automation has one narrow relay exception: when a known Lark bot/app
+sender posts Codebase MR links and the message explicitly says it was sent by
+the human本人 and only AI-polished, the bridge may run the configured review /
+approve automation directly. This is limited to MR review automation; generic
+file writes, deletes, deployments, bot sends, and session-share publishing still
+use the normal owner approval path.
+
 ## Cold Start Roadmap
 
 The current runtime still launches `codex exec` per turn. That is simple and

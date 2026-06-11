@@ -30,8 +30,16 @@ import {
 } from './src/codex-runner.mjs';
 import { closeUnclosedCodeFence } from './src/lark-format.mjs';
 import { runProcess } from './src/process-manager.mjs';
+import {
+  canDirectReviewAutomation,
+  extractCodebaseMrUrls,
+  shouldTriggerReviewAutomation,
+} from './src/review-automation-policy.mjs';
 import { renderSessionMarkdownBlockHtml } from './src/session-markdown.mjs';
-import { classifyDirectExecution } from './src/sensitive-policy.mjs';
+import {
+  classifyDirectExecution,
+  isReviewAutomationOnlySensitive,
+} from './src/sensitive-policy.mjs';
 import {
   isKnownBotSender as isKnownBotSenderPolicy,
   shouldSkipSenderPolicy,
@@ -784,31 +792,22 @@ function hasActionableDelegateText(text) {
   return stripped.length >= config.delegateMinTextLength;
 }
 
-function extractCodebaseMrUrls(text) {
-  const matches = String(text || '').match(
-    /https?:\/\/code(?:-[A-Za-z0-9-]+)?\.byted\.org\/(?:[A-Za-z0-9_.~-]+\/){2,}merge_requests\/\d+(?:[?#][^\s<>"'，。；、）)\]]*)?/gi,
-  );
-  return [...new Set(matches || [])];
-}
-
-function hasDelegateReviewKeyword(text) {
-  const rawText = String(text || '');
-  const normalized = rawText.toLowerCase();
-  return config.delegateReviewKeywords.some(rawKeyword => {
-    const keyword = String(rawKeyword || '').trim();
-    if (!keyword) return false;
-    if (/^[A-Za-z0-9 ]+$/.test(keyword)) {
-      const escaped = escapeRegExp(keyword).replace(/\s+/g, '\\s+');
-      return new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`, 'i').test(rawText);
-    }
-    return normalized.includes(keyword.toLowerCase());
+function shouldHandleDelegateReviewAutomation(rawText) {
+  if (!config.delegateReviewAutomationEnabled) return false;
+  return shouldTriggerReviewAutomation({
+    rawText,
+    keywordText: stripDelegateMentionText(rawText),
+    reviewKeywords: config.delegateReviewKeywords,
+    allowAiPolishedApproveShorthand: true,
   });
 }
 
-function shouldHandleDelegateReviewAutomation(rawText) {
-  if (!config.delegateReviewAutomationEnabled) return false;
-  if (!extractCodebaseMrUrls(rawText).length) return false;
-  return hasDelegateReviewKeyword(stripDelegateMentionText(rawText));
+function canExecuteReviewAutomationDirectly(event, rawText) {
+  return canDirectReviewAutomation({
+    requesterIsOwner: isApprovalOwnerEvent(event),
+    senderIsKnownBot: isKnownBotSender(event),
+    rawText,
+  });
 }
 
 function escapeRegExp(value) {
@@ -4000,8 +3999,15 @@ function isBridgeReviewRequester(event) {
 
 function reviewRequestTextLooksActionable(text) {
   const rawText = String(text || '');
+  if (shouldTriggerReviewAutomation({
+    rawText,
+    keywordText: rawText,
+    reviewKeywords: config.delegateReviewKeywords,
+    allowAiPolishedApproveShorthand: true,
+  })) {
+    return true;
+  }
   if (!extractCodebaseMrUrls(rawText).length) return false;
-  if (hasDelegateReviewKeyword(rawText)) return true;
   return /review|code\s*review|评审|帮忙看|麻烦.*看|看这组\s*MR|看这组MR|MR\s*[:：]/i.test(
     rawText,
   );
@@ -5980,11 +5986,15 @@ async function handleEvent(event) {
     }
     try {
       if (shouldHandleDelegateReviewAutomation(rawText)) {
-        if (!isApprovalOwnerEvent(event)) {
+        const reviewClassification = classifyDirectExecution(rawText, { reviewAutomation: true });
+        if (
+          !isReviewAutomationOnlySensitive(reviewClassification) ||
+          !canExecuteReviewAutomationDirectly(event, rawText)
+        ) {
           await createSensitiveOperationApproval(
             event,
             rawText,
-            classifyDirectExecution(rawText, { reviewAutomation: true }),
+            reviewClassification,
           );
           return;
         }
@@ -6042,8 +6052,15 @@ async function handleEvent(event) {
     reviewAutomation,
   });
   const requesterIsOwner = isApprovalOwnerEvent(event);
+  const canRunSensitiveDirectly =
+    requesterIsOwner ||
+    (
+      reviewAutomation &&
+      isReviewAutomationOnlySensitive(classification) &&
+      canExecuteReviewAutomationDirectly(event, rawText)
+    );
 
-  if (classification.sensitive && !requesterIsOwner) {
+  if (classification.sensitive && !canRunSensitiveDirectly) {
     await createSensitiveOperationApproval(event, rawText, classification);
     return;
   }

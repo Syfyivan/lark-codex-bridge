@@ -120,49 +120,21 @@ function parseCliArgs(args) {
   return result;
 }
 
-function parseEnvLine(line) {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith('#')) return null;
-
-  const cleaned = trimmed.startsWith('export ') ? trimmed.slice('export '.length).trim() : trimmed;
-  const equalsIndex = cleaned.indexOf('=');
-  if (equalsIndex <= 0) return null;
-
-  const key = cleaned.slice(0, equalsIndex).trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
-
-  let value = cleaned.slice(equalsIndex + 1).trim();
-  const quote = value[0];
-  if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
-    value = value.slice(1, -1);
-    if (quote === '"') {
-      value = value
-        .replace(/\\n/g, '\n')
-        .replace(/\\r/g, '\r')
-        .replace(/\\t/g, '\t')
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, '\\');
-    }
-  } else {
-    value = value.replace(/\s+#.*$/, '').trim();
-  }
-
-  return { key, value };
-}
-
 function loadEnvFile(envFile, { explicit = false } = {}) {
-  if (process.env.BRIDGE_DOTENV === '0') return { loaded: false, path: envFile };
   if (!existsSync(envFile)) {
-    if (explicit) throw new Error(`Env file not found: ${envFile}`);
-    return { loaded: false, path: envFile };
+    if (explicit) throw new Error(`Environment file does not exist: ${envFile}`);
+    return { loaded: false, path: envFile, count: 0 };
   }
-
-  const lines = readFileSync(envFile, 'utf8').split(/\r?\n/);
+  const content = readFileSync(envFile, 'utf8');
   let count = 0;
-  for (const line of lines) {
-    const parsed = parseEnvLine(line);
-    if (!parsed || Object.hasOwn(process.env, parsed.key)) continue;
-    process.env[parsed.key] = parsed.value;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = rawValue.replace(/^(['"])(.*)\1$/, '$2');
     count += 1;
   }
   return { loaded: true, path: envFile, count };
@@ -170,12 +142,9 @@ function loadEnvFile(envFile, { explicit = false } = {}) {
 
 function createEnvFile(envFile, { force = false } = {}) {
   if (existsSync(envFile) && !force) {
-    throw new Error(`${envFile} already exists. Use --force to overwrite it.`);
+    throw new Error(`${envFile} already exists. Use --force to overwrite.`);
   }
-  const templatePath = join(packageDir, '.env.example');
-  const template = readFileSync(templatePath, 'utf8');
-  mkdirSync(dirname(envFile), { recursive: true });
-  writeFileSync(envFile, template);
+  copyFileSync(join(packageDir, '.env.example'), envFile);
   console.log(`Created ${envFile}`);
   console.log('Edit it, then run: lark-codex-bridge doctor');
 }
@@ -183,7 +152,7 @@ function createEnvFile(envFile, { force = false } = {}) {
 const cli = parseCliArgs(process.argv.slice(2));
 
 if (cli.errors.length) {
-  console.error(cli.errors.join('\n'));
+  for (const error of cli.errors) console.error(error);
   console.error('');
   printHelp();
   process.exit(2);
@@ -221,14 +190,64 @@ try {
 const env = process.env;
 const defaultCodexHome = env.CODEX_HOME || join(homedir(), '.codex');
 
+function parseAliasOpenIdMap(value) {
+  const text = String(value || '').trim();
+  if (!text) return new Map();
+
+  const parsed = tryJson(text);
+  const entries = [];
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    entries.push(...Object.entries(parsed));
+  } else {
+    for (const item of splitCsv(text)) {
+      const match = /^([^=:]+)\s*[:=]\s*(ou_[A-Za-z0-9_-]+)$/.exec(item);
+      if (match) entries.push([match[1], match[2]]);
+    }
+  }
+
+  const result = new Map();
+  for (const [alias, openId] of entries) {
+    const key = String(alias || '').trim();
+    const valueOpenId = String(openId || '').trim();
+    if (key && valueOpenId.startsWith('ou_')) result.set(key, valueOpenId);
+  }
+  return result;
+}
+
+function parseAliasAppIdMap(value) {
+  const text = String(value || '').trim();
+  if (!text) return new Map();
+
+  const parsed = tryJson(text);
+  const entries = [];
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    entries.push(...Object.entries(parsed));
+  } else {
+    for (const item of splitCsv(text)) {
+      const match = /^([^=:]+)\s*[:=]\s*(cli_[A-Za-z0-9_-]+)$/.exec(item);
+      if (match) entries.push([match[1], match[2]]);
+    }
+  }
+
+  const result = new Map();
+  for (const [alias, appId] of entries) {
+    const key = String(alias || '').trim();
+    const valueAppId = String(appId || '').trim();
+    if (key && valueAppId.startsWith('cli_')) result.set(key, valueAppId);
+  }
+  return result;
+}
+
 function envFlag(name, defaultValue = false) {
   return readEnvFlag(env, name, defaultValue);
 }
 
 function readSecretFromEnv() {
   if (env.SERVICE_ACCOUNT_SECRET) return env.SERVICE_ACCOUNT_SECRET;
-  if (!env.SERVICE_ACCOUNT_SECRET_FILE) return '';
-  return readFileSync(env.SERVICE_ACCOUNT_SECRET_FILE, 'utf8').trim();
+  if (env.BYTECLOUD_SA_SECRET) return env.BYTECLOUD_SA_SECRET;
+  const file = env.SERVICE_ACCOUNT_SECRET_FILE || env.BYTECLOUD_SA_SECRET_FILE;
+  if (!file) return '';
+  return readFileSync(file, 'utf8').trim();
 }
 
 function readOptionalSecret(value, file) {
@@ -246,6 +265,7 @@ const config = {
   replyMarkdownEnabled: envFlag('BRIDGE_REPLY_MARKDOWN', true),
   requireMentionInGroup: env.REQUIRE_MENTION_IN_GROUP !== '0',
   botOpenId: env.BOT_OPEN_ID || '',
+  botAppId: env.BOT_APP_ID || env.LARK_APP_ID || '',
   botMentionNames: splitCsv(env.BOT_MENTION_NAMES),
   mentionLookupTimeoutMs: Number(env.MENTION_LOOKUP_TIMEOUT_MS || 8000),
   loopAllowSenderIds: splitCsv(env.LOOP_ALLOW_SENDER_IDS),
@@ -256,6 +276,9 @@ const config = {
   traceMarker: env.BRIDGE_TRACE_MARKER || 'bridge_trace',
   botSendCommands: splitCsv(env.BOT_SEND_COMMANDS || '/bot-send,/send-bot,发给机器人'),
   botSendInviteByAppId: envFlag('BOT_SEND_INVITE_BY_APP_ID', false),
+  botSendTargetOpenIds: parseAliasOpenIdMap(env.BOT_SEND_TARGET_OPEN_IDS || ''),
+  botSendTargetAppIds: parseAliasAppIdMap(env.BOT_SEND_TARGET_APP_IDS || ''),
+  botSendAllowPlainTextMention: envFlag('BOT_SEND_ALLOW_PLAINTEXT_MENTION', false),
   sessionShareEnabled: envFlag('SESSION_SHARE_ENABLED', true),
   sessionShareCommands: splitCsv(
     env.SESSION_SHARE_COMMANDS ||
@@ -301,26 +324,56 @@ const config = {
   delegateReplyInThread: envFlag('DELEGATE_REPLY_IN_THREAD', true),
   delegateAutoReplyEnabled: envFlag('DELEGATE_AUTO_REPLY_ENABLED', false),
   delegateAutoReplyMinConfidence: (env.DELEGATE_AUTO_REPLY_MIN_CONFIDENCE || 'high').toLowerCase(),
+  delegateReviewAutomationEnabled: envFlag('DELEGATE_REVIEW_AUTOMATION_ENABLED', false),
+  delegateReviewAutoApproveEnabled: envFlag('DELEGATE_REVIEW_AUTO_APPROVE_ENABLED', false),
+  delegateReviewCommentOnIssues: envFlag('DELEGATE_REVIEW_COMMENT_ON_ISSUES', true),
+  delegateReviewRequireCiPass: envFlag('DELEGATE_REVIEW_REQUIRE_CI_PASS', true),
+  delegateReviewReplyToGroup: envFlag('DELEGATE_REVIEW_REPLY_TO_GROUP', true),
+  delegateReviewProgressCardEnabled: envFlag('DELEGATE_REVIEW_PROGRESS_CARD_ENABLED', false),
+  delegateReviewKeywords: splitCsv(
+    env.DELEGATE_REVIEW_KEYWORDS ||
+      'review,code review,cr,代码review,代码 review,看下代码,帮忙看下,approve,给a,给 A,给一下 a,lgtm,LGTM,评审',
+  ),
+  reviewFollowupEnabled: envFlag('REVIEW_FOLLOWUP_ENABLED', false),
+  reviewFollowupStoreFile:
+    env.REVIEW_FOLLOWUP_STORE_FILE ||
+    join(homedir(), '.lark-codex-bridge', 'review-followups.json'),
+  reviewFollowupMaxRounds: Math.max(1, Number(env.REVIEW_FOLLOWUP_MAX_ROUNDS || 5)),
+  reviewFollowupMaxAgeMs: Math.max(
+    60 * 1000,
+    Number(env.REVIEW_FOLLOWUP_MAX_AGE_MS || 24 * 60 * 60 * 1000),
+  ),
+  reviewFollowupRequesterIds: splitCsv(env.REVIEW_FOLLOWUP_REQUESTER_IDS || ''),
+  reviewFollowupReviewerSenderIds: splitCsv(env.REVIEW_FOLLOWUP_REVIEWER_SENDER_IDS || ''),
+  reviewFollowupProgressCardEnabled: envFlag('REVIEW_FOLLOWUP_PROGRESS_CARD_ENABLED', false),
   eventEnabled: envFlag('BRIDGE_EVENT_ENABLED', true),
   httpHost: env.BRIDGE_HTTP_HOST || '127.0.0.1',
   httpPort: Number(env.BRIDGE_HTTP_PORT || 0),
   httpToken: readOptionalSecret(env.BRIDGE_HTTP_TOKEN || '', env.BRIDGE_HTTP_TOKEN_FILE || ''),
   larkCliBin: env.LARK_CLI_BIN || 'lark-cli',
-  bytedCliBin: env.BYTEDCLI_BIN || 'bytedcli',
-  jwtEndpoint: env.SERVICE_JWT_ENDPOINT || '',
+  jwtEndpoint:
+    env.SERVICE_JWT_ENDPOINT ||
+    env.BYTECLOUD_JWT_ENDPOINT ||
+    'https://cloud.bytedance.net/auth/api/v1/jwt',
   serviceAccountSecret: readSecretFromEnv(),
   larkEventTypes: env.LARK_EVENT_TYPES || 'im.message.receive_v1',
-  agentGatewayUrl: env.AGENT_GATEWAY_URL || '',
-  agentGatewayTarget: env.AGENT_GATEWAY_TARGET || env.TARGET_SERVICE || '',
-  serviceApiUrl: env.SERVICE_API_URL || '',
-  serviceApiMethod: env.SERVICE_API_METHOD || 'GET',
-  serviceApiBody: env.SERVICE_API_BODY || '',
+  taeAgentUrl:
+    env.AGENT_GATEWAY_URL ||
+    env.TAE_AGENT_URL ||
+    'https://aipaas-gateway.bytedance.net/api/v1/agent/api/v3/bots/chat/completions',
+  taeTargetPsm:
+    env.AGENT_GATEWAY_TARGET || env.TAE_TARGET_PSM || env.TARGET_PSM || env.TARGET_SERVICE || '',
+  bytecloudApiUrl: env.SERVICE_API_URL || env.BYTECLOUD_API_URL || '',
+  bytecloudApiMethod: env.SERVICE_API_METHOD || env.BYTECLOUD_API_METHOD || 'GET',
+  bytecloudApiBody: env.SERVICE_API_BODY || env.BYTECLOUD_API_BODY || '',
+  bytedCliBin: env.BYTEDCLI_BIN || 'bytedcli',
   codexBin: env.CODEX_BIN || 'codex',
   codexCwd: env.CODEX_CWD || process.cwd(),
   codexSandbox: env.CODEX_SANDBOX || 'read-only',
   codexModel: env.CODEX_MODEL || '',
   codexTimeoutMs: Number(env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
   codexEphemeral: env.CODEX_EPHEMERAL !== '0',
+  codexSkipGitRepoCheck: envFlag('CODEX_SKIP_GIT_REPO_CHECK', true),
   codexResume: env.CODEX_RESUME || '',
   progressCardEnabled: envFlag('PROGRESS_CARD_ENABLED', false),
   progressCardUpdateIntervalMs: Math.max(3000, Number(env.PROGRESS_CARD_UPDATE_INTERVAL_MS || 8000)),
@@ -330,13 +383,12 @@ const config = {
     env.CODEX_PROMPT_PREFIX ||
     [
       '你是通过飞书机器人被调用的 Codex。请用中文简洁回答。',
-      '私聊机器人或群里 @机器人时，最终回答会原样发回飞书；只输出给提问者看的回复正文，不要输出“建议操作”“待发送回复”“操作计划”“草稿”等代理审批包装。',
-      '你可以使用本机可用的 CLI 工具和 lark-cli 完成查询，优先使用结构化输出，例如 lark-cli ... --format json。',
+      '你可以使用本机 bytedcli 和 lark-cli 完成 ByteDance / 飞书相关查询，优先使用结构化输出，例如 bytedcli --json ... 或 lark-cli ... --format json。',
       '读取飞书群消息、历史消息、搜索消息时，优先使用 lark-cli 的 user 身份：lark-cli im +chat-messages-list --as user --chat-id <oc_xxx> 或 lark-cli im +messages-search --as user --chat-id <oc_xxx>；发送、回复、表情回复才使用 bot 身份。',
       '当用户说“本群”“群消息”“最近消息”时，优先使用飞书事件上下文里的 chat_id，不要只做全局搜索；筛选 DDL/通知类内容时要排除机器人/应用自己的历史回复，避免把权限报错或自己的总结当成结果。',
-      '当你作为某个用户的代理处理群内 @ 提及消息时，只生成建议操作和待发送回复；不要直接向群里发送，bridge 会先发给审批人确认。',
+      '当你作为宋一凡的代理处理普通群内 @ 宋一凡消息时，只生成建议操作和待发送回复；不要直接向群里发送，bridge 会先发给宋一凡确认。例外：如果 bridge prompt 明确标记为“MR review 自动化”或“Reviewer 回复闭环自动化”，说明用户已配置此自动流程，可以在该 prompt 的严格条件内直接执行代码平台 review/comment/approve，或按 reviewer 反馈改代码、提交、push 并重新 @ reviewer 复审。',
       '默认只做只读查询、诊断、总结和说明。除非飞书消息明确要求创建、修改、删除、发布、审批、发消息、提交工单或改代码，否则不要执行有副作用的操作。',
-      '执行任何可能有副作用的命令前，先在回复中说明将要做什么；在非交互环境不能确认时，给出待执行命令而不是擅自执行。',
+      '执行任何可能有副作用的命令前，先在回复中说明将要做什么；在非交互环境不能确认时，给出待执行命令而不是擅自执行。MR review 自动化 prompt 明确允许的 review/comment/approve 操作、Reviewer 回复闭环自动化 prompt 明确允许的代码修复/提交/push/复审消息除外。',
       '不要输出 token、secret、cookie、JWT、appSecret、服务账号 ID、服务账号名称或服务账号密钥；除非用户明确要求核对身份，也只描述为“已配置的服务账号”。',
     ].join('\n'),
 };
@@ -440,21 +492,6 @@ function findStringDeep(input, keys) {
   return '';
 }
 
-function findArraysDeep(input, keys) {
-  const queue = [input];
-  const wanted = new Set(keys);
-  const results = [];
-  while (queue.length) {
-    const item = queue.shift();
-    if (!item || typeof item !== 'object') continue;
-    for (const [key, value] of Object.entries(item)) {
-      if (wanted.has(key) && Array.isArray(value)) results.push(value);
-      if (value && typeof value === 'object') queue.push(value);
-    }
-  }
-  return results;
-}
-
 function extractText(event) {
   const direct = findStringDeep(event, ['text', 'plain_text', 'message_text']);
   if (direct) return direct;
@@ -530,15 +567,20 @@ function mentionMatchesBot(mention) {
     mention.userId,
     mention.union_id,
     mention.unionId,
+    mention.app_id,
+    mention.appId,
     mention?.id?.open_id,
     mention?.id?.openId,
     mention?.id?.user_id,
     mention?.id?.userId,
+    mention?.id?.app_id,
+    mention?.id?.appId,
   ]
     .filter(value => typeof value === 'string')
     .map(value => value.trim());
 
   if (config.botOpenId && ids.includes(config.botOpenId)) return true;
+  if (config.botAppId && ids.includes(config.botAppId)) return true;
 
   const names = [
     mention.name,
@@ -583,14 +625,39 @@ function mentionMatchesDelegateUser(mention) {
   return config.delegateUserNames.some(userName => names.includes(userName));
 }
 
+function primaryMessageObjects(input) {
+  const objects = [];
+  const add = value => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      objects.push(value);
+    }
+  };
+
+  add(input);
+  add(input?.event?.message);
+  add(input?.message);
+  add(input?.data?.message);
+  add(input?.data?.item);
+  if (Array.isArray(input?.data?.messages)) input.data.messages.forEach(add);
+  if (Array.isArray(input?.messages)) input.messages.forEach(add);
+  return objects;
+}
+
+function topLevelMentionArrays(input) {
+  const arrays = [];
+  for (const object of primaryMessageObjects(input)) {
+    if (Array.isArray(object.mentions)) arrays.push(object.mentions);
+    if (Array.isArray(object.mention)) arrays.push(object.mention);
+  }
+  return arrays;
+}
+
 function eventMentionsBot(event) {
-  return findArraysDeep(event, ['mentions', 'mention']).some(mentions =>
-    mentions.some(mentionMatchesBot),
-  );
+  return topLevelMentionArrays(event).some(mentions => mentions.some(mentionMatchesBot));
 }
 
 function eventMentionsDelegateUser(event) {
-  return findArraysDeep(event, ['mentions', 'mention']).some(mentions =>
+  return topLevelMentionArrays(event).some(mentions =>
     mentions.some(mentionMatchesDelegateUser),
   );
 }
@@ -695,6 +762,33 @@ function stripDelegateMentionText(text) {
 function hasActionableDelegateText(text) {
   const stripped = stripDelegateMentionText(text).replace(/\s+/g, '');
   return stripped.length >= config.delegateMinTextLength;
+}
+
+function extractCodebaseMrUrls(text) {
+  const matches = String(text || '').match(
+    /https?:\/\/code(?:-[A-Za-z0-9-]+)?\.byted\.org\/(?:[A-Za-z0-9_.~-]+\/){2,}merge_requests\/\d+(?:[?#][^\s<>"'，。；、）)\]]*)?/gi,
+  );
+  return [...new Set(matches || [])];
+}
+
+function hasDelegateReviewKeyword(text) {
+  const rawText = String(text || '');
+  const normalized = rawText.toLowerCase();
+  return config.delegateReviewKeywords.some(rawKeyword => {
+    const keyword = String(rawKeyword || '').trim();
+    if (!keyword) return false;
+    if (/^[A-Za-z0-9 ]+$/.test(keyword)) {
+      const escaped = escapeRegExp(keyword).replace(/\s+/g, '\\s+');
+      return new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`, 'i').test(rawText);
+    }
+    return normalized.includes(keyword.toLowerCase());
+  });
+}
+
+function shouldHandleDelegateReviewAutomation(rawText) {
+  if (!config.delegateReviewAutomationEnabled) return false;
+  if (!extractCodebaseMrUrls(rawText).length) return false;
+  return hasDelegateReviewKeyword(stripDelegateMentionText(rawText));
 }
 
 function escapeRegExp(value) {
@@ -813,6 +907,76 @@ function parseBotSendCommand(rawText, event) {
   };
 }
 
+function resolveConfiguredBotMentionOpenId(command) {
+  const aliases = [
+    command.targetOpenId,
+    command.targetAppId,
+    command.targetName,
+    command.targetName ? `@${command.targetName}` : '',
+  ]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+
+  for (const alias of aliases) {
+    const openId = config.botSendTargetOpenIds.get(alias);
+    if (openId) return openId;
+  }
+  return '';
+}
+
+function resolveConfiguredBotAppId(command) {
+  const aliases = [
+    command.targetOpenId,
+    command.targetAppId,
+    command.targetName,
+    command.targetName ? `@${command.targetName}` : '',
+  ]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+
+  for (const alias of aliases) {
+    const appId = config.botSendTargetAppIds.get(alias);
+    if (appId) return appId;
+  }
+  return '';
+}
+
+function normalizeBotSendTarget(command) {
+  if (command.targetOpenId) return command;
+
+  const configuredOpenId = resolveConfiguredBotMentionOpenId(command);
+  if (configuredOpenId) {
+    return {
+      ...command,
+      targetOpenId: configuredOpenId,
+    };
+  }
+
+  const configuredAppId = resolveConfiguredBotAppId(command);
+  if (configuredAppId && !command.targetAppId) {
+    command = {
+      ...command,
+      targetAppId: configuredAppId,
+    };
+  }
+
+  if (config.botSendAllowPlainTextMention) return command;
+
+  const target =
+    command.targetName || command.targetAppId || command.targetOpenId || 'unknown';
+  const appIdHint = command.targetAppId
+    ? `已知 app_id=${command.targetAppId}，但 app_id 不能替代真实 @ 所需的 open_id。`
+    : '';
+  throw new Error(
+    [
+      `无法为机器人目标「${target}」构造真实 @：Lark 真实 mention 需要目标 open_id（ou_xxx）。`,
+      appIdHint,
+      '群成员列表接口会过滤机器人，不能靠 chat.members.get 按名称枚举机器人。',
+      '请直接传 ou_xxx，或配置 BOT_SEND_TARGET_OPEN_IDS，例如：BOT_SEND_TARGET_OPEN_IDS=\'知微=ou_xxx\'。BOT_SEND_TARGET_APP_IDS 只用于记录/邀请线索。',
+    ].filter(Boolean).join(' '),
+  );
+}
+
 function buildBotSendText(command, trace) {
   const body = command.text.trim();
   if (!body) throw new Error('/bot-send 缺少要发送的消息内容');
@@ -851,6 +1015,7 @@ async function sendBotMessage(command) {
     throw new Error('/bot-send 缺少目标机器人，推荐传目标机器人的 open_id：ou_xxx');
   }
 
+  command = normalizeBotSendTarget(command);
   const trace = nextTrace({ id: randomUUID(), turn: 0, maxTurns: command.maxTurns || config.loopMaxTurns });
   await maybeInviteBotByAppId(command);
   const text = buildBotSendText(command, trace);
@@ -1525,7 +1690,7 @@ function buildSessionShareCard({ session, doc, snapshot, matchType }) {
       elements: [
         {
           tag: 'lark_md',
-          content: docRef,
+          content: formatLarkMarkdownLink('打开飞书文档', docRef),
         },
       ],
     });
@@ -1559,7 +1724,10 @@ function buildSessionShareCard({ session, doc, snapshot, matchType }) {
 
 function formatSessionShareSuccessText({ session, doc, snapshot, matchType }) {
   const matchText = matchType === 'fuzzy' ? '（按标题包含匹配）' : '';
-  const docText = doc.docUrl || doc.docId || '文档已创建，但返回值里没有 doc_url/doc_id';
+  const docRef = doc.docUrl || doc.docId || '';
+  const docText = docRef
+    ? formatLarkMarkdownLink('打开飞书文档', docRef)
+    : '文档已创建，但返回值里没有 doc_url/doc_id';
   const chunkText = doc.chunks > 1 ? `，分 ${doc.chunks} 段写入` : '';
   const truncatedText = snapshot.truncated
     ? `\n注意：session 较长，已导出前 ${snapshot.includedTurns}/${snapshot.totalTurns} 条可见消息。`
@@ -1591,11 +1759,155 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function safeMarkdownUrl(value) {
+  const raw = String(value || '').trim();
+  if (!/^https?:\/\/[^\s<>"']+$/i.test(raw)) return '';
+  return raw;
+}
+
+function formatLarkMarkdownLink(label, url) {
+  const href = safeMarkdownUrl(url);
+  if (!href) return String(url || '');
+  const safeLabel = String(label || href).replace(/[\[\]]/g, '');
+  return `[${safeLabel}](${href})`;
+}
+
+function splitTrailingUrlPunctuation(value) {
+  let url = String(value || '');
+  let suffix = '';
+  while (url && /[.,!?;:，。！？；：、)\]}]$/u.test(url)) {
+    suffix = `${url.slice(-1)}${suffix}`;
+    url = url.slice(0, -1);
+  }
+  return { url, suffix };
+}
+
 function linkifyEscapedHtml(value) {
-  return String(value || '').replace(/https?:\/\/[^\s<]+/g, url => {
-    const safeUrl = url.replace(/&amp;$/g, '');
-    return `<a href="${safeUrl}" target="_blank" rel="noreferrer">${safeUrl}</a>`;
+  return String(value || '').replace(/https?:\/\/[^\s<]+/g, rawUrl => {
+    const { url, suffix } = splitTrailingUrlPunctuation(rawUrl);
+    const href = safeMarkdownUrl(url.replace(/&amp;/g, '&'));
+    if (!href) return rawUrl;
+    return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${url}</a>${suffix}`;
   });
+}
+
+function renderInlineMarkdown(text) {
+  const tokens = [];
+  const stash = html => {
+    const index = tokens.push(html) - 1;
+    return `\u0000${index}\u0000`;
+  };
+
+  const withProtectedInline = String(text || '')
+    .replace(/`([^`\n]+)`/g, (_, code) => stash(`<code>${escapeHtml(code)}</code>`))
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/gi, (match, label, url) => {
+      const href = safeMarkdownUrl(url);
+      if (!href) return match;
+      return stash(
+        `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`,
+      );
+    });
+
+  let html = escapeHtml(withProtectedInline)
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
+    .replace(/(^|[^\*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+
+  html = linkifyEscapedHtml(html);
+  return html.replace(/\u0000(\d+)\u0000/g, (_, index) => tokens[Number(index)] || '');
+}
+
+function renderMarkdownListItem(text) {
+  const checklist = /^\[([ xX])\]\s+(.+)$/.exec(String(text || '').trim());
+  if (!checklist) return renderInlineMarkdown(text);
+  const checked = checklist[1].toLowerCase() === 'x';
+  return `<span class="md-task" aria-hidden="true">${checked ? '☑' : '☐'}</span> ${renderInlineMarkdown(checklist[2])}`;
+}
+
+function renderSessionMarkdownBlockHtml(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  const blocks = [];
+  let paragraph = [];
+  let listType = '';
+  let listItems = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push(`<p>${paragraph.map(renderInlineMarkdown).join('<br>')}</p>`);
+    paragraph = [];
+  };
+
+  const flushList = () => {
+    if (!listType) return;
+    const tag = listType === 'ol' ? 'ol' : 'ul';
+    blocks.push(`<${tag}>${listItems.map(item => `<li>${renderMarkdownListItem(item)}</li>`).join('')}</${tag}>`);
+    listType = '';
+    listItems = [];
+  };
+
+  const startList = (type, item) => {
+    flushParagraph();
+    if (listType && listType !== type) flushList();
+    listType = type;
+    listItems.push(item);
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = Math.min(6, heading[1].length);
+      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    if (/^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)) {
+      flushParagraph();
+      flushList();
+      blocks.push('<hr>');
+      continue;
+    }
+
+    const unordered = /^[-*+]\s+(.+)$/.exec(trimmed);
+    if (unordered) {
+      startList('ul', unordered[1]);
+      continue;
+    }
+
+    const ordered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
+    if (ordered) {
+      startList('ol', ordered[1]);
+      continue;
+    }
+
+    const quote = /^>\s?(.*)$/.exec(line);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      blocks.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
+      continue;
+    }
+
+    flushList();
+    paragraph.push(line);
+  }
+
+  flushParagraph();
+  flushList();
+  return blocks.join('\n');
+}
+
+function renderSessionMarkdownHtml(text) {
+  return `<div class="message-text message-markdown">${renderSessionMarkdownBlockHtml(text)}</div>`;
 }
 
 function renderSessionMessageHtml(text) {
@@ -1608,7 +1920,7 @@ function renderSessionMessageHtml(text) {
   while ((match = fencePattern.exec(source))) {
     const plain = source.slice(lastIndex, match.index);
     if (plain.trim()) {
-      parts.push(`<div class="message-text">${linkifyEscapedHtml(escapeHtml(plain))}</div>`);
+      parts.push(renderSessionMarkdownHtml(plain));
     }
 
     const lang = match[1] ? `<div class="code-lang">${escapeHtml(match[1])}</div>` : '';
@@ -1618,10 +1930,10 @@ function renderSessionMessageHtml(text) {
 
   const tail = source.slice(lastIndex);
   if (tail.trim()) {
-    parts.push(`<div class="message-text">${linkifyEscapedHtml(escapeHtml(tail))}</div>`);
+    parts.push(renderSessionMarkdownHtml(tail));
   }
 
-  return parts.join('\n') || '<div class="message-text"></div>';
+  return parts.join('\n') || '<div class="message-text message-markdown"></div>';
 }
 
 function renderSessionImageHtml(part) {
@@ -1692,6 +2004,11 @@ function isSessionShareGoofyOutput() {
   return config.sessionShareOutput === 'goofy' || config.sessionShareOutput === 'goofy-preview';
 }
 
+function writeEnhancedSessionShareHtmlFile(sourceFile, targetFile) {
+  const html = readFileSync(sourceFile, 'utf8');
+  writeFileSync(targetFile, enhanceSessionShareHtml(html));
+}
+
 function prepareSessionShareGoofyPreviewSource(currentShareFile) {
   const deployDir = config.sessionShareGoofyPreviewDir;
   const routeDir = join(deployDir, 'session-shares');
@@ -1705,12 +2022,12 @@ function prepareSessionShareGoofyPreviewSource(currentShareFile) {
   for (const fileName of htmlFiles) {
     const source = join(config.sessionShareStoreDir, fileName);
     const shareId = fileName.slice(0, -'.html'.length);
-    copyFileSync(source, join(deployDir, fileName));
-    copyFileSync(source, join(routeDir, shareId));
-    copyFileSync(source, join(routeDir, fileName));
+    writeEnhancedSessionShareHtmlFile(source, join(deployDir, fileName));
+    writeEnhancedSessionShareHtmlFile(source, join(routeDir, shareId));
+    writeEnhancedSessionShareHtmlFile(source, join(routeDir, fileName));
   }
 
-  copyFileSync(currentShareFile, join(deployDir, 'index.html'));
+  writeEnhancedSessionShareHtmlFile(currentShareFile, join(deployDir, 'index.html'));
   return deployDir;
 }
 
@@ -1764,6 +2081,155 @@ function makeWebShareId(sessionId) {
 
 function sessionShareEnhancementCss() {
   return `
+    .legacy-share-turn {
+      display: grid !important;
+      grid-template-columns: 44px minmax(0, 1fr);
+      gap: 12px;
+      align-items: flex-start;
+      border: 0 !important;
+      border-radius: 0 !important;
+      background: transparent !important;
+      box-shadow: none !important;
+      overflow: visible !important;
+    }
+    .legacy-share-turn.turn-user,
+    .legacy-share-turn.user {
+      grid-template-columns: minmax(0, 1fr) 44px;
+    }
+    .legacy-share-turn.turn-user .avatar,
+    .legacy-share-turn.user .avatar {
+      grid-column: 2;
+      background: var(--user, #1f7a64);
+    }
+    .legacy-share-turn.turn-user .bubble-wrap,
+    .legacy-share-turn.user .bubble-wrap {
+      grid-column: 1;
+      grid-row: 1;
+      align-items: flex-end;
+    }
+    .legacy-share-turn .avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: white;
+      background: var(--assistant, #334155);
+      font-weight: 800;
+      box-shadow: 0 10px 24px rgba(37, 37, 37, .12);
+    }
+    .legacy-share-turn .bubble-wrap {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    .legacy-share-turn .meta {
+      display: none;
+    }
+    .legacy-share-turn .turn-meta {
+      margin: 0 2px 7px;
+      color: var(--muted, #6d716f);
+      font-size: 13px;
+    }
+    .legacy-share-turn .turn-meta span {
+      color: var(--ink, var(--text, #252525));
+      font-weight: 700;
+      margin-right: 8px;
+    }
+    .legacy-share-turn .bubble {
+      position: relative;
+      max-width: min(820px, 100%);
+      padding: 0;
+      border: 1px solid rgba(51, 65, 85, .14);
+      border-radius: 8px;
+      background: var(--assistant-soft, var(--assistant, #fffdfa));
+      box-shadow: 0 10px 28px rgba(76, 61, 44, .07);
+      overflow: hidden;
+    }
+    .legacy-share-turn.turn-user .bubble,
+    .legacy-share-turn.user .bubble {
+      background: var(--user-soft, var(--user, #f0f7ff));
+      border-color: rgba(31, 122, 100, .22);
+    }
+    .legacy-share-turn .share-content,
+    .legacy-share-turn .bubble-body {
+      padding: 16px 18px 0;
+    }
+    .legacy-share-turn .message-text {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 15px/1.68 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .legacy-share-turn .message-markdown,
+    .message-markdown {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .message-markdown p {
+      margin: 0;
+    }
+    .message-markdown p + p,
+    .message-markdown p + ul,
+    .message-markdown p + ol,
+    .message-markdown ul + p,
+    .message-markdown ol + p,
+    .message-markdown blockquote + p,
+    .message-markdown p + blockquote {
+      margin-top: 10px;
+    }
+    .message-markdown h1,
+    .message-markdown h2,
+    .message-markdown h3,
+    .message-markdown h4,
+    .message-markdown h5,
+    .message-markdown h6 {
+      margin: 0 0 8px;
+      color: var(--ink, var(--text, #252525));
+      font-weight: 750;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+    .message-markdown h1 { font-size: 1.28em; }
+    .message-markdown h2 { font-size: 1.18em; }
+    .message-markdown h3,
+    .message-markdown h4,
+    .message-markdown h5,
+    .message-markdown h6 { font-size: 1.06em; }
+    .message-markdown ul,
+    .message-markdown ol {
+      margin: 0;
+      padding-left: 1.35em;
+    }
+    .message-markdown li + li {
+      margin-top: 4px;
+    }
+    .message-markdown blockquote {
+      margin: 0;
+      padding: 6px 0 6px 12px;
+      border-left: 3px solid rgba(51, 65, 85, .22);
+      color: var(--muted, #6d716f);
+    }
+    .message-markdown code {
+      border-radius: 5px;
+      padding: 1px 5px;
+      background: rgba(37, 37, 37, .08);
+      font: .92em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .message-markdown hr {
+      height: 1px;
+      margin: 12px 0;
+      border: 0;
+      background: rgba(51, 65, 85, .16);
+    }
+    .md-task {
+      color: var(--muted, #6d716f);
+    }
+    .legacy-share-turn .message-text + .message-text,
+    .legacy-share-turn .message-text + .code-card,
+    .legacy-share-turn .code-card + .message-text {
+      margin-top: 14px;
+    }
     .bubble-body,
     .share-content {
       position: relative;
@@ -1825,6 +2291,8 @@ function sessionShareEnhancementCss() {
   `.trim();
 }
 
+const SESSION_SHARE_ENHANCER_VERSION = 'v4';
+
 function sessionShareEnhancementScript() {
   return `
     (() => {
@@ -1849,6 +2317,270 @@ function sessionShareEnhancementScript() {
         if (!ok) throw new Error('copy command failed');
       };
 
+      const escapeMarkdownHtml = value => {
+        return String(value || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      };
+
+      const safeMarkdownUrl = value => {
+        const raw = String(value || '').trim();
+        return /^https?:\\/\\/[^\\s<>"']+$/i.test(raw) ? raw : '';
+      };
+
+      const splitTrailingUrlPunctuation = value => {
+        let url = String(value || '');
+        let suffix = '';
+        while (url && /[.,!?;:，。！？；：、)\\]}]$/u.test(url)) {
+          suffix = url.slice(-1) + suffix;
+          url = url.slice(0, -1);
+        }
+        return { url, suffix };
+      };
+
+      const linkifyEscapedHtml = value => {
+        return String(value || '').replace(/https?:\\/\\/[^\\s<]+/g, rawUrl => {
+          const split = splitTrailingUrlPunctuation(rawUrl);
+          const href = safeMarkdownUrl(split.url.replace(/&amp;/g, '&'));
+          if (!href) return rawUrl;
+          return '<a href="' + escapeMarkdownHtml(href) + '" target="_blank" rel="noreferrer">' + split.url + '</a>' + split.suffix;
+        });
+      };
+
+      const renderInlineMarkdown = text => {
+        const tokens = [];
+        const stash = html => {
+          const index = tokens.push(html) - 1;
+          return '%%MDTOKEN' + index + '%%';
+        };
+        const inlineCodePattern = new RegExp('\\\\x60([^\\\\x60\\\\n]+)\\\\x60', 'g');
+        const withProtectedInline = String(text || '')
+          .replace(inlineCodePattern, (_, code) => {
+            return stash('<code>' + escapeMarkdownHtml(code) + '</code>');
+          })
+          .replace(/\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/gi, (match, label, url) => {
+            const href = safeMarkdownUrl(url);
+            if (!href) return match;
+            return stash(
+              '<a href="' + escapeMarkdownHtml(href) + '" target="_blank" rel="noreferrer">' +
+                escapeMarkdownHtml(label) +
+                '</a>',
+            );
+          });
+
+        let html = escapeMarkdownHtml(withProtectedInline)
+          .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<strong>$1</strong>')
+          .replace(/__([^_\\n]+)__/g, '<strong>$1</strong>')
+          .replace(/(^|[^\\*])\\*([^*\\n]+)\\*/g, '$1<em>$2</em>')
+          .replace(/(^|[^_])_([^_\\n]+)_/g, '$1<em>$2</em>');
+
+        html = linkifyEscapedHtml(html);
+        return html.replace(/%%MDTOKEN(\\d+)%%/g, (_, index) => tokens[Number(index)] || '');
+      };
+
+      const renderMarkdownListItem = text => {
+        const checklist = /^\\[([ xX])\\]\\s+(.+)$/.exec(String(text || '').trim());
+        if (!checklist) return renderInlineMarkdown(text);
+        const checked = checklist[1].toLowerCase() === 'x';
+        return '<span class="md-task" aria-hidden="true">' + (checked ? '☑' : '☐') + '</span> ' + renderInlineMarkdown(checklist[2]);
+      };
+
+      const renderMarkdownBlockHtml = text => {
+        const lines = String(text || '').replace(/\\r\\n?/g, '\\n').split('\\n');
+        const blocks = [];
+        let paragraph = [];
+        let listType = '';
+        let listItems = [];
+
+        const flushParagraph = () => {
+          if (!paragraph.length) return;
+          blocks.push('<p>' + paragraph.map(renderInlineMarkdown).join('<br>') + '</p>');
+          paragraph = [];
+        };
+
+        const flushList = () => {
+          if (!listType) return;
+          const tag = listType === 'ol' ? 'ol' : 'ul';
+          blocks.push('<' + tag + '>' + listItems.map(item => '<li>' + renderMarkdownListItem(item) + '</li>').join('') + '</' + tag + '>');
+          listType = '';
+          listItems = [];
+        };
+
+        const startList = (type, item) => {
+          flushParagraph();
+          if (listType && listType !== type) flushList();
+          listType = type;
+          listItems.push(item);
+        };
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            flushParagraph();
+            flushList();
+            continue;
+          }
+
+          const heading = /^(#{1,6})\\s+(.+)$/.exec(trimmed);
+          if (heading) {
+            flushParagraph();
+            flushList();
+            const level = Math.min(6, heading[1].length);
+            blocks.push('<h' + level + '>' + renderInlineMarkdown(heading[2]) + '</h' + level + '>');
+            continue;
+          }
+
+          if (/^([-*_])(?:\\s*\\1){2,}\\s*$/.test(trimmed)) {
+            flushParagraph();
+            flushList();
+            blocks.push('<hr>');
+            continue;
+          }
+
+          const unordered = /^[-*+]\\s+(.+)$/.exec(trimmed);
+          if (unordered) {
+            startList('ul', unordered[1]);
+            continue;
+          }
+
+          const ordered = /^\\d+[.)]\\s+(.+)$/.exec(trimmed);
+          if (ordered) {
+            startList('ol', ordered[1]);
+            continue;
+          }
+
+          const quote = /^>\\s?(.*)$/.exec(line);
+          if (quote) {
+            flushParagraph();
+            flushList();
+            blocks.push('<blockquote>' + renderInlineMarkdown(quote[1]) + '</blockquote>');
+            continue;
+          }
+
+          flushList();
+          paragraph.push(line);
+        }
+
+        flushParagraph();
+        flushList();
+        return blocks.join('\\n');
+      };
+
+      const renderMarkdownMessageHtml = text => {
+        const source = String(text || '');
+        const parts = [];
+        const fencePattern = new RegExp('\\\\x60\\\\x60\\\\x60([A-Za-z0-9_-]*)\\\\n?([\\\\s\\\\S]*?)\\\\x60\\\\x60\\\\x60', 'g');
+        let lastIndex = 0;
+        let match = null;
+
+        while ((match = fencePattern.exec(source))) {
+          const plain = source.slice(lastIndex, match.index);
+          if (plain.trim()) {
+            parts.push('<div class="message-text message-markdown">' + renderMarkdownBlockHtml(plain) + '</div>');
+          }
+          const lang = match[1] ? '<div class="code-lang">' + escapeMarkdownHtml(match[1]) + '</div>' : '';
+          parts.push('<div class="code-card">' + lang + '<pre><code>' + escapeMarkdownHtml(match[2].trim()) + '</code></pre></div>');
+          lastIndex = fencePattern.lastIndex;
+        }
+
+        const tail = source.slice(lastIndex);
+        if (tail.trim()) {
+          parts.push('<div class="message-text message-markdown">' + renderMarkdownBlockHtml(tail) + '</div>');
+        }
+        return parts.join('\\n') || '<div class="message-text message-markdown"></div>';
+      };
+
+      const renderMarkdownContent = content => {
+        if (!content || content.dataset.markdownHydrated === '1') return;
+        const textBlocks = Array.from(content.querySelectorAll(':scope > .message-text:not(.message-markdown)'));
+        textBlocks.forEach(block => {
+          const template = document.createElement('template');
+          template.innerHTML = renderMarkdownMessageHtml(block.innerText || '');
+          block.replaceWith(...Array.from(template.content.childNodes));
+        });
+        content.dataset.markdownHydrated = '1';
+      };
+
+      const roleForTurn = turn => {
+        if (!turn) return '';
+        if (turn.classList.contains('turn-user') || turn.classList.contains('user')) return 'user';
+        if (turn.classList.contains('turn-assistant') || turn.classList.contains('assistant')) return 'assistant';
+        return '';
+      };
+
+      const normalizeMetaText = text => {
+        return String(text || '')
+          .replace(/^\\s*\\d+\\.\\s*/u, '')
+          .replace(/^Codex\\b/u, 'codex 回复')
+          .trim();
+      };
+
+      const legacyTurnText = turn => {
+        const body = turn.querySelector(':scope .bubble-body, :scope .share-content');
+        if (body) return body.innerText.trim();
+        const pre = turn.querySelector(':scope > pre, :scope pre');
+        return (pre?.innerText || '').trim();
+      };
+
+      const ensureTurnId = (turn, index) => {
+        if (!turn.id) turn.id = 'turn-' + (index + 1);
+        return turn.id;
+      };
+
+      const migrateLegacyTurn = (turn, index) => {
+        if (!turn || turn.querySelector(':scope > .bubble-wrap')) return;
+
+        const role = roleForTurn(turn);
+        if (!role) return;
+
+        const turnId = ensureTurnId(turn, index);
+        const meta = normalizeMetaText(turn.querySelector(':scope > .meta')?.textContent || '');
+        const text = legacyTurnText(turn);
+        copyData[turnId] = copyData[turnId] || text;
+
+        turn.classList.add('legacy-share-turn', role === 'user' ? 'turn-user' : 'turn-assistant');
+
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar';
+        avatar.textContent = role === 'user' ? '你' : 'C';
+
+        const bubbleWrap = document.createElement('div');
+        bubbleWrap.className = 'bubble-wrap';
+
+        const turnMeta = document.createElement('div');
+        turnMeta.className = 'turn-meta';
+        const label = role === 'user' ? '用户' : 'codex 回复';
+        const labelEl = document.createElement('span');
+        labelEl.textContent = label;
+        turnMeta.appendChild(labelEl);
+        const timeText = meta
+          ? meta.replace(/^用户\\s*·?\\s*/u, '').replace(/^codex 回复\\s*·?\\s*/u, '')
+          : '';
+        if (timeText) turnMeta.appendChild(document.createTextNode(timeText));
+
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+
+        const body = document.createElement('div');
+        body.className = 'bubble-body';
+        body.innerHTML = renderMarkdownMessageHtml(text);
+        bubble.appendChild(body);
+
+        const oldMeta = turn.querySelector(':scope > .meta');
+        if (oldMeta) oldMeta.remove();
+        Array.from(turn.childNodes).forEach(node => {
+          if (node !== oldMeta) node.remove();
+        });
+
+        bubbleWrap.appendChild(turnMeta);
+        bubbleWrap.appendChild(bubble);
+        turn.appendChild(avatar);
+        turn.appendChild(bubbleWrap);
+      };
+
       const findOrWrapContent = bubble => {
         const modern = bubble.querySelector(':scope > .bubble-body');
         if (modern) return modern;
@@ -1863,6 +2595,50 @@ function sessionShareEnhancementScript() {
         children.forEach(node => wrapper.appendChild(node));
         bubble.insertBefore(wrapper, bubble.firstChild);
         return wrapper;
+      };
+
+      const appendTurnIntoPrevious = (previousTurn, turn) => {
+        const previousBubble = previousTurn.querySelector(':scope .bubble');
+        const bubble = turn.querySelector(':scope .bubble');
+        if (!previousBubble || !bubble) return false;
+
+        const previousContent = findOrWrapContent(previousBubble);
+        const content = findOrWrapContent(bubble);
+        const previousId = previousTurn.id || previousBubble.id || '';
+        const turnId = turn.id || bubble.id || '';
+        const text = copyData[turnId] || content.innerText || '';
+        if (previousId && text) {
+          copyData[previousId] = [copyData[previousId] || previousContent.innerText || '', text]
+            .filter(Boolean)
+            .join('\\n\\n');
+        }
+
+        Array.from(content.childNodes).forEach(node => {
+          previousContent.appendChild(node);
+        });
+        turn.remove();
+        return true;
+      };
+
+      const mergeAdjacentConversationTurns = () => {
+        const turns = Array.from(document.querySelectorAll('.conversation > .turn'));
+        let previousVisibleTurn = null;
+
+        turns.forEach((turn, index) => {
+          migrateLegacyTurn(turn, index);
+          const role = roleForTurn(turn);
+          if (!role) {
+            previousVisibleTurn = null;
+            return;
+          }
+
+          if (previousVisibleTurn && roleForTurn(previousVisibleTurn) === role) {
+            appendTurnIntoPrevious(previousVisibleTurn, turn);
+            return;
+          }
+
+          previousVisibleTurn = turn;
+        });
       };
 
       const isInjectedContextText = text => {
@@ -1880,9 +2656,14 @@ function sessionShareEnhancementScript() {
 
       const updateVisibleCount = () => {
         const count = document.querySelector('.count-card strong');
-        if (!count) return;
         const turns = Array.from(document.querySelectorAll('.conversation .turn, main > .turn, main section.turn'));
-        count.textContent = String(turns.filter(turn => !turn.hidden).length);
+        const visibleCount = String(turns.filter(turn => !turn.hidden).length);
+        if (count) count.textContent = visibleCount;
+        document.querySelectorAll('.pill').forEach(pill => {
+          if (/^\\d+\\s+visible messages$/i.test(pill.textContent || '')) {
+            pill.textContent = visibleCount + ' visible messages';
+          }
+        });
       };
 
       const ensureActions = (bubble, index) => {
@@ -1921,6 +2702,7 @@ function sessionShareEnhancementScript() {
 
       const refreshBubble = (bubble, index) => {
         const content = findOrWrapContent(bubble);
+        renderMarkdownContent(content);
         const { toggle } = ensureActions(bubble, index);
         const expanded = bubble.classList.contains('is-expanded');
 
@@ -1941,10 +2723,12 @@ function sessionShareEnhancementScript() {
       };
 
       const refreshAll = () => {
+        mergeAdjacentConversationTurns();
         let visibleIndex = 0;
         document.querySelectorAll('.bubble').forEach(bubble => {
           const turn = bubble.closest('.turn') || bubble.closest('article');
           const content = findOrWrapContent(bubble);
+          renderMarkdownContent(content);
           if (isInjectedContextText(content.innerText)) {
             if (turn) turn.hidden = true;
             return;
@@ -2031,12 +2815,26 @@ function normalizeLegacySessionShareMarkup(html) {
     .replaceAll('>复制气泡</button>', '>复制整段</button>');
 }
 
-function enhanceSessionShareHtml(html) {
-  if (html.includes('data-session-share-enhancer="v2"')) return html;
+function stripMarkedSessionShareEnhancer(html) {
+  return html
+    .replace(
+      /<style\b[^>]*data-session-share-enhancer=["']v\d+["'][^>]*>[\s\S]*?<\/style>\s*/gi,
+      '',
+    )
+    .replace(
+      /<script\b[^>]*data-session-share-enhancer=["']v\d+["'][^>]*>[\s\S]*?<\/script>\s*/gi,
+      '',
+    );
+}
 
-  const normalizedHtml = normalizeLegacySessionShareMarkup(stripLegacySessionShareScript(html));
-  const style = `<style data-session-share-enhancer="v2">\n${sessionShareEnhancementCss()}\n</style>`;
-  const script = `<script data-session-share-enhancer="v2">\n${sessionShareEnhancementScript()}\n</script>`;
+function enhanceSessionShareHtml(html) {
+  if (html.includes(`data-session-share-enhancer="${SESSION_SHARE_ENHANCER_VERSION}"`)) return html;
+
+  const normalizedHtml = normalizeLegacySessionShareMarkup(
+    stripLegacySessionShareScript(stripMarkedSessionShareEnhancer(html)),
+  );
+  const style = `<style data-session-share-enhancer="${SESSION_SHARE_ENHANCER_VERSION}">\n${sessionShareEnhancementCss()}\n</style>`;
+  const script = `<script data-session-share-enhancer="${SESSION_SHARE_ENHANCER_VERSION}">\n${sessionShareEnhancementScript()}\n</script>`;
   const withStyle = normalizedHtml.includes('</head>')
     ? normalizedHtml.replace('</head>', `${style}\n</head>`)
     : `${style}\n${normalizedHtml}`;
@@ -2290,6 +3088,69 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
+    .message-markdown {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .message-markdown p {
+      margin: 0;
+    }
+    .message-markdown p + p,
+    .message-markdown p + ul,
+    .message-markdown p + ol,
+    .message-markdown ul + p,
+    .message-markdown ol + p,
+    .message-markdown blockquote + p,
+    .message-markdown p + blockquote {
+      margin-top: 10px;
+    }
+    .message-markdown h1,
+    .message-markdown h2,
+    .message-markdown h3,
+    .message-markdown h4,
+    .message-markdown h5,
+    .message-markdown h6 {
+      margin: 0 0 8px;
+      color: var(--ink);
+      font-weight: 750;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+    .message-markdown h1 { font-size: 1.28em; }
+    .message-markdown h2 { font-size: 1.18em; }
+    .message-markdown h3,
+    .message-markdown h4,
+    .message-markdown h5,
+    .message-markdown h6 { font-size: 1.06em; }
+    .message-markdown ul,
+    .message-markdown ol {
+      margin: 0;
+      padding-left: 1.35em;
+    }
+    .message-markdown li + li {
+      margin-top: 4px;
+    }
+    .message-markdown blockquote {
+      margin: 0;
+      padding: 6px 0 6px 12px;
+      border-left: 3px solid rgba(51, 65, 85, .22);
+      color: var(--muted);
+    }
+    .message-markdown code {
+      border-radius: 5px;
+      padding: 1px 5px;
+      background: rgba(37, 37, 37, .08);
+      font: .92em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .message-markdown hr {
+      height: 1px;
+      margin: 12px 0;
+      border: 0;
+      background: rgba(51, 65, 85, .16);
+    }
+    .md-task {
+      color: var(--muted);
+    }
     .message-text + .message-text,
     .message-text + .code-card,
     .message-text + .message-image,
@@ -2372,7 +3233,7 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
       .bubble-actions { justify-content: flex-start; padding: 9px 10px 11px; }
     }
   </style>
-  <style data-session-share-enhancer="v2">
+  <style data-session-share-enhancer="${SESSION_SHARE_ENHANCER_VERSION}">
 ${sessionShareEnhancementCss()}
   </style>
 </head>
@@ -2400,10 +3261,10 @@ ${sessionShareEnhancementCss()}
     <section class="conversation">
       ${turns || '<div class="notice">没有可展示的可见消息。</div>'}
     </section>
-    <footer>Generated by Lark Codex Bridge · ${escapeHtml(shareId)}</footer>
+    <footer>Generated by 菌子坦荡荡 · ${escapeHtml(shareId)}</footer>
   </main>
   <script id="copy-data" type="application/json">${copyDataJson}</script>
-  <script data-session-share-enhancer="v2">
+  <script data-session-share-enhancer="${SESSION_SHARE_ENHANCER_VERSION}">
 ${sessionShareEnhancementScript()}
   </script>
 </body>
@@ -2594,7 +3455,7 @@ function buildSessionShareWebCard({ session, share, snapshot, matchType }) {
         elements: [
           {
             tag: 'lark_md',
-            content: share.url,
+            content: formatLarkMarkdownLink('打开网页快照', share.url),
           },
         ],
       },
@@ -2607,7 +3468,7 @@ function formatSessionShareWebSuccessText({ session, share, snapshot, matchType 
   const truncatedText = snapshot.truncated
     ? `\n注意：session 较长，已导出前 ${snapshot.includedTurns}/${snapshot.totalTurns} 条可见消息。`
     : '';
-  return `已生成 Codex session「${session.threadName}」${matchText}的网页快照：\n${share.url}${truncatedText}`;
+  return `已生成 Codex session「${session.threadName}」${matchText}的网页快照：\n${formatLarkMarkdownLink('打开网页快照', share.url)}${truncatedText}`;
 }
 
 async function replyWithSessionShareWebPage(event, payload) {
@@ -2851,6 +3712,74 @@ function approvalExistsForMessage(messageId) {
   );
 }
 
+function loadReviewFollowupStore() {
+  if (!existsSync(config.reviewFollowupStoreFile)) return { replies: {}, roots: {} };
+  try {
+    const parsed = tryJson(readFileSync(config.reviewFollowupStoreFile, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { replies: {}, roots: {} };
+    }
+    return {
+      replies: parsed.replies && typeof parsed.replies === 'object' ? parsed.replies : {},
+      roots: parsed.roots && typeof parsed.roots === 'object' ? parsed.roots : {},
+    };
+  } catch (error) {
+    console.error(`[bridge] failed to read review follow-up store: ${error.message}`);
+    return { replies: {}, roots: {} };
+  }
+}
+
+function saveReviewFollowupStore(store) {
+  mkdirSync(dirname(config.reviewFollowupStoreFile), { recursive: true });
+  writeFileSync(config.reviewFollowupStoreFile, `${JSON.stringify(store, null, 2)}\n`);
+}
+
+function reviewFollowupKey(rootMessageId, replyMessageId) {
+  return `${rootMessageId || 'unknown'}:${replyMessageId || 'unknown'}`;
+}
+
+function getReviewFollowupRoot(rootMessageId) {
+  if (!rootMessageId) return null;
+  return loadReviewFollowupStore().roots[rootMessageId] || null;
+}
+
+function reviewFollowupExistsForReply(rootMessageId, replyMessageId) {
+  if (!rootMessageId || !replyMessageId) return false;
+  const store = loadReviewFollowupStore();
+  return Boolean(store.replies[reviewFollowupKey(rootMessageId, replyMessageId)]);
+}
+
+function countReviewFollowupRounds(rootMessageId) {
+  if (!rootMessageId) return 0;
+  const store = loadReviewFollowupStore();
+  return Object.values(store.replies).filter(record => record?.rootMessageId === rootMessageId)
+    .length;
+}
+
+function updateReviewFollowupRoot(rootMessageId, patch) {
+  if (!rootMessageId) return;
+  const store = loadReviewFollowupStore();
+  store.roots[rootMessageId] = {
+    ...(store.roots[rootMessageId] || {}),
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  saveReviewFollowupStore(store);
+}
+
+function saveReviewFollowupReply(rootMessageId, replyMessageId, patch) {
+  const store = loadReviewFollowupStore();
+  const key = reviewFollowupKey(rootMessageId, replyMessageId);
+  store.replies[key] = {
+    ...(store.replies[key] || {}),
+    ...patch,
+    rootMessageId,
+    replyMessageId,
+    updatedAt: new Date().toISOString(),
+  };
+  saveReviewFollowupStore(store);
+}
+
 function shortApprovalId() {
   return randomUUID().split('-')[0];
 }
@@ -2939,12 +3868,11 @@ function buildDelegateDraftPrompt(event, rawText) {
   const messageId = extractMessageId(event);
   const requesterId = extractSenderId(event);
   const requesterName = extractSenderName(event) || requesterId || '对方';
-  const delegatedName = config.delegateUserNames[0] || '被代理用户';
 
   return [
-    `你是${delegatedName}的飞书助理。群里有人 @ ${delegatedName}，请先替${delegatedName}想好操作和回复，但绝对不要向群里发送消息。`,
+    '你是宋一凡的飞书助理。群里有人 @ 宋一凡，请先替宋一凡想好操作和回复，但绝对不要向群里发送消息。',
     '',
-    '你可以使用本机 lark-cli、文件系统和其他已配置的只读工具做查询。优先读取当前群最近消息，并按需要搜索飞书文档或历史消息。',
+    '你可以使用本机 lark-cli / bytedcli / 文件系统做只读查询。优先读取当前群最近消息，并按需要搜索飞书文档或历史消息。',
     `当前群 chat_id：${chatId || 'unknown'}`,
     `原始消息 message_id：${messageId || 'unknown'}`,
     `请求人 open_id：${requesterId || 'unknown'}`,
@@ -2955,7 +3883,7 @@ function buildDelegateDraftPrompt(event, rawText) {
     rawText,
     '',
     '请完成：',
-    `1. 判断对方要${delegatedName}做什么。`,
+    '1. 判断对方要宋一凡做什么。',
     '2. 根据群历史、相关文档、文件或上下文找出最可能需要的材料；如果找不到，要明确写“需要人工补充”。',
     '3. 如果对方请求 review/approve MR 或变更，只做只读 review：阅读链接、diff、评论、CI/测试状态和相关上下文，指出风险或确认未发现明显问题；不要直接在代码平台点 approve，除非审批人后续明确确认。',
     '4. 给出建议操作。',
@@ -2964,6 +3892,236 @@ function buildDelegateDraftPrompt(event, rawText) {
     '只输出一个 JSON 对象，不要输出 Markdown 解释。字段：',
     '{"operation_plan":["..."],"reply_text":"...","evidence":["..."],"confidence":"high|medium|low"}',
   ].join('\n');
+}
+
+function buildDelegateReviewAutomationPrompt(event, rawText, mrUrls) {
+  const chatId = extractChatId(event);
+  const messageId = extractMessageId(event);
+  const requesterId = extractSenderId(event);
+  const requesterName = extractSenderName(event) || requesterId || '对方';
+  const autoApprove = config.delegateReviewAutoApproveEnabled ? '开启' : '关闭';
+  const commentOnIssues = config.delegateReviewCommentOnIssues ? '开启' : '关闭';
+  const requireCiPass = config.delegateReviewRequireCiPass ? '是' : '否';
+
+  return [
+    'MR review 自动化：群里有人 @ 宋一凡或 @ 菌子坦荡荡 review 代码。已配置菌子坦荡荡直接开始 review，不需要再生成待确认草稿。',
+    '',
+    '你可以使用本机 bytedcli / 文件系统执行代码评审相关操作。除 MR review/comment/approve 之外，不要执行改代码、合入、发布、提单、改配置等其他写操作。不要使用 lark-cli 向飞书群发送或回复消息；bridge 会统一用原消息话题回复通知结果。',
+    '硬性限制：不满足 approve 条件时，只能给普通评论或回复问题摘要，不要 disapprove / request changes / 反向审批。',
+    `当前群 chat_id：${chatId || 'unknown'}`,
+    `原始消息 message_id：${messageId || 'unknown'}`,
+    `请求人 open_id：${requesterId || 'unknown'}`,
+    `请求人显示名：${requesterName}`,
+    `自动 approve 开关：${autoApprove}`,
+    `有问题时发 MR comment 开关：${commentOnIssues}`,
+    `approve 前是否要求 CI/检查无失败：${requireCiPass}`,
+    '',
+    '原始群消息：',
+    rawText,
+    '',
+    'MR URL：',
+    ...mrUrls.map((url, index) => `${index + 1}. ${url}`),
+    '',
+    '请按顺序完成：',
+    '1. 对每个 MR 使用 bytedcli codebase 查询 MR 详情、diff 文件、关键 diff、现有评论和检查状态；优先用 --json。',
+    '2. 做真实代码评审：重点看逻辑 bug、线上风险、兼容性、权限/数据安全、并发/超时、错误处理和测试缺口。不要只看标题。',
+    '3. 如果发现问题：若“有问题时发 MR comment 开关”为开启，使用 bytedcli codebase mr review <MR_URL> --comment --body-file <file> 留 MR 级普通评论；只有位置很确定时再使用 draft/publish 行内评论。若开关为关闭，只回复问题摘要，不写代码平台评论。有问题时绝对不要 approve，也不要 disapprove / request changes / 反向审批。',
+    '4. 如果没有发现问题：只有在“自动 approve 开关”为开启、置信度 high、MR 未关闭、没有未处理阻塞评论、且检查状态没有失败时，才执行 bytedcli codebase mr review <MR_URL> --approve --body "LGTM，已检查 diff/评论/检查状态。"。如果 CI 无法确认且要求 CI 无失败，则不要 approve，也不要 disapprove / request changes，只回复需要人工确认 CI。',
+    '5. 操作完成后，只在最终输出里说明逐个 MR 已评论/已 approve/未操作的原因、评审依据和剩余风险；不要自己回复飞书消息，不要泄露 token/secret/JWT/cookie。',
+  ].join('\n');
+}
+
+function bridgeReviewRequesterIds() {
+  return new Set(
+    [
+      config.botOpenId,
+      config.botAppId,
+      ...config.reviewFollowupRequesterIds,
+    ]
+      .map(value => String(value || '').trim())
+      .filter(Boolean),
+  );
+}
+
+function isBridgeReviewRequester(event) {
+  const senderId = extractSenderId(event);
+  return senderId && bridgeReviewRequesterIds().has(senderId);
+}
+
+function reviewRequestTextLooksActionable(text) {
+  const rawText = String(text || '');
+  if (!extractCodebaseMrUrls(rawText).length) return false;
+  if (hasDelegateReviewKeyword(rawText)) return true;
+  return /review|code\s*review|评审|帮忙看|麻烦.*看|看这组\s*MR|看这组MR|MR\s*[:：]/i.test(
+    rawText,
+  );
+}
+
+function isBridgeReviewRequestMessage(chatId, message) {
+  const event = listedMessageToEvent(chatId, message);
+  if (!isBridgeReviewRequester(event)) return false;
+  return reviewRequestTextLooksActionable(extractText(event));
+}
+
+function messageThreadReplies(message) {
+  const candidates = [
+    ...(Array.isArray(message?.thread_replies) ? message.thread_replies : []),
+    ...(Array.isArray(message?.threadReplies) ? message.threadReplies : []),
+    ...(Array.isArray(message?.replies) ? message.replies : []),
+  ];
+  const deduped = new Map();
+  for (const reply of candidates) {
+    const id = reply?.message_id || reply?.id || '';
+    if (!id) continue;
+    if (!deduped.has(id)) deduped.set(id, reply);
+  }
+  return [...deduped.values()];
+}
+
+function isBridgeSelfSenderId(senderId) {
+  return senderId && bridgeReviewRequesterIds().has(senderId);
+}
+
+function reviewerMentionText(event) {
+  const senderId = extractSenderId(event);
+  const senderName = extractSenderName(event) || senderId || 'reviewer';
+  if (isMentionableUserOpenId(senderId)) return `<at user_id="${senderId}">${senderName}</at>`;
+  if (senderName && !senderName.startsWith('cli_')) return `@${senderName}`;
+  return senderName;
+}
+
+function shouldHandleReviewFollowupReply(replyEvent, replyText) {
+  const senderId = extractSenderId(replyEvent);
+  if (!senderId || isBridgeSelfSenderId(senderId)) return false;
+  if (config.reviewFollowupReviewerSenderIds.length) {
+    return config.reviewFollowupReviewerSenderIds.includes(senderId);
+  }
+  if (!isKnownBotSender(replyEvent)) return false;
+  return String(replyText || '').trim().length > 0;
+}
+
+function normalizeReviewFollowupResult(output) {
+  const parsed = parseJsonObjectLoose(output) || {};
+  const action = String(parsed.action || parsed.status || '').trim().toLowerCase();
+  return {
+    approved:
+      parsed.approved === true ||
+      ['approved', 'approve', 'lgtm', 'noop_approved', 'no_changes'].includes(action),
+    needsChanges:
+      parsed.needs_changes === true ||
+      ['changes_required', 'fixed', 'pushed', 're_review_requested'].includes(action),
+    changed: parsed.changed === true,
+    pushed: parsed.pushed === true,
+    action,
+    raw: output,
+  };
+}
+
+function buildReviewFollowupPrompt(rootEvent, rootText, replyEvent, replyText, options = {}) {
+  const rootMessageId = extractMessageId(rootEvent);
+  const replyMessageId = extractMessageId(replyEvent);
+  const chatId = extractChatId(rootEvent);
+  const mrUrls = extractCodebaseMrUrls(rootText);
+  const reviewer = reviewerMentionText(replyEvent);
+  const round = options.round || 1;
+
+  return [
+    'Reviewer 回复闭环自动化：菌子坦荡荡之前在群里 @ 其他智能体 review 代码，现在收到了 reviewer 的回复。',
+    '',
+    '你的任务是判断 reviewer 回复是否要求改代码。如果需要改，就修复、验证、提交、push，然后在同一个话题里重新 @ 同一个 reviewer 复审；如果 reviewer 已 approve / LGTM / 没有问题，就不要回复群里，只输出 JSON 结果给 bridge 记录。',
+    '',
+    `当前工作目录：${config.codexCwd}`,
+    `群 chat_id：${chatId || 'unknown'}`,
+    `review 请求原消息 message_id：${rootMessageId || 'unknown'}`,
+    `reviewer 回复 message_id：${replyMessageId || 'unknown'}`,
+    `reviewer sender_id：${extractSenderId(replyEvent) || 'unknown'}`,
+    `reviewer 显示名：${extractSenderName(replyEvent) || 'unknown'}`,
+    `复审轮次：${round}/${config.reviewFollowupMaxRounds}`,
+    '',
+    '原 review 请求：',
+    rootText,
+    '',
+    'reviewer 回复：',
+    replyText,
+    '',
+    'MR URL：',
+    ...mrUrls.map((url, index) => `${index + 1}. ${url}`),
+    '',
+    '严格规则：',
+    '1. 如果 reviewer 回复只是授权卡片、排队状态、无关聊天、无法判断是否有代码问题，先不要改代码、不要回复群里，只输出 {"action":"noop","approved":false,"needs_changes":false,"reason":"..."}。',
+    '2. 如果 reviewer 回复表达 approve、LGTM、通过、没问题、无需修改，绝对不要回复群里，只输出 {"action":"approved","approved":true,"needs_changes":false,"reason":"..."}。',
+    '3. 如果 reviewer 提出明确问题或修改建议：定位对应 MR 和本地仓库，只改相关文件；不要覆盖用户未提交的无关改动，不要 stage 无关文件。',
+    '4. 修复后运行与改动相关的最小充分验证；失败要继续修到通过。提交信息遵守仓库 AGENTS.md / Lore Commit Protocol；push 到 MR 的 source branch。',
+    '5. push 成功后，用 bot 身份回复原 review 请求的话题，重新 @ reviewer，请它复审。命令形态：',
+    `lark-cli im +messages-reply --as bot --message-id ${rootMessageId || '<root_message_id>'} --reply-in-thread --text "${reviewer} 已按反馈修复并推送，麻烦再 review 一下。\\n\\n修复摘要：<summary>\\n验证：<tests>\\nMR：<links>" --idempotency-key review-followup-${rootMessageId || 'root'}-${replyMessageId || 'reply'}-${round}`,
+    '6. 如果需要改但因为权限、冲突、测试环境、MR 状态等原因无法完成，不要假装已修复；回复原话题说明 blocker，并输出 JSON 标记 blocked。',
+    '',
+    '最后只输出一个 JSON 对象给 bridge 记录，不要附 Markdown。字段：',
+    '{"action":"approved|noop|changes_required|fixed|blocked","approved":false,"needs_changes":false,"changed":false,"pushed":false,"summary":"...","tests":"...","reason":"..."}',
+  ].join('\n');
+}
+
+async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, replyText, round) {
+  const rootMessageId = extractMessageId(rootEvent);
+  const replyMessageId = extractMessageId(replyEvent);
+  const id = `follow-${shortApprovalId()}`;
+  saveReviewFollowupReply(rootMessageId, replyMessageId, {
+    id,
+    status: 'running',
+    createdAt: new Date().toISOString(),
+    chatId: extractChatId(rootEvent),
+    reviewerSenderId: extractSenderId(replyEvent),
+    reviewerName: extractSenderName(replyEvent),
+    round,
+    requestText: rootText,
+    replyText,
+    mrUrls: extractCodebaseMrUrls(rootText),
+  });
+  updateReviewFollowupRoot(rootMessageId, {
+    status: 'running',
+    round,
+    lastReplyMessageId: replyMessageId,
+  });
+  console.error(
+    `[bridge] review follow-up ${id} starting for root ${rootMessageId}, reply ${replyMessageId}`,
+  );
+
+  const prompt = buildReviewFollowupPrompt(rootEvent, rootText, replyEvent, replyText, { round });
+  const progress = config.reviewFollowupProgressCardEnabled
+    ? await createProgressReporter(rootEvent, ['review follow-up', replyMessageId || 'unknown'].join('\n'))
+    : null;
+  try {
+    const output = await buildReply(prompt, { progress });
+    const result = normalizeReviewFollowupResult(output);
+    saveReviewFollowupReply(rootMessageId, replyMessageId, {
+      status: 'done',
+      completedAt: new Date().toISOString(),
+      result,
+      resultText: output,
+    });
+    if (result.approved) {
+      updateReviewFollowupRoot(rootMessageId, {
+        status: 'approved',
+        approvedAt: new Date().toISOString(),
+        lastReplyMessageId: replyMessageId,
+      });
+    }
+    if (progress) await progress.finish(output);
+    console.error(`[bridge] review follow-up ${id} completed`);
+  } catch (error) {
+    saveReviewFollowupReply(rootMessageId, replyMessageId, {
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+      error: String(error?.stack || error?.message || error),
+    });
+    updateReviewFollowupRoot(rootMessageId, {
+      status: 'failed',
+      lastReplyMessageId: replyMessageId,
+      error: String(error?.message || error),
+    });
+    if (progress) await progress.fail(error.message || error);
+    throw error;
+  }
 }
 
 function buildApprovalCard(approval) {
@@ -3189,6 +4347,52 @@ async function createDelegateDraft(event, rawText) {
   console.error(`[bridge] delegate draft ${id} approval request sent`);
 }
 
+async function createDelegateReviewAutomation(event, rawText) {
+  const id = `rev-${shortApprovalId()}`;
+  const mrUrls = extractCodebaseMrUrls(rawText);
+  const record = {
+    id,
+    kind: 'mr_review_automation',
+    status: 'running',
+    createdAt: new Date().toISOString(),
+    chatId: extractChatId(event),
+    originalMessageId: extractMessageId(event),
+    requesterOpenId: extractSenderId(event),
+    requesterSenderType: extractSenderType(event),
+    requesterName: extractSenderName(event),
+    requestText: rawText,
+    mrUrls,
+  };
+  saveApproval(record);
+  console.error(`[bridge] delegate review automation ${id} starting for message ${record.originalMessageId}`);
+
+  const prompt = buildDelegateReviewAutomationPrompt(event, rawText, mrUrls);
+  const progress = config.delegateReviewProgressCardEnabled
+    ? await createProgressReporter(event, ['MR review 自动化', ...mrUrls].join('\n'))
+    : null;
+  try {
+    const output = await buildReply(prompt, { progress });
+    updateApproval(id, {
+      status: 'done',
+      completedAt: new Date().toISOString(),
+      resultText: output,
+    });
+    console.error(`[bridge] delegate review automation ${id} completed`);
+    if (progress) await progress.finish(output);
+    if (config.delegateReviewReplyToGroup) {
+      await replyToLark(event, output || '已完成 review 自动化，但 Codex 没有返回文本。');
+    }
+  } catch (error) {
+    updateApproval(id, {
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+      error: String(error?.stack || error?.message || error),
+    });
+    if (progress) await progress.fail(error.message || error);
+    throw error;
+  }
+}
+
 function parseApprovalCommand(rawText) {
   const text = stripBridgeTraceText(stripBotMentionText(rawText)).trim();
   const match = /^(同意发送|确认发送|发送|approve|\/approve|取消发送|拒绝发送|cancel|\/cancel)\s+([A-Za-z0-9_-]+)\s*$/i.exec(
@@ -3374,6 +4578,52 @@ function listedMessageToEvent(chatId, message) {
   };
 }
 
+async function pollReviewFollowupsInChat(chatId, messages, now = Date.now()) {
+  if (!config.reviewFollowupEnabled) return;
+
+  for (const message of [...messages].reverse()) {
+    const rootMessageId = message?.message_id || '';
+    if (!rootMessageId) continue;
+
+    const rootState = getReviewFollowupRoot(rootMessageId);
+    if (rootState?.status === 'approved') continue;
+
+    const rootCreatedAt = parseMessageTimeMs(message);
+    if (rootCreatedAt && now - rootCreatedAt > config.reviewFollowupMaxAgeMs) continue;
+    if (!isBridgeReviewRequestMessage(chatId, message)) continue;
+
+    const rootEvent = listedMessageToEvent(chatId, message);
+    const rootText = extractText(rootEvent).trim();
+    const replies = messageThreadReplies(message);
+    for (const reply of replies) {
+      const replyMessageId = reply?.message_id || reply?.id || '';
+      if (!replyMessageId || reviewFollowupExistsForReply(rootMessageId, replyMessageId)) {
+        continue;
+      }
+      if (reply?.deleted || reply?.is_deleted || reply?.isDeleted) continue;
+
+      const replyEvent = listedMessageToEvent(chatId, reply);
+      replyEvent.type = 'poll.review_followup_reply';
+      const replyText = extractText(replyEvent).trim();
+      const replyCreatedAt = parseMessageTimeMs(reply);
+      if (replyCreatedAt && now - replyCreatedAt > config.reviewFollowupMaxAgeMs) continue;
+      if (!shouldHandleReviewFollowupReply(replyEvent, replyText)) continue;
+
+      const round = countReviewFollowupRounds(rootMessageId) + 1;
+      if (round > config.reviewFollowupMaxRounds) {
+        updateReviewFollowupRoot(rootMessageId, {
+          status: 'max_rounds_reached',
+          round: round - 1,
+          lastReplyMessageId: replyMessageId,
+        });
+        continue;
+      }
+
+      await createReviewFollowupAutomation(rootEvent, rootText, replyEvent, replyText, round);
+    }
+  }
+}
+
 async function pollDelegateMentionsInChat(chatId) {
   const stdout = await runCli(
     [
@@ -3395,6 +4645,8 @@ async function pollDelegateMentionsInChat(chatId) {
   const messages = payload?.data?.messages || payload?.messages || [];
   const now = Date.now();
 
+  await pollReviewFollowupsInChat(chatId, messages, now);
+
   for (const message of [...messages].reverse()) {
     const messageId = message?.message_id || '';
     if (!messageId || seenMessages.has(messageId) || approvalExistsForMessage(messageId)) continue;
@@ -3406,17 +4658,32 @@ async function pollDelegateMentionsInChat(chatId) {
     const createdAt = parseMessageTimeMs(message);
     if (createdAt && now - createdAt > config.delegatePollMaxAgeMs) continue;
 
-    if (!(await shouldHandleDelegateMention(event, rawText))) continue;
-
-    seenMessages.add(messageId);
-    console.error(`[bridge] delegate poll matched message ${messageId} in ${chatId}`);
-    try {
-      await reactToLarkMessage(event, rawText);
-      console.error(`[bridge] delegate poll reacted to message ${messageId}`);
-    } catch (error) {
-      console.error(`[bridge] failed to add reaction for polled message: ${error.message}`);
+    if (await shouldHandleDelegateMention(event, rawText)) {
+      seenMessages.add(messageId);
+      console.error(`[bridge] delegate poll matched message ${messageId} in ${chatId}`);
+      try {
+        await reactToLarkMessage(event, rawText);
+        console.error(`[bridge] delegate poll reacted to message ${messageId}`);
+      } catch (error) {
+        console.error(`[bridge] failed to add reaction for polled message: ${error.message}`);
+      }
+      if (shouldHandleDelegateReviewAutomation(rawText)) {
+        await createDelegateReviewAutomation(event, rawText);
+      } else {
+        await createDelegateDraft(event, rawText);
+      }
+      continue;
     }
-    await createDelegateDraft(event, rawText);
+
+    // Recover direct @bot messages when the websocket subscription drops an event.
+    if (await shouldHandleEvent(event, rawText)) {
+      console.error(`[bridge] direct poll matched message ${messageId} in ${chatId}`);
+      try {
+        await handleEvent(event);
+      } catch (error) {
+        console.error(`[bridge] direct poll failed for message ${messageId}: ${error.stack || error.message}`);
+      }
+    }
   }
 }
 
@@ -3451,9 +4718,8 @@ function startDelegatePolling() {
   return timer;
 }
 
-async function getServiceJwt() {
-  requireEnv('SERVICE_JWT_ENDPOINT', config.jwtEndpoint);
-  requireEnv('SERVICE_ACCOUNT_SECRET', config.serviceAccountSecret);
+async function getByteCloudJwt() {
+  requireEnv('SERVICE_ACCOUNT_SECRET or BYTECLOUD_SA_SECRET', config.serviceAccountSecret);
   const response = await fetch(config.jwtEndpoint, {
     method: 'GET',
     headers: {
@@ -3468,16 +4734,15 @@ async function getServiceJwt() {
   return token;
 }
 
-async function callAgentGateway(prompt) {
-  requireEnv('AGENT_GATEWAY_URL', config.agentGatewayUrl);
-  requireEnv('AGENT_GATEWAY_TARGET', config.agentGatewayTarget);
-  const jwt = await getServiceJwt();
-  const response = await fetch(config.agentGatewayUrl, {
+async function callTaeAgent(prompt) {
+  requireEnv('AGENT_GATEWAY_TARGET or TAE_TARGET_PSM', config.taeTargetPsm);
+  const jwt = await getByteCloudJwt();
+  const response = await fetch(config.taeAgentUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-JWT-TOKEN': jwt,
-      'x-agent-target': config.agentGatewayTarget,
+      'x-agent-target-psm': config.taeTargetPsm,
     },
     body: JSON.stringify({
       model: '',
@@ -3498,19 +4763,19 @@ async function callAgentGateway(prompt) {
   );
 }
 
-async function callServiceApi(prompt) {
-  requireEnv('SERVICE_API_URL', config.serviceApiUrl);
-  const jwt = await getServiceJwt();
-  const method = config.serviceApiMethod.toUpperCase();
+async function callByteCloudApi(prompt) {
+  requireEnv('SERVICE_API_URL or BYTECLOUD_API_URL', config.bytecloudApiUrl);
+  const jwt = await getByteCloudJwt();
+  const method = config.bytecloudApiMethod.toUpperCase();
   const headers = {
     'Content-Type': 'application/json',
     'X-JWT-TOKEN': jwt,
     'x-bridge-user-prompt': prompt.slice(0, 512),
   };
-  const response = await fetch(config.serviceApiUrl, {
+  const response = await fetch(config.bytecloudApiUrl, {
     method,
     headers,
-    body: method === 'GET' || method === 'HEAD' ? undefined : config.serviceApiBody || '{}',
+    body: method === 'GET' || method === 'HEAD' ? undefined : config.bytecloudApiBody || '{}',
   });
   const text = await response.text();
   if (!response.ok) {
@@ -3609,6 +4874,7 @@ async function callCodex(prompt, options = {}) {
     );
     if (config.codexModel) args.push('--model', config.codexModel);
     if (progress) args.push('--json');
+    if (config.codexSkipGitRepoCheck) args.push('--skip-git-repo-check');
     if (config.codexEphemeral) args.push('--ephemeral');
     args.push('-');
   }
@@ -3630,11 +4896,11 @@ async function callCodex(prompt, options = {}) {
 
 async function buildReply(prompt, options = {}) {
   if (config.mode === 'jwt-check') {
-    await getServiceJwt();
+    await getByteCloudJwt();
     return '服务账号 JWT 获取成功，飞书机器人到服务账号这条链路是通的。';
   }
-  if (config.mode === 'agent') return callAgentGateway(prompt);
-  if (config.mode === 'api') return callServiceApi(prompt);
+  if (config.mode === 'agent' || config.mode === 'tae') return callTaeAgent(prompt);
+  if (config.mode === 'api') return callByteCloudApi(prompt);
   if (config.mode === 'codex') return callCodex(prompt, options);
   throw new Error(`Unsupported BRIDGE_MODE: ${config.mode}`);
 }
@@ -3956,7 +5222,7 @@ function runDoctor() {
     }
   }
 
-  if (config.mode !== 'codex' && !['jwt-check', 'agent', 'api'].includes(config.mode)) {
+  if (config.mode !== 'codex' && !['jwt-check', 'agent', 'tae', 'api'].includes(config.mode)) {
     report('fail', `Unsupported BRIDGE_MODE: ${config.mode}`);
   }
 
@@ -4082,6 +5348,7 @@ async function sendCardToLark(event, card, idempotencyKey) {
       'interactive',
       '--content',
       JSON.stringify(card),
+      ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
       '--idempotency-key',
       idempotencyKey,
     ]);
@@ -4090,6 +5357,9 @@ async function sendCardToLark(event, card, idempotencyKey) {
 
   const chatId = extractChatId(event);
   if (!chatId) throw new Error('event has neither message_id nor chat_id');
+  if (config.delegateReplyInThread && extractChatType(event) !== 'p2p') {
+    throw new Error('refusing to send group card without original message_id for thread reply');
+  }
   const stdout = await runCli([
     'im',
     '+messages-send',
@@ -4262,17 +5532,16 @@ async function createProgressReporter(event, prompt) {
 
 async function replyToLark(event, text) {
   const sendReply = async baseArgs => {
-    const replyText = String(text || '');
     if (!config.replyMarkdownEnabled) {
-      await runCli([...baseArgs, '--text', replyText]);
+      await runCli([...baseArgs, '--text', text]);
       return;
     }
 
     try {
-      await runCli([...baseArgs, '--markdown', closeUnclosedCodeFence(replyText)]);
+      await runCli([...baseArgs, '--markdown', closeUnclosedCodeFence(String(text || ''))]);
     } catch (error) {
       console.error(`[bridge] failed to send markdown reply, falling back to text: ${error.message}`);
-      await runCli([...baseArgs, '--text', replyText]);
+      await runCli([...baseArgs, '--text', text]);
     }
   };
 
@@ -4285,6 +5554,7 @@ async function replyToLark(event, text) {
       'bot',
       '--message-id',
       messageId,
+      ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
       '--idempotency-key',
       `bridge-${messageId}`,
     ]);
@@ -4293,6 +5563,9 @@ async function replyToLark(event, text) {
 
   const chatId = extractChatId(event);
   if (!chatId) throw new Error('event has neither message_id nor chat_id');
+  if (config.delegateReplyInThread && extractChatType(event) !== 'p2p') {
+    throw new Error('refusing to send group reply without original message_id for thread reply');
+  }
   await sendReply([
     'im',
     '+messages-send',
@@ -4394,9 +5667,13 @@ async function handleEvent(event) {
       console.error(`[bridge] failed to add reaction: ${error.stack || error.message}`);
     }
     try {
-      await createDelegateDraft(event, rawText);
+      if (shouldHandleDelegateReviewAutomation(rawText)) {
+        await createDelegateReviewAutomation(event, rawText);
+      } else {
+        await createDelegateDraft(event, rawText);
+      }
     } catch (error) {
-      console.error(`[bridge] delegate draft failed: ${error.stack || error.message}`);
+      console.error(`[bridge] delegate handling failed: ${error.stack || error.message}`);
       if (config.delegateApproverOpenId) {
         await runCli([
           'im',
@@ -4446,6 +5723,11 @@ async function handleEvent(event) {
       console.error(`[bridge] ${error.stack || error.message}`);
       await replyToLark(event, `发送给机器人失败：${clampReply(error.message || error)}`);
     }
+    return;
+  }
+
+  if (shouldHandleDelegateReviewAutomation(rawText)) {
+    await createDelegateReviewAutomation(event, rawText);
     return;
   }
 

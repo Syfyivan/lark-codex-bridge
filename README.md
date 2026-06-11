@@ -192,6 +192,10 @@ BOT_OPEN_ID=ou_xxx
 BOT_MENTION_NAMES=Codex Bot
 REQUIRE_MENTION_IN_GROUP=1
 BRIDGE_REPLY_MARKDOWN=1           # send normal replies as Lark post Markdown
+BOT_SEND_COMMANDS=/bot-send,/send-bot,发给机器人
+BOT_SEND_TARGET_OPEN_IDS=         # optional aliases, such as 知微=ou_xxx
+BOT_SEND_TARGET_APP_IDS=          # app-id hints only; real @ still needs open_id
+BOT_SEND_ALLOW_PLAINTEXT_MENTION=0
 
 LOOP_MAX_TURNS=3                  # cap bridge_trace bot-to-bot turns
 LOOP_RESPOND_TO_BOT_SENDERS=0     # ignore bot senders unless they explicitly @ this bot/delegate
@@ -299,6 +303,21 @@ DELEGATE_ALLOW_BOT_SENDERS=1
 DELEGATE_REPLY_IN_THREAD=1
 DELEGATE_AUTO_REPLY_ENABLED=0
 DELEGATE_AUTO_REPLY_MIN_CONFIDENCE=high
+DELEGATE_REVIEW_AUTOMATION_ENABLED=0
+DELEGATE_REVIEW_AUTO_APPROVE_ENABLED=0
+DELEGATE_REVIEW_COMMENT_ON_ISSUES=1
+DELEGATE_REVIEW_REQUIRE_CI_PASS=1
+DELEGATE_REVIEW_REPLY_TO_GROUP=1
+DELEGATE_REVIEW_PROGRESS_CARD_ENABLED=0
+DELEGATE_REVIEW_KEYWORDS=review,code review,cr,代码review,代码 review,看下代码,帮忙看下,approve,给a,给 A,给一下 a,lgtm,LGTM,评审
+
+REVIEW_FOLLOWUP_ENABLED=0
+REVIEW_FOLLOWUP_STORE_FILE=~/.lark-codex-bridge/review-followups.json
+REVIEW_FOLLOWUP_MAX_ROUNDS=5
+REVIEW_FOLLOWUP_MAX_AGE_MS=86400000
+REVIEW_FOLLOWUP_REQUESTER_IDS=
+REVIEW_FOLLOWUP_REVIEWER_SENDER_IDS=
+REVIEW_FOLLOWUP_PROGRESS_CARD_ENABLED=0
 ```
 
 When someone mentions the delegated user, the bridge asks Codex to draft a reply
@@ -313,6 +332,18 @@ Keep `DELEGATE_AUTO_REPLY_ENABLED=0` unless the delegated user has explicitly
 chosen to let the bridge send on their behalf. In the default state, the bridge
 only drafts and sends a private approval card; nothing is posted to the group or
 thread until the approver clicks the card button or replies `同意发送 <id>`.
+
+When `DELEGATE_REVIEW_AUTOMATION_ENABLED=1`, delegate mentions that contain a
+Codebase MR URL and a configured review keyword can bypass the normal approval
+draft and run a constrained MR review automation prompt. Auto-approve is still
+separately gated by `DELEGATE_REVIEW_AUTO_APPROVE_ENABLED=1` and the prompt's CI
+and confidence checks.
+
+When `REVIEW_FOLLOWUP_ENABLED=1`, polling can watch replies under previous
+bridge-authored MR review requests. If a reviewer bot replies with required
+changes, the bridge asks Codex to fix, verify, commit, push, and re-mention the
+reviewer in the same thread. Keep this disabled unless the watched chats,
+requester IDs, and write permissions are intentionally scoped.
 
 ## LaunchAgent
 
@@ -371,6 +402,8 @@ The script keeps two generic non-Codex modes for custom internal integrations:
   `SERVICE_ACCOUNT_SECRET` or `SERVICE_ACCOUNT_SECRET_FILE`.
 - `BRIDGE_MODE=api`: mint a service JWT, then call `SERVICE_API_URL`.
 - `BRIDGE_MODE=agent`: mint a service JWT, then call `AGENT_GATEWAY_URL`.
+- `BRIDGE_MODE=tae`: compatibility alias for an agent gateway using
+  `TAE_AGENT_URL` and `TAE_TARGET_PSM`.
 
 These modes are intentionally unconfigured by default. Do not commit service
 secrets, token files, concrete internal URLs, or production chat IDs.

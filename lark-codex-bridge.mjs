@@ -4298,7 +4298,7 @@ function buildSensitiveOperationApprovalCard(approval) {
         elements: [
           {
             tag: 'plain_text',
-            content: `确认前不会启动 Codex 执行。按钮不可用时，私聊回复：同意执行 ${approval.id} / 取消执行 ${approval.id}`,
+            content: `确认前不会启动 Codex 执行；只有宋一凡本人点击按钮有效。按钮不可用时，在本话题 @机器人回复：同意执行 ${approval.id} / 取消执行 ${approval.id}`,
           },
         ],
       },
@@ -4337,24 +4337,35 @@ function buildSensitiveOperationApprovalCard(approval) {
 
 async function sendSensitiveOperationApprovalRequest(approval) {
   const card = buildSensitiveOperationApprovalCard(approval);
+  const approvalEvent = eventFromApproval(approval);
   try {
-    await runCli([
-      'im',
-      '+messages-send',
-      '--as',
-      'bot',
-      '--user-id',
-      approval.approverOpenId,
-      '--msg-type',
-      'interactive',
-      '--content',
-      JSON.stringify(card),
-      '--idempotency-key',
-      `sensitive-card-${approval.id}`,
-    ]);
-    return;
+    await sendCardToLark(approvalEvent, card, `sensitive-card-${approval.id}`);
+    return { target: 'thread', type: 'card' };
   } catch (error) {
-    console.error(`[bridge] failed to send sensitive approval card, falling back to text: ${error.message}`);
+    console.error(`[bridge] failed to send sensitive approval card in thread, falling back to text: ${error.message}`);
+  }
+
+  const fallbackText = [
+    `有人请求操作你的电脑，等待你确认。请求 ID：${approval.id}`,
+    '',
+    `请求人：${approval.requesterName || approval.requesterOpenId || '未知'}`,
+    `来源群：${approval.chatId || 'unknown'}`,
+    `风险类型：${(approval.sensitiveLabels || []).join('、') || '疑似非只读操作'}`,
+    '',
+    '原消息：',
+    approval.requestText,
+    '',
+    `同意请在本话题回复：同意执行 ${approval.id}`,
+    `取消请在本话题回复：取消执行 ${approval.id}`,
+  ].join('\n');
+
+  try {
+    await replyToLark(approvalEvent, fallbackText, {
+      idempotencyKey: `sensitive-text-${approval.id}`,
+    });
+    return { target: 'thread', type: 'text' };
+  } catch (error) {
+    console.error(`[bridge] failed to send sensitive approval text in thread, falling back to p2p: ${error.message}`);
   }
 
   await runCli([
@@ -4365,22 +4376,11 @@ async function sendSensitiveOperationApprovalRequest(approval) {
     '--user-id',
     approval.approverOpenId,
     '--text',
-    [
-      `有人请求操作你的电脑，等待你确认。请求 ID：${approval.id}`,
-      '',
-      `请求人：${approval.requesterName || approval.requesterOpenId || '未知'}`,
-      `来源群：${approval.chatId || 'unknown'}`,
-      `风险类型：${(approval.sensitiveLabels || []).join('、') || '疑似非只读操作'}`,
-      '',
-      '原消息：',
-      approval.requestText,
-      '',
-      `同意请回复：同意执行 ${approval.id}`,
-      `取消请回复：取消执行 ${approval.id}`,
-    ].join('\n'),
+    fallbackText,
     '--idempotency-key',
-    `sensitive-text-${approval.id}`,
+    `sensitive-p2p-text-${approval.id}`,
   ]);
+  return { target: 'p2p', type: 'text' };
 }
 
 async function createSensitiveOperationApproval(event, rawText, classification) {
@@ -4411,12 +4411,14 @@ async function createSensitiveOperationApproval(event, rawText, classification) 
     executionKind: classification.executionKind,
   };
   saveApproval(approval);
-  await sendSensitiveOperationApprovalRequest(approval);
-  await replyToLark(
-    event,
-    `这个请求涉及非只读操作，已发给宋一凡确认；确认前不会执行。请求 ID：${id}`,
-    { idempotencyKey: `sensitive-pending-${id}` },
-  );
+  const delivery = await sendSensitiveOperationApprovalRequest(approval);
+  if (delivery?.target !== 'thread') {
+    await replyToLark(
+      event,
+      `这个请求涉及非只读操作，已发给宋一凡确认；确认前不会执行。请求 ID：${id}`,
+      { idempotencyKey: `sensitive-pending-${id}` },
+    );
+  }
   console.error(`[bridge] sensitive operation ${id} awaiting approval for message ${approval.originalMessageId}`);
 }
 
@@ -4969,21 +4971,23 @@ async function handleCardActionEvent(event) {
     return;
   }
 
+  const operatorOpenId = extractCardOperatorOpenId(event);
   await handleApprovalDecision(
     {
       id,
       action: action === 'delegate_cancel' || action === 'sensitive_cancel' ? 'cancel' : 'approve',
     },
-    extractCardOperatorOpenId(event),
+    operatorOpenId,
     async message => {
-      if (config.delegateApproverOpenId) {
+      const targetOpenId = operatorOpenId || config.delegateApproverOpenId;
+      if (targetOpenId) {
         await runCli([
           'im',
           '+messages-send',
           '--as',
           'bot',
           '--user-id',
-          config.delegateApproverOpenId,
+          targetOpenId,
           '--text',
           message,
           '--idempotency-key',
@@ -6102,7 +6106,7 @@ async function handleEvent(event) {
   if (config.prefix && !rawText.startsWith(config.prefix)) return;
 
   const approvalCommand = parseApprovalCommand(rawText);
-  if (approvalCommand && extractChatType(event) === 'p2p') {
+  if (approvalCommand && (extractChatType(event) === 'p2p' || isApprovalOwnerEvent(event))) {
     let approvalResponseCount = 0;
     await handleApprovalDecision(approvalCommand, extractSenderId(event), async message => {
       approvalResponseCount += 1;

@@ -31,6 +31,11 @@ src/sensitive-policy.mjs
 src/session-markdown.mjs
   - session-share Markdown and table rendering
 
+src/claude-session.mjs
+  - Claude local JSONL session discovery
+  - loose matching by recent session, title, project path, content, or id
+  - visible transcript extraction for text and image messages
+
 src/sender-policy.mjs
   - bot-loop and sender skip policy
 
@@ -51,6 +56,11 @@ ordinary-query sandbox.
 
 Sensitive non-owner requests are rejected before Codex starts and converted into
 an owner approval card in the source thread.
+
+Session-share export is provider-aware. Codex sessions come from
+`CODEX_HOME`; Claude sessions come from `CLAUDE_PROJECTS_ROOT`. Claude export
+intentionally omits thinking blocks, tool calls, tool results, and hidden
+metadata; only visible user/assistant text and images are rendered.
 
 MR review automation has one narrow relay exception: when a known Lark bot/app
 sender posts Codebase MR links and the message explicitly says it was sent by

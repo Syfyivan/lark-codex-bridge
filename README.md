@@ -106,6 +106,7 @@ node lark-codex-bridge.mjs
 lark-codex-bridge.mjs   CLI entrypoint, Lark event loop, Codex execution, HTTP API
 docs/architecture.md    Runtime boundaries and Codex cold-start roadmap
 src/codex-runner.mjs    Codex runner interface, exec runner, sandbox policy, scratch guard
+src/claude-session.mjs  Claude local session lookup and visible transcript parsing
 src/env.mjs             Environment parsing and option normalization
 src/lark-format.mjs     Lark reply formatting helpers
 src/process-manager.mjs Child process execution helper
@@ -232,6 +233,8 @@ CODEX_NON_OWNER_SCRATCH_ROOT=     # defaults to the OS temp directory
 CODEX_MODEL=
 CODEX_TIMEOUT_MS=600000
 CODEX_EPHEMERAL=1
+CLAUDE_HOME=~/.claude
+CLAUDE_PROJECTS_ROOT=~/.claude/projects
 
 PROGRESS_CARD_ENABLED=1
 PROGRESS_CARD_UPDATE_INTERVAL_MS=8000
@@ -268,7 +271,8 @@ information for the lower-latency app-server roadmap.
 
 ## Session Lookup
 
-The bridge can find local Codex sessions from `CODEX_HOME` and show a result card.
+The bridge can find local Codex sessions from `CODEX_HOME` and Claude sessions
+from `CLAUDE_PROJECTS_ROOT`, then show a result card.
 Find-style commands such as `find session ...`, `找出 ... session`, `查找 ...
 session`, or `搜索 ... 会话` do not export immediately. They return a card with
 a `生成链接` button when `SESSION_SHARE_OUTPUT=web` or `goofy`, or a `生成文档`
@@ -292,6 +296,23 @@ Natural direct messages also work when they include a session ID, for example:
 ```text
 019e7228-4b13-7c50-bbe4-f085e5c9b401 这个 session 帮我生成分享链接
 ```
+
+Claude sessions usually have no obvious title in the UI, so the bridge accepts
+looser hints:
+
+```text
+分享 Claude 最近会话
+分享 Claude 当前会话
+分享 Claude code.byted.org 的会话
+找一下 Claude game invasion 的 session
+找一下 Claude 包含 横滑 的会话
+```
+
+For Claude, matching order is: session id/prefix, generated title, project path,
+then visible user/assistant content. If only a project path matches multiple
+sessions, the newest session in that project is used. If content or title
+matching is ambiguous, the bot returns recent candidates for you to narrow down
+or click.
 
 ## Reply Rendering And Bot Loops
 

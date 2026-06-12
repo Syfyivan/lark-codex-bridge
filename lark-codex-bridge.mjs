@@ -17,6 +17,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  findClaudeSession,
+  parseClaudeSessionTranscript,
+} from './src/claude-session.mjs';
+import {
   envFlag as readEnvFlag,
   parseReactionRules,
   splitCsv,
@@ -213,6 +217,7 @@ try {
 
 const env = process.env;
 const defaultCodexHome = env.CODEX_HOME || join(homedir(), '.codex');
+const defaultClaudeHome = env.CLAUDE_HOME || join(homedir(), '.claude');
 
 function parseAliasOpenIdMap(value) {
   const text = String(value || '').trim();
@@ -310,6 +315,8 @@ const config = {
   ),
   codexHome: defaultCodexHome,
   codexSessionIndexFile: env.CODEX_SESSION_INDEX_FILE || join(defaultCodexHome, 'session_index.jsonl'),
+  claudeHome: defaultClaudeHome,
+  claudeProjectsRoot: env.CLAUDE_PROJECTS_ROOT || join(defaultClaudeHome, 'projects'),
   sessionShareDocAs: env.SESSION_SHARE_DOC_AS === 'bot' ? 'bot' : 'user',
   sessionShareFolderToken: env.SESSION_SHARE_FOLDER_TOKEN || '',
   sessionShareWikiNode: env.SESSION_SHARE_WIKI_NODE || '',
@@ -1092,14 +1099,25 @@ function cleanSessionTitleQuery(value) {
   if (quoted?.[1]) return quoted[1].trim();
 
   text = text
-    .replace(/^(?:codex\s*)?(?:session|会话)\s*/i, '')
+    .replace(/^(?:帮我|帮忙|请)?\s*(?:找一下|找下|查一下|查找|找到|找出|搜索|搜一下|分享|导出|生成|创建)\s*/i, '')
+    .replace(/^(?:codex|claude)\s*/i, '')
+    .replace(/^(?:codex|claude)?\s*(?:session|会话)\s*/i, '')
+    .replace(/^(?:包含|含有|关键词|内容)(?:为|是|:|：)?\s*/i, '')
     .replace(/^(?:标题|title|名称|名字)(?:\s*(?:叫|为|是|:|：))?\s*/i, '')
     .replace(/^(?:叫|为|是|:|：)\s*/i, '')
     .replace(/[，,。；;]\s*(?:请)?(?:发送|发|分享到?|导出到?|写入|生成|创建).*(?:飞书)?文档.*$/i, '')
-    .replace(/\s*(?:这个|该)?(?:的)?\s*(?:codex\s*)?(?:session|会话)\s*$/i, '')
+    .replace(/\s*(?:这个|该)?(?:的)?\s*(?:(?:codex|claude)\s*)?(?:session|会话)\s*$/i, '')
+    .replace(/\s*的\s*$/i, '')
     .trim();
 
   return stripWrappingQuotes(text);
+}
+
+function parseSessionProvider(value) {
+  const text = String(value || '');
+  if (/\bclaude\b|Claude|克劳德/i.test(text)) return 'claude';
+  if (/\bcodex\b/i.test(text)) return 'codex';
+  return 'codex';
 }
 
 function parseExplicitSessionTitleQuery(value) {
@@ -1108,7 +1126,7 @@ function parseExplicitSessionTitleQuery(value) {
   if (quoted?.[1]) return quoted[1].trim();
 
   const match =
-    /(?:标题|title|名称|名字)(?:\s*(?:叫|为|是|:|：))?\s*(.+?)\s*(?:的\s*)?(?:codex\s*)?(?:session|会话)(?=\s*(?:[，,。；;]|$|发送|发|分享到?|导出到?|导出|写入|生成|创建))/i.exec(
+    /(?:标题|title|名称|名字)(?:\s*(?:叫|为|是|:|：))?\s*(.+?)\s*(?:的\s*)?(?:(?:codex|claude)\s*)?(?:session|会话)(?=\s*(?:[，,。；;]|$|发送|发|分享到?|导出到?|导出|写入|生成|创建))/i.exec(
       text,
     );
   return match?.[1] ? cleanSessionTitleQuery(match[1]) : '';
@@ -1126,7 +1144,7 @@ function parseNaturalSessionReferenceQuery(value) {
   const sessionId = parseSessionIdQuery(text);
   if (sessionId) return sessionId;
 
-  const leadingReference = /^(.+?)\s*(?:这个|该)?(?:的)?\s*(?:codex\s*)?(?:session|会话)(?=\s*(?:帮|请|给|生成|创建|分享|导出|快照|链接|link|文档|$))/i.exec(
+  const leadingReference = /^(.+?)\s*(?:这个|该)?(?:的)?\s*(?:(?:codex|claude)\s*)?(?:session|会话)(?=\s*(?:帮|请|给|生成|创建|分享|导出|快照|链接|link|文档|$))/i.exec(
     text,
   );
   return leadingReference?.[1] ? cleanSessionTitleQuery(leadingReference[1]) : '';
@@ -1139,6 +1157,7 @@ function parseSessionShareCommand(rawText) {
   if (!text) return null;
 
   const lowerText = text.toLowerCase();
+  const provider = parseSessionProvider(text);
   const command = config.sessionShareCommands.find(item => {
     const lowerCommand = item.toLowerCase();
     return (
@@ -1153,6 +1172,7 @@ function parseSessionShareCommand(rawText) {
     const rest = text.slice(command.length);
     return {
       query: parseExplicitSessionTitleQuery(rest) || cleanSessionTitleQuery(rest),
+      provider,
       raw: text,
       intent: 'share',
     };
@@ -1171,6 +1191,7 @@ function parseSessionShareCommand(rawText) {
   if (explicitTitleQuery) {
     return {
       query: explicitTitleQuery,
+      provider,
       raw: text,
       intent: asksToCreateShare ? 'share' : 'find',
     };
@@ -1180,17 +1201,28 @@ function parseSessionShareCommand(rawText) {
   if (naturalReferenceQuery) {
     return {
       query: naturalReferenceQuery,
+      provider,
       raw: text,
       intent: asksToCreateShare ? 'share' : 'find',
     };
   }
 
-  const suffixMatch = /(?:分享|导出|快照).{0,12}(?:codex\s*)?(?:session|会话)\s+(.+)$/i.exec(
+  const suffixMatch = /(?:分享|导出|快照).{0,12}(?:(?:codex|claude)\s*)?(?:session|会话)\s+(.+)$/i.exec(
     text,
   );
   if (suffixMatch?.[1]) {
     return {
       query: cleanSessionTitleQuery(suffixMatch[1]),
+      provider,
+      raw: text,
+      intent: asksToCreateShare ? 'share' : 'find',
+    };
+  }
+
+  if (provider === 'claude' && asksForSnapshot) {
+    return {
+      query: cleanSessionTitleQuery(text),
+      provider,
       raw: text,
       intent: asksToCreateShare ? 'share' : 'find',
     };
@@ -1224,6 +1256,7 @@ function readCodexSessionIndex() {
     if (!id || !threadName) continue;
 
     sessionsById.set(id, {
+      provider: 'codex',
       id,
       threadName,
       updatedAt: String(item.updated_at || item.updatedAt || '').trim(),
@@ -1284,10 +1317,10 @@ function formatSessionUpdatedAt(value) {
 function formatSessionCandidates(candidates) {
   if (!candidates.length) return '无';
   return candidates
-    .map(
-      (session, index) =>
-        `${index + 1}. ${session.threadName}（${formatSessionUpdatedAt(session.updatedAt)}，${session.id}）`,
-    )
+    .map((session, index) => {
+      const project = session.projectPath ? `，${session.projectPath}` : '';
+      return `${index + 1}. ${session.threadName}（${sessionProviderLabel(session)}，${formatSessionUpdatedAt(session.updatedAt)}，${session.id}${project}）`;
+    })
     .join('\n');
 }
 
@@ -1324,6 +1357,76 @@ function findCodexSessionFile(session) {
     if (file) return file;
   }
   throw new Error(`索引里有 session，但找不到本地记录文件：${session.id}`);
+}
+
+function sessionProvider(session) {
+  return session?.provider === 'claude' ? 'claude' : 'codex';
+}
+
+function sessionProviderLabel(sessionOrProvider) {
+  const provider =
+    typeof sessionOrProvider === 'string' ? sessionOrProvider : sessionProvider(sessionOrProvider);
+  return provider === 'claude' ? 'Claude' : 'Codex';
+}
+
+function sessionProviderDisplayName(sessionOrProvider) {
+  return `${sessionProviderLabel(sessionOrProvider)} session`;
+}
+
+function sessionAssistantDisplayName(session) {
+  return sessionProvider(session) === 'claude' ? 'Claude' : 'Codex';
+}
+
+function sessionAssistantAvatar(session) {
+  return sessionProvider(session) === 'claude' ? 'Cl' : 'C';
+}
+
+function publicSessionInfo(session) {
+  if (!session || typeof session !== 'object') return session;
+  return {
+    provider: sessionProvider(session),
+    id: session.id,
+    threadName: session.threadName,
+    updatedAt: session.updatedAt,
+    projectPath: session.projectPath || '',
+    model: session.model || '',
+    visibleTurnCount: session.visibleTurnCount || undefined,
+  };
+}
+
+function publicSessionMatches(matches) {
+  return Array.isArray(matches) ? matches.map(publicSessionInfo) : [];
+}
+
+function findSessionForProvider(provider, query) {
+  if (provider === 'claude') {
+    return findClaudeSession(query, {
+      projectsRoot: config.claudeProjectsRoot,
+      candidateLimit: config.sessionShareCandidateLimit,
+    });
+  }
+  return findCodexSession(query);
+}
+
+function findSessionFileForProvider(session) {
+  if (sessionProvider(session) === 'claude') return session.file;
+  return findCodexSessionFile(session);
+}
+
+function parseSessionTranscriptForProvider(session, sessionFile) {
+  if (sessionProvider(session) === 'claude') {
+    const transcript = parseClaudeSessionTranscript(sessionFile);
+    transcript.turns = transcript.turns.map(turn => {
+      const parts = redactSessionMessageParts(sessionTurnParts(turn));
+      return {
+        ...turn,
+        parts,
+        text: sessionMessagePartsToCopyText(parts),
+      };
+    });
+    return transcript;
+  }
+  return parseCodexSessionTranscript(sessionFile);
 }
 
 function isImageWrapperText(value) {
@@ -1551,9 +1654,11 @@ function markdownFence(text) {
 
 function buildSessionSnapshotMarkdown(session, sessionFile, transcript) {
   const exportedAt = formatLocalTime();
-  const rawSource = transcript.meta?.originator || transcript.meta?.source || 'Codex';
+  const providerLabel = sessionProviderLabel(session);
+  const assistantName = sessionAssistantDisplayName(session);
+  const rawSource = transcript.meta?.originator || transcript.meta?.source || providerLabel;
   const source = typeof rawSource === 'string' ? rawSource : JSON.stringify(rawSource);
-  const cwd = transcript.meta?.cwd || '';
+  const cwd = transcript.meta?.cwd || session.projectPath || '';
   const header = [
     '## 会话信息',
     '',
@@ -1567,7 +1672,7 @@ function buildSessionSnapshotMarkdown(session, sessionFile, transcript) {
     cwd ? `| 工作目录 | ${escapeTableCell(cwd)} |` : '',
     `| 本地记录 | ${escapeTableCell(sessionFile)} |`,
     '',
-    '> 说明：只导出 Codex 中可见的用户和助手消息；system/developer 指令、工具调用、工具输出、token 统计已省略。',
+    `> 说明：只导出 ${providerLabel} 中可见的用户和助手消息；system/developer 指令、thinking、工具调用、工具输出、token 统计已省略。`,
     '',
     '---',
     '',
@@ -1581,7 +1686,7 @@ function buildSessionSnapshotMarkdown(session, sessionFile, transcript) {
   let truncated = false;
 
   for (const turn of transcript.turns) {
-    const roleName = turn.role === 'user' ? '用户' : 'Codex';
+    const roleName = turn.role === 'user' ? '用户' : assistantName;
     const phase = turn.phase ? `，${turn.phase}` : '';
     const block = [
       `### ${includedTurns + 1}. ${roleName}`,
@@ -1666,12 +1771,13 @@ function extractCreatedDocInfo(stdout) {
   };
 }
 
-function makeSessionShareDocTitle(threadName) {
-  const title = `Codex session 快照 - ${String(threadName || '未命名会话').replace(/\s+/g, ' ').trim()}`;
+function makeProviderSessionShareDocTitle(session) {
+  const title = `${sessionProviderDisplayName(session)} 快照 - ${String(session.threadName || '未命名会话').replace(/\s+/g, ' ').trim()}`;
   return title.length > 120 ? `${title.slice(0, 117)}...` : title;
 }
 
 function buildSessionShareCard({ session, doc, snapshot, matchType }) {
+  const providerDisplayName = sessionProviderDisplayName(session);
   const docRef = doc.docUrl || doc.docId || '';
   const matchText = formatSessionMatchType(matchType);
   const elements = [
@@ -1679,7 +1785,7 @@ function buildSessionShareCard({ session, doc, snapshot, matchType }) {
       tag: 'div',
       text: {
         tag: 'lark_md',
-        content: `**Codex session**\n${clampCardText(session.threadName, 500)}`,
+        content: `**${providerDisplayName}**\n${clampCardText(session.threadName, 500)}`,
       },
     },
     {
@@ -1744,7 +1850,7 @@ function buildSessionShareCard({ session, doc, snapshot, matchType }) {
       template: 'green',
       title: {
         tag: 'plain_text',
-        content: 'Codex session 快照已生成',
+        content: `${providerDisplayName} 快照已生成`,
       },
     },
     elements,
@@ -1752,6 +1858,7 @@ function buildSessionShareCard({ session, doc, snapshot, matchType }) {
 }
 
 function formatSessionShareSuccessText({ session, doc, snapshot, matchType }) {
+  const providerDisplayName = sessionProviderDisplayName(session);
   const matchText = matchType === 'fuzzy' ? '（按标题包含匹配）' : '';
   const docRef = doc.docUrl || doc.docId || '';
   const docText = docRef
@@ -1761,7 +1868,7 @@ function formatSessionShareSuccessText({ session, doc, snapshot, matchType }) {
   const truncatedText = snapshot.truncated
     ? `\n注意：session 较长，已导出前 ${snapshot.includedTurns}/${snapshot.totalTurns} 条可见消息。`
     : '';
-  return `已导出 Codex session「${session.threadName}」${matchText}到飞书文档${chunkText}：\n${docText}${truncatedText}`;
+  return `已导出 ${providerDisplayName}「${session.threadName}」${matchText}到飞书文档${chunkText}：\n${docText}${truncatedText}`;
 }
 
 async function replyWithSessionShareDocument(event, payload) {
@@ -2877,14 +2984,18 @@ function enhanceSessionShareHtml(html) {
 }
 
 function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
+  const providerLabel = sessionProviderLabel(session);
+  const providerDisplayName = sessionProviderDisplayName(session);
+  const assistantName = sessionAssistantDisplayName(session);
+  const assistantAvatar = sessionAssistantAvatar(session);
   const displayedTurns = transcript.turns.slice(0, snapshot.includedTurns);
   const copyData = {};
   const turns = displayedTurns
     .map((turn, index) => {
       const isUser = turn.role === 'user';
       const side = isUser ? 'user' : 'assistant';
-      const label = isUser ? '用户' : 'codex 回复';
-      const avatar = isUser ? '你' : 'C';
+      const label = isUser ? '用户' : `${assistantName} 回复`;
+      const avatar = isUser ? '你' : assistantAvatar;
       const turnId = `turn-${index + 1}`;
       const time = turn.timestamp ? formatSessionUpdatedAt(turn.timestamp) : '';
       const phase = turn.phase ? ` · ${escapeHtml(turn.phase)}` : '';
@@ -2908,7 +3019,7 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
     .join('\n');
   const copyDataJson = safeScriptJson(copyData);
 
-  const sourceRaw = transcript.meta?.originator || transcript.meta?.source || 'Codex';
+  const sourceRaw = transcript.meta?.originator || transcript.meta?.source || providerLabel;
   const source = typeof sourceRaw === 'string' ? sourceRaw : JSON.stringify(sourceRaw);
   const createdAt = formatLocalTime();
   const truncatedNote = snapshot.truncated
@@ -2920,7 +3031,7 @@ function makeSessionSharePageHtml({ session, transcript, snapshot, shareId }) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(session.threadName)} · Codex session 快照</title>
+  <title>${escapeHtml(session.threadName)} · ${escapeHtml(providerDisplayName)} 快照</title>
   <style>
     :root {
       color-scheme: light;
@@ -3301,7 +3412,7 @@ ${sessionShareEnhancementCss()}
     <section class="hero">
       <div class="title-row">
         <div>
-          <div class="eyebrow">Codex Session Snapshot</div>
+          <div class="eyebrow">${escapeHtml(providerLabel)} Session Snapshot</div>
           <h1>${escapeHtml(session.threadName)}</h1>
           <div class="meta">
             <span class="pill">Session ${escapeHtml(session.id)}</span>
@@ -3364,6 +3475,9 @@ function isSessionShareWebOutput() {
 }
 
 function formatSessionMatchType(matchType) {
+  if (matchType === 'recent') return '最近会话';
+  if (matchType === 'project-recent') return '项目最近会话';
+  if (matchType === 'content') return '内容包含匹配';
   if (matchType === 'fuzzy') return '标题包含匹配';
   if (matchType === 'id') return 'Session ID 匹配';
   return '标题精确匹配';
@@ -3371,6 +3485,7 @@ function formatSessionMatchType(matchType) {
 
 function buildSessionFoundCard({ session, snapshot, matchType }) {
   const actionText = isSessionShareWebOutput() ? '生成链接' : '生成文档';
+  const providerDisplayName = sessionProviderDisplayName(session);
   return {
     config: {
       wide_screen_mode: true,
@@ -3380,7 +3495,7 @@ function buildSessionFoundCard({ session, snapshot, matchType }) {
       template: 'blue',
       title: {
         tag: 'plain_text',
-        content: '找到 Codex session',
+        content: `找到 ${providerDisplayName}`,
       },
     },
     elements: [
@@ -3388,7 +3503,7 @@ function buildSessionFoundCard({ session, snapshot, matchType }) {
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: `**Codex session**\n${clampCardText(session.threadName, 500)}`,
+          content: `**${providerDisplayName}**\n${clampCardText(session.threadName, 500)}`,
         },
       },
       {
@@ -3418,6 +3533,7 @@ function buildSessionFoundCard({ session, snapshot, matchType }) {
             value: {
               bridge_action: 'session_generate_link',
               session_id: session.id,
+              provider: sessionProvider(session),
               output: config.sessionShareOutput,
             },
           },
@@ -3437,8 +3553,9 @@ function buildSessionFoundCard({ session, snapshot, matchType }) {
 }
 
 function formatSessionFoundText({ session, snapshot, matchType }) {
+  const providerDisplayName = sessionProviderDisplayName(session);
   return [
-    `找到 Codex session「${session.threadName}」。`,
+    `找到 ${providerDisplayName}「${session.threadName}」。`,
     `匹配方式：${formatSessionMatchType(matchType)}`,
     `Session ID：${session.id}`,
     `更新时间：${formatSessionUpdatedAt(session.updatedAt)}`,
@@ -3461,6 +3578,7 @@ async function replyWithSessionFoundCard(event, payload) {
 
 function buildSessionShareWebCard({ session, share, snapshot, matchType }) {
   const matchText = formatSessionMatchType(matchType);
+  const providerDisplayName = sessionProviderDisplayName(session);
   return {
     config: {
       wide_screen_mode: true,
@@ -3470,7 +3588,7 @@ function buildSessionShareWebCard({ session, share, snapshot, matchType }) {
       template: 'green',
       title: {
         tag: 'plain_text',
-        content: 'Codex session 网页快照已生成',
+        content: `${providerDisplayName} 网页快照已生成`,
       },
     },
     elements: [
@@ -3478,7 +3596,7 @@ function buildSessionShareWebCard({ session, share, snapshot, matchType }) {
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: `**Codex session**\n${clampCardText(session.threadName, 500)}`,
+          content: `**${providerDisplayName}**\n${clampCardText(session.threadName, 500)}`,
         },
       },
       {
@@ -3523,11 +3641,12 @@ function buildSessionShareWebCard({ session, share, snapshot, matchType }) {
 }
 
 function formatSessionShareWebSuccessText({ session, share, snapshot, matchType }) {
+  const providerDisplayName = sessionProviderDisplayName(session);
   const matchText = matchType === 'fuzzy' ? '（按标题包含匹配）' : '';
   const truncatedText = snapshot.truncated
     ? `\n注意：session 较长，已导出前 ${snapshot.includedTurns}/${snapshot.totalTurns} 条可见消息。`
     : '';
-  return `已生成 Codex session「${session.threadName}」${matchText}的网页快照：\n${formatLarkMarkdownLink('打开网页快照', share.url)}${truncatedText}`;
+  return `已生成 ${providerDisplayName}「${session.threadName}」${matchText}的网页快照：\n${formatLarkMarkdownLink('打开网页快照', share.url)}${truncatedText}`;
 }
 
 async function replyWithSessionShareWebPage(event, payload) {
@@ -3592,33 +3711,34 @@ async function createSessionShareDocument(title, markdown) {
 }
 
 async function handleSessionShareCommand(event, command) {
+  const provider = command.provider || 'codex';
   const query = cleanSessionTitleQuery(command.query);
-  if (!query) {
+  if (!query && provider !== 'claude') {
     await replyToLark(
       event,
-      '用法：/session-share <session标题或ID>，也可以说“找一下标题叫 xxx 的 session”。',
+      '用法：/session-share <session标题或ID>，也可以说“找一下标题叫 xxx 的 session”。Claude 可以说“分享 Claude 最近会话”或“分享 Claude code.byted.org 的会话”。',
     );
     return;
   }
 
-  const result = findCodexSession(query);
+  const result = findSessionForProvider(provider, query);
   if (result.status === 'ambiguous') {
     await replyToLark(
       event,
-      `匹配到多个 Codex session，请把标题说得更完整一点：\n${formatSessionCandidates(result.matches)}`,
+      `匹配到多个 ${sessionProviderDisplayName(provider)}，请把标题、项目名、关键词或时间说得更完整一点：\n${formatSessionCandidates(result.matches)}`,
     );
     return;
   }
   if (result.status !== 'ok') {
     await replyToLark(
       event,
-      `没有找到标题或 ID 匹配「${query}」的 Codex session。\n最近的 session：\n${formatSessionCandidates(result.matches)}`,
+      `没有找到匹配「${query || '最近'}」的 ${sessionProviderDisplayName(provider)}。\n最近的 session：\n${formatSessionCandidates(result.matches)}`,
     );
     return;
   }
 
-  const sessionFile = findCodexSessionFile(result.session);
-  const transcript = parseCodexSessionTranscript(sessionFile);
+  const sessionFile = findSessionFileForProvider(result.session);
+  const transcript = parseSessionTranscriptForProvider(result.session, sessionFile);
   if (!transcript.turns.length) {
     await replyToLark(event, `找到了 session「${result.session.threadName}」，但没有提取到可见对话消息。`);
     return;
@@ -3646,7 +3766,7 @@ async function handleSessionShareCommand(event, command) {
   }
 
   const doc = await createSessionShareDocument(
-    makeSessionShareDocTitle(result.session.threadName),
+    makeProviderSessionShareDocTitle(result.session),
     snapshot.markdown,
   );
   await replyWithSessionShareDocument(event, {
@@ -3662,18 +3782,19 @@ async function createSessionShareFromQuery(query, options = {}) {
     return { ok: false, status: 403, error: 'session share is disabled' };
   }
 
+  const provider = options.provider || 'codex';
   const cleanedQuery = cleanSessionTitleQuery(query);
-  if (!cleanedQuery) {
+  if (!cleanedQuery && provider !== 'claude') {
     return { ok: false, status: 400, error: 'missing session query' };
   }
 
-  const result = findCodexSession(cleanedQuery);
+  const result = findSessionForProvider(provider, cleanedQuery);
   if (result.status === 'ambiguous') {
     return {
       ok: false,
       status: 409,
       error: 'ambiguous session query',
-      matches: result.matches,
+      matches: publicSessionMatches(result.matches),
     };
   }
   if (result.status !== 'ok') {
@@ -3681,18 +3802,18 @@ async function createSessionShareFromQuery(query, options = {}) {
       ok: false,
       status: 404,
       error: 'session not found',
-      matches: result.matches,
+      matches: publicSessionMatches(result.matches),
     };
   }
 
-  const sessionFile = findCodexSessionFile(result.session);
-  const transcript = parseCodexSessionTranscript(sessionFile);
+  const sessionFile = findSessionFileForProvider(result.session);
+  const transcript = parseSessionTranscriptForProvider(result.session, sessionFile);
   if (!transcript.turns.length) {
     return {
       ok: false,
       status: 422,
       error: 'session has no visible transcript messages',
-      session: result.session,
+      session: publicSessionInfo(result.session),
       session_file: sessionFile,
     };
   }
@@ -3702,7 +3823,7 @@ async function createSessionShareFromQuery(query, options = {}) {
     return {
       ok: true,
       intent: 'find',
-      session: result.session,
+      session: publicSessionInfo(result.session),
       session_file: sessionFile,
       match_type: result.matchType,
       snapshot: {
@@ -3719,7 +3840,7 @@ async function createSessionShareFromQuery(query, options = {}) {
       ok: true,
       intent: 'share',
       output: config.sessionShareOutput,
-      session: result.session,
+      session: publicSessionInfo(result.session),
       session_file: sessionFile,
       match_type: result.matchType,
       share,
@@ -3732,14 +3853,14 @@ async function createSessionShareFromQuery(query, options = {}) {
   }
 
   const doc = await createSessionShareDocument(
-    makeSessionShareDocTitle(result.session.threadName),
+    makeProviderSessionShareDocTitle(result.session),
     snapshot.markdown,
   );
   return {
     ok: true,
     intent: 'share',
     output: 'doc',
-    session: result.session,
+    session: publicSessionInfo(result.session),
     session_file: sessionFile,
     match_type: result.matchType,
     doc,
@@ -3772,16 +3893,17 @@ async function updateOrSendSessionShareCard(event, card, idempotencyKey, fallbac
 
 async function handleSessionGenerateLinkAction(event, value) {
   const sessionId = String(value.session_id || value.sessionId || '').trim();
+  const provider = String(value.provider || 'codex').trim() === 'claude' ? 'claude' : 'codex';
   if (!sessionId) return false;
 
-  const result = findCodexSession(sessionId);
+  const result = findSessionForProvider(provider, sessionId);
   if (result.status !== 'ok') {
     await replyToLark(event, `生成链接失败：找不到 session ${sessionId}`);
     return true;
   }
 
-  const sessionFile = findCodexSessionFile(result.session);
-  const transcript = parseCodexSessionTranscript(sessionFile);
+  const sessionFile = findSessionFileForProvider(result.session);
+  const transcript = parseSessionTranscriptForProvider(result.session, sessionFile);
   if (!transcript.turns.length) {
     await replyToLark(event, `找到了 session「${result.session.threadName}」，但没有提取到可见对话消息。`);
     return true;
@@ -3806,7 +3928,7 @@ async function handleSessionGenerateLinkAction(event, value) {
   }
 
   const doc = await createSessionShareDocument(
-    makeSessionShareDocTitle(result.session.threadName),
+    makeProviderSessionShareDocTitle(result.session),
     snapshot.markdown,
   );
   const payload = {
@@ -5593,7 +5715,7 @@ function openApiSpec(request) {
       '/v1/codex/session-shares': {
         post: {
           operationId: 'createCodexSessionShare',
-          summary: 'Create a Codex session-share snapshot',
+          summary: 'Create a session-share snapshot. Defaults to Codex; pass provider=claude for Claude.',
           security: config.httpToken ? [{ bearerAuth: [] }] : [],
           requestBody: {
             required: true,
@@ -5604,15 +5726,75 @@ function openApiSpec(request) {
                   properties: {
                     session_id: {
                       type: 'string',
-                      description: 'Codex session id or id prefix.',
+                      description: 'Session id or id prefix.',
+                    },
+                    provider: {
+                      type: 'string',
+                      enum: ['codex', 'claude'],
+                      description: 'Session provider. Defaults to codex.',
                     },
                     query: {
                       type: 'string',
-                      description: 'Session title query if session_id is not provided.',
+                      description: 'Session title, project path, content query, or recent/current hint.',
                     },
                     find_only: {
                       type: 'boolean',
                       description: 'Return metadata without exporting a share.',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: 'Session-share result',
+            },
+            400: {
+              description: 'Bad request',
+            },
+            401: {
+              description: 'Unauthorized',
+            },
+            403: {
+              description: 'Session-share export disabled',
+            },
+            404: {
+              description: 'Session not found',
+            },
+            409: {
+              description: 'Ambiguous session query',
+            },
+            500: {
+              description: 'Export failed',
+            },
+          },
+        },
+      },
+      '/v1/sessions/session-shares': {
+        post: {
+          operationId: 'createSessionShare',
+          summary: 'Create a Codex or Claude session-share snapshot',
+          security: config.httpToken ? [{ bearerAuth: [] }] : [],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    provider: {
+                      type: 'string',
+                      enum: ['codex', 'claude'],
+                    },
+                    session_id: {
+                      type: 'string',
+                    },
+                    query: {
+                      type: 'string',
+                    },
+                    find_only: {
+                      type: 'boolean',
                     },
                   },
                 },
@@ -5702,9 +5884,11 @@ async function handleHttpRequest(request, response) {
 
   try {
     const body = await readJsonBody(request);
-    if (url.pathname === '/v1/codex/session-shares') {
+    if (url.pathname === '/v1/codex/session-shares' || url.pathname === '/v1/sessions/session-shares') {
       const query = String(body.session_id || body.sessionId || body.query || '').trim();
+      const provider = String(body.provider || 'codex').trim().toLowerCase();
       const result = await createSessionShareFromQuery(query, {
+        provider: provider === 'claude' ? 'claude' : 'codex',
         findOnly: Boolean(body.find_only || body.findOnly),
       });
       jsonResponse(response, result.ok ? 200 : result.status || 500, result);

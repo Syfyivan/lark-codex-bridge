@@ -127,6 +127,26 @@ export function createCodexProgressLineHandler(progress) {
   };
 }
 
+export function createCodexExecRunner(config, deps = {}) {
+  const {
+    clampReply = value => String(value || ''),
+    runProcessFn = runProcess,
+  } = deps;
+
+  return {
+    id: 'exec',
+    label: 'codex exec',
+    async run(prompt, options = {}) {
+      return callCodexExec(prompt, {
+        ...options,
+        config,
+        clampReply,
+        runProcessFn,
+      });
+    },
+  };
+}
+
 export async function callCodexExec(prompt, options = {}) {
   const {
     config,
@@ -134,6 +154,7 @@ export async function callCodexExec(prompt, options = {}) {
     sandbox = config.codexSandbox,
     cwd = config.codexCwd,
     clampReply = value => String(value || ''),
+    runProcessFn = runProcess,
   } = options;
   const tmp = mkdtempSync(join(tmpdir(), 'lark-codex-'));
   const outputFile = join(tmp, 'last-message.txt');
@@ -170,7 +191,7 @@ export async function callCodexExec(prompt, options = {}) {
 
   try {
     const onStdoutChunk = progress ? createCodexProgressLineHandler(progress) : null;
-    const { stdout } = await runProcess(config.codexBin, args, {
+    const { stdout } = await runProcessFn(config.codexBin, args, {
       stdin: fullPrompt,
       timeoutMs: config.codexTimeoutMs,
       cwd,

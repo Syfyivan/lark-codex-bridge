@@ -22,7 +22,7 @@ import {
   splitCsv,
 } from './src/env.mjs';
 import {
-  callCodexExec,
+  createCodexExecRunner,
   createNonOwnerCodexExecutionContext,
   nonOwnerGuardNotice,
   normalizeNonOwnerSandboxMode,
@@ -422,6 +422,7 @@ const config = {
 
 const seenMessages = new Set();
 const bridgeStartedAtMs = Date.now();
+const codexRunner = createCodexExecRunner(config, { clampReply });
 let startupChecks = [];
 let mentionLookupWarningLogged = false;
 
@@ -5373,11 +5374,7 @@ async function callByteCloudApi(prompt) {
 }
 
 async function callCodex(prompt, options = {}) {
-  return callCodexExec(prompt, {
-    ...options,
-    config,
-    clampReply,
-  });
+  return codexRunner.run(prompt, options);
 }
 
 async function buildReply(prompt, options = {}) {
@@ -5414,6 +5411,7 @@ function bridgeHealthPayload() {
     uptime_sec: uptimeSec(),
     codex_sandbox: config.codexSandbox,
     codex_non_owner_sandbox: config.codexNonOwnerSandbox,
+    codex_runner: codexRunner.id,
     session_share_output: config.sessionShareOutput,
     startup_checks: startupChecks,
   };
@@ -5432,6 +5430,7 @@ function bridgeHealthText() {
     codexCwd: config.codexCwd,
     codexSandbox: config.codexSandbox,
     codexNonOwnerSandbox: config.codexNonOwnerSandbox,
+    codexRunner: codexRunner.id,
     sessionShareOutput: config.sessionShareOutput,
     startupChecks,
   });

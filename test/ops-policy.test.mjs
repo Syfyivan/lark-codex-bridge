@@ -73,6 +73,7 @@ test('formatHealthReport includes startup checks', () => {
     httpHost: '127.0.0.1',
     httpPort: 8787,
     codexCwd: '/tmp/repo',
+    codexRunner: 'exec',
     codexSandbox: 'danger-full-access',
     codexNonOwnerSandbox: 'workspace-write',
     sessionShareOutput: 'goofy',
@@ -84,5 +85,6 @@ test('formatHealthReport includes startup checks', () => {
     }],
   });
   assert.match(report, /Lark Codex Bridge Health/);
+  assert.match(report, /codexRunner: exec/);
   assert.match(report, /\[OK\] Codex app-server steer/);
 });

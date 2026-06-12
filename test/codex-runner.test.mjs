@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 
 import {
+  createCodexExecRunner,
   createNonOwnerCodexExecutionContext,
   nonOwnerGuardNotice,
   normalizeNonOwnerSandboxMode,
@@ -72,4 +73,47 @@ test('parseCodexProgressLine summarizes Codex JSON events', () => {
     ),
     '阶段完成',
   );
+});
+
+test('createCodexExecRunner wraps codex exec behind a stable runner interface', async () => {
+  let captured = null;
+  const runner = createCodexExecRunner(
+    {
+      codexBin: 'codex-test',
+      codexPromptPrefix: 'prefix',
+      codexSandbox: 'read-only',
+      codexCwd: '/workspace',
+      codexTimeoutMs: 1234,
+      codexModel: '',
+      codexResume: '',
+      codexSkipGitRepoCheck: true,
+      codexEphemeral: true,
+    },
+    {
+      clampReply: value => String(value).trim(),
+      runProcessFn: async (command, args, options) => {
+        captured = { command, args, options };
+        const outputIndex = args.indexOf('--output-last-message') + 1;
+        assert.ok(outputIndex > 0);
+        writeFileSync(args[outputIndex], ' final reply \n');
+        return { stdout: 'ignored stdout', stderr: '' };
+      },
+    },
+  );
+
+  const reply = await runner.run('hello', {
+    cwd: '/other-workspace',
+    sandbox: 'workspace-write',
+  });
+
+  assert.equal(runner.id, 'exec');
+  assert.equal(reply, 'final reply');
+  assert.equal(captured.command, 'codex-test');
+  assert.deepEqual(captured.args.slice(0, 5), ['exec', '--cd', '/other-workspace', '--sandbox', 'workspace-write']);
+  assert.equal(captured.args.includes('--skip-git-repo-check'), true);
+  assert.equal(captured.args.includes('--ephemeral'), true);
+  assert.equal(captured.options.cwd, '/other-workspace');
+  assert.equal(captured.options.timeoutMs, 1234);
+  assert.match(captured.options.stdin, /prefix/);
+  assert.match(captured.options.stdin, /飞书用户消息：\nhello/);
 });

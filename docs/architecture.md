@@ -18,6 +18,8 @@ src/process-manager.mjs
   - child process execution with timeout and output capture
 
 src/codex-runner.mjs
+  - Codex runner interface
+  - current `exec` runner implementation
   - Codex sandbox normalization
   - non-owner scratch workspace guard
   - codex exec argument construction
@@ -67,6 +69,10 @@ reference Feishu bridge: it verifies whether the installed Codex CLI exposes
 `turn/steer` and `turn/interrupt` in generated app-server types. This is
 reported in `/health`, `/healthz`, and `doctor`; it does not change execution
 behavior.
+
+The Lark event router now calls Codex through a small runner object. The only
+production runner is still `exec`, but this keeps future `app-server` work out
+of the Lark routing and approval code.
 
 The next performance step is a separate Codex runtime module that can choose
 between:

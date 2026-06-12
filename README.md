@@ -105,7 +105,7 @@ node lark-codex-bridge.mjs
 ```text
 lark-codex-bridge.mjs   CLI entrypoint, Lark event loop, Codex execution, HTTP API
 docs/architecture.md    Runtime boundaries and Codex cold-start roadmap
-src/codex-runner.mjs    Codex exec runner, sandbox policy, non-owner scratch guard
+src/codex-runner.mjs    Codex runner interface, exec runner, sandbox policy, scratch guard
 src/env.mjs             Environment parsing and option normalization
 src/lark-format.mjs     Lark reply formatting helpers
 src/process-manager.mjs Child process execution helper
@@ -262,8 +262,9 @@ The owner can mention the bot in a group, or message it directly, with:
 
 `/health` includes the configured sandbox modes, session-share output, and a
 startup preflight for Codex app-server `turn/steer` and `turn/interrupt`
-protocol support. The bridge still runs normal tasks through `codex exec`; this
-check is only readiness information for the lower-latency app-server roadmap.
+protocol support. It also reports the active Codex runner. The bridge still
+runs normal tasks through the `exec` runner; this check is only readiness
+information for the lower-latency app-server roadmap.
 
 ## Session Lookup
 

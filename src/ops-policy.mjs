@@ -103,6 +103,7 @@ export function formatHealthReport(input) {
     `eventEnabled: ${input.eventEnabled ? 'yes' : 'no'}`,
     `http: ${input.httpHost}:${input.httpPort || 0}`,
     `codexCwd: ${input.codexCwd}`,
+    `codexRunner: ${input.codexRunner || 'exec'}`,
     `codexSandbox: ${input.codexSandbox}`,
     `codexNonOwnerSandbox: ${input.codexNonOwnerSandbox}`,
     `sessionShareOutput: ${input.sessionShareOutput}`,

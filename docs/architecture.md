@@ -12,7 +12,7 @@ lark-codex-bridge.mjs
   - Lark event routing
   - approval card orchestration
   - session-share workflow
-  - HTTP health/task endpoints
+  - HTTP health/task/session-share endpoints
 
 src/process-manager.mjs
   - child process execution with timeout and output capture
@@ -31,6 +31,11 @@ src/session-markdown.mjs
 
 src/sender-policy.mjs
   - bot-loop and sender skip policy
+
+src/ops-policy.mjs
+  - owner ops command parsing and formatting
+  - health/version report formatting
+  - Codex app-server protocol preflight
 ```
 
 ## Execution Model
@@ -56,6 +61,12 @@ use the normal owner approval path.
 
 The current runtime still launches `codex exec` per turn. That is simple and
 robust, but each turn pays process startup and session bootstrap cost.
+
+Startup now runs a lightweight app-server protocol preflight inspired by the
+reference Feishu bridge: it verifies whether the installed Codex CLI exposes
+`turn/steer` and `turn/interrupt` in generated app-server types. This is
+reported in `/health`, `/healthz`, and `doctor`; it does not change execution
+behavior.
 
 The next performance step is a separate Codex runtime module that can choose
 between:

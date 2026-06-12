@@ -18,8 +18,10 @@ Lark bot event -> lark-cli -> Codex CLI -> Lark reply or progress card
 - Replace the progress card with the final answer when the task finishes.
 - Render final answers with card Markdown so fenced code blocks display cleanly.
 - Find local Codex sessions and generate snapshot links from a card button.
+- Owner-only ops commands for health, version, and log tail checks from Lark.
 - Optional delegated-user approval flow for messages that mention another user.
-- Optional local HTTP endpoint: `POST /v1/codex/tasks`.
+- Optional local HTTP endpoints: `POST /v1/codex/tasks` and
+  `POST /v1/codex/session-shares`.
 - Optional generic service/JWT and API gateway modes for custom backends.
 
 ## Requirements
@@ -159,6 +161,20 @@ curl -sS http://127.0.0.1:8787/v1/codex/tasks \
   -d '{"source":"local-test","prompt":"Reply with one short sentence."}'
 ```
 
+Example session-share lookup or export request:
+
+```bash
+TOKEN="$(cat ~/.lark-codex-bridge-http-token)"
+
+curl -sS http://127.0.0.1:8787/v1/codex/session-shares \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"019eb645-44a8-7df2-8221-0366d880dd80","find_only":true}'
+```
+
+Set `find_only` to `false` or omit it to export using the configured
+`SESSION_SHARE_OUTPUT`.
+
 ## Troubleshooting
 
 If startup fails with:
@@ -232,6 +248,22 @@ SESSION_SHARE_GOOFY_TIMEOUT_MS=180000
 BYTEDCLI_BIN=bytedcli
 SESSION_SHARE_REPLY_STYLE=card
 ```
+
+## Owner Ops Commands
+
+The owner can mention the bot in a group, or message it directly, with:
+
+```text
+/health
+/version
+/logs 40
+/ops health
+```
+
+`/health` includes the configured sandbox modes, session-share output, and a
+startup preflight for Codex app-server `turn/steer` and `turn/interrupt`
+protocol support. The bridge still runs normal tasks through `codex exec`; this
+check is only readiness information for the lower-latency app-server roadmap.
 
 ## Session Lookup
 

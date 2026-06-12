@@ -29,6 +29,13 @@ import {
   normalizeSandboxMode,
 } from './src/codex-runner.mjs';
 import { closeUnclosedCodeFence } from './src/lark-format.mjs';
+import {
+  checkCodexAppServerSteerSupport,
+  formatHealthReport,
+  formatOpsHelp,
+  formatVersionReport,
+  parseOpsCommand,
+} from './src/ops-policy.mjs';
 import { runProcess } from './src/process-manager.mjs';
 import {
   canDirectReviewAutomation,
@@ -367,6 +374,7 @@ const config = {
   httpHost: env.BRIDGE_HTTP_HOST || '127.0.0.1',
   httpPort: Number(env.BRIDGE_HTTP_PORT || 0),
   httpToken: readOptionalSecret(env.BRIDGE_HTTP_TOKEN || '', env.BRIDGE_HTTP_TOKEN_FILE || ''),
+  bridgeLogFile: env.BRIDGE_LOG_FILE || join(process.cwd(), 'logs', 'lark-codex-bridge.err.log'),
   larkCliBin: env.LARK_CLI_BIN || 'lark-cli',
   jwtEndpoint:
     env.SERVICE_JWT_ENDPOINT ||
@@ -414,6 +422,7 @@ const config = {
 
 const seenMessages = new Set();
 const bridgeStartedAtMs = Date.now();
+let startupChecks = [];
 let mentionLookupWarningLogged = false;
 
 function requireEnv(name, value) {
@@ -3647,6 +3656,100 @@ async function handleSessionShareCommand(event, command) {
   });
 }
 
+async function createSessionShareFromQuery(query, options = {}) {
+  if (!config.sessionShareEnabled) {
+    return { ok: false, status: 403, error: 'session share is disabled' };
+  }
+
+  const cleanedQuery = cleanSessionTitleQuery(query);
+  if (!cleanedQuery) {
+    return { ok: false, status: 400, error: 'missing session query' };
+  }
+
+  const result = findCodexSession(cleanedQuery);
+  if (result.status === 'ambiguous') {
+    return {
+      ok: false,
+      status: 409,
+      error: 'ambiguous session query',
+      matches: result.matches,
+    };
+  }
+  if (result.status !== 'ok') {
+    return {
+      ok: false,
+      status: 404,
+      error: 'session not found',
+      matches: result.matches,
+    };
+  }
+
+  const sessionFile = findCodexSessionFile(result.session);
+  const transcript = parseCodexSessionTranscript(sessionFile);
+  if (!transcript.turns.length) {
+    return {
+      ok: false,
+      status: 422,
+      error: 'session has no visible transcript messages',
+      session: result.session,
+      session_file: sessionFile,
+    };
+  }
+
+  const snapshot = buildSessionSnapshotMarkdown(result.session, sessionFile, transcript);
+  if (options.findOnly) {
+    return {
+      ok: true,
+      intent: 'find',
+      session: result.session,
+      session_file: sessionFile,
+      match_type: result.matchType,
+      snapshot: {
+        included_turns: snapshot.includedTurns,
+        total_turns: snapshot.totalTurns,
+        truncated: snapshot.truncated,
+      },
+    };
+  }
+
+  if (isSessionShareWebOutput()) {
+    const share = await createSessionShareWebPage(result.session, transcript, snapshot);
+    return {
+      ok: true,
+      intent: 'share',
+      output: config.sessionShareOutput,
+      session: result.session,
+      session_file: sessionFile,
+      match_type: result.matchType,
+      share,
+      snapshot: {
+        included_turns: snapshot.includedTurns,
+        total_turns: snapshot.totalTurns,
+        truncated: snapshot.truncated,
+      },
+    };
+  }
+
+  const doc = await createSessionShareDocument(
+    makeSessionShareDocTitle(result.session.threadName),
+    snapshot.markdown,
+  );
+  return {
+    ok: true,
+    intent: 'share',
+    output: 'doc',
+    session: result.session,
+    session_file: sessionFile,
+    match_type: result.matchType,
+    doc,
+    snapshot: {
+      included_turns: snapshot.includedTurns,
+      total_turns: snapshot.totalTurns,
+      truncated: snapshot.truncated,
+    },
+  };
+}
+
 async function updateOrSendSessionShareCard(event, card, idempotencyKey, fallbackText) {
   const cardMessageId = extractMessageId(event);
   if (cardMessageId) {
@@ -5292,6 +5395,98 @@ function runCli(args, stdin = '', options = {}) {
   return runProcess(config.larkCliBin, args, { stdin, ...options }).then(({ stdout }) => stdout);
 }
 
+function bridgeVersion() {
+  return packageInfo().version;
+}
+
+function uptimeSec() {
+  return Math.max(0, Math.round((Date.now() - bridgeStartedAtMs) / 1000));
+}
+
+function bridgeHealthPayload() {
+  return {
+    ok: true,
+    mode: config.mode,
+    event_enabled: config.eventEnabled,
+    codex_cwd: config.codexCwd,
+    version: bridgeVersion(),
+    pid: process.pid,
+    uptime_sec: uptimeSec(),
+    codex_sandbox: config.codexSandbox,
+    codex_non_owner_sandbox: config.codexNonOwnerSandbox,
+    session_share_output: config.sessionShareOutput,
+    startup_checks: startupChecks,
+  };
+}
+
+function bridgeHealthText() {
+  return formatHealthReport({
+    timeIso: new Date().toISOString(),
+    version: bridgeVersion(),
+    pid: process.pid,
+    uptimeSec: uptimeSec(),
+    mode: config.mode,
+    eventEnabled: config.eventEnabled,
+    httpHost: config.httpHost,
+    httpPort: config.httpPort,
+    codexCwd: config.codexCwd,
+    codexSandbox: config.codexSandbox,
+    codexNonOwnerSandbox: config.codexNonOwnerSandbox,
+    sessionShareOutput: config.sessionShareOutput,
+    startupChecks,
+  });
+}
+
+function bridgeVersionText() {
+  return formatVersionReport({
+    version: bridgeVersion(),
+    pid: process.pid,
+    uptimeSec: uptimeSec(),
+  });
+}
+
+function readLastLogLines(file, lines = 30) {
+  const limit = Math.max(1, lines);
+  if (!existsSync(file)) return `日志文件不存在：${file}`;
+  const text = readFileSync(file, 'utf8');
+  return text.split(/\r?\n/).slice(-limit).join('\n').trim() || '(日志为空)';
+}
+
+async function handleOpsCommand(event, command) {
+  if (!isApprovalOwnerEvent(event)) {
+    await replyToLark(event, '只有宋一凡本人可以执行 bridge ops 命令。');
+    return true;
+  }
+  if (extractChatType(event) !== 'p2p' && !eventMentionsBot(event) && !textMentionsBot(extractText(event))) {
+    return false;
+  }
+
+  if (command.action === 'help') {
+    await replyToLark(event, formatOpsHelp());
+    return true;
+  }
+  if (command.action === 'version') {
+    await replyToLark(event, bridgeVersionText());
+    return true;
+  }
+  if (command.action === 'health') {
+    await replyToLark(event, bridgeHealthText());
+    return true;
+  }
+  if (command.action === 'logs') {
+    await replyToLark(
+      event,
+      [
+        `Bridge logs: ${config.bridgeLogFile}`,
+        '',
+        readLastLogLines(config.bridgeLogFile, command.lines),
+      ].join('\n').slice(0, 3500),
+    );
+    return true;
+  }
+  return false;
+}
+
 function jsonResponse(response, statusCode, body) {
   const text = JSON.stringify(body);
   response.writeHead(statusCode, {
@@ -5396,6 +5591,60 @@ function openApiSpec(request) {
           },
         },
       },
+      '/v1/codex/session-shares': {
+        post: {
+          operationId: 'createCodexSessionShare',
+          summary: 'Create a Codex session-share snapshot',
+          security: config.httpToken ? [{ bearerAuth: [] }] : [],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    session_id: {
+                      type: 'string',
+                      description: 'Codex session id or id prefix.',
+                    },
+                    query: {
+                      type: 'string',
+                      description: 'Session title query if session_id is not provided.',
+                    },
+                    find_only: {
+                      type: 'boolean',
+                      description: 'Return metadata without exporting a share.',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: 'Session-share result',
+            },
+            400: {
+              description: 'Bad request',
+            },
+            401: {
+              description: 'Unauthorized',
+            },
+            403: {
+              description: 'Session-share export disabled',
+            },
+            404: {
+              description: 'Session not found',
+            },
+            409: {
+              description: 'Ambiguous session query',
+            },
+            500: {
+              description: 'Export failed',
+            },
+          },
+        },
+      },
     },
     components: config.httpToken
       ? {
@@ -5429,12 +5678,7 @@ async function handleHttpRequest(request, response) {
   const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
 
   if (request.method === 'GET' && url.pathname === '/healthz') {
-    jsonResponse(response, 200, {
-      ok: true,
-      mode: config.mode,
-      event_enabled: config.eventEnabled,
-      codex_cwd: config.codexCwd,
-    });
+    jsonResponse(response, 200, bridgeHealthPayload());
     return;
   }
 
@@ -5447,7 +5691,7 @@ async function handleHttpRequest(request, response) {
     return;
   }
 
-  if (request.method !== 'POST' || url.pathname !== '/v1/codex/tasks') {
+  if (request.method !== 'POST') {
     jsonResponse(response, 404, { ok: false, error: 'not found' });
     return;
   }
@@ -5459,6 +5703,20 @@ async function handleHttpRequest(request, response) {
 
   try {
     const body = await readJsonBody(request);
+    if (url.pathname === '/v1/codex/session-shares') {
+      const query = String(body.session_id || body.sessionId || body.query || '').trim();
+      const result = await createSessionShareFromQuery(query, {
+        findOnly: Boolean(body.find_only || body.findOnly),
+      });
+      jsonResponse(response, result.ok ? 200 : result.status || 500, result);
+      return;
+    }
+
+    if (url.pathname !== '/v1/codex/tasks') {
+      jsonResponse(response, 404, { ok: false, error: 'not found' });
+      return;
+    }
+
     const prompt = String(body.prompt || '').trim();
     if (!prompt) {
       jsonResponse(response, 400, { ok: false, error: 'missing prompt' });
@@ -5534,7 +5792,7 @@ function checkCommand(command, args = ['--version']) {
   };
 }
 
-function runDoctor() {
+async function runDoctor() {
   let failures = 0;
   let warnings = 0;
 
@@ -5607,6 +5865,18 @@ function runDoctor() {
 
   if (config.mode !== 'codex' && !['jwt-check', 'agent', 'tae', 'api'].includes(config.mode)) {
     report('fail', `Unsupported BRIDGE_MODE: ${config.mode}`);
+  }
+
+  if (config.mode === 'codex') {
+    const appServerCheck = await checkCodexAppServerSteerSupport({
+      codexBin: config.codexBin,
+      runProcess,
+    });
+    startupChecks = [appServerCheck];
+    report(
+      appServerCheck.ok ? 'ok' : 'warn',
+      `Codex app-server steer preflight: ${appServerCheck.detail}`,
+    );
   }
 
   console.log('');
@@ -5978,6 +6248,11 @@ async function handleEvent(event) {
     return;
   }
 
+  const opsCommand = parseOpsCommand(stripBotMentionText(rawText));
+  if (opsCommand && await handleOpsCommand(event, opsCommand)) {
+    return;
+  }
+
   if (await shouldHandleDelegateMention(event, rawText)) {
     try {
       await reactToLarkMessage(event, rawText);
@@ -6138,15 +6413,40 @@ function startEventSubscription() {
   return sub;
 }
 
-function main() {
+function startStartupChecks() {
+  if (config.mode !== 'codex') return;
+  checkCodexAppServerSteerSupport({
+    codexBin: config.codexBin,
+    runProcess,
+  })
+    .then(check => {
+      startupChecks = [check];
+      console.error(`[bridge] startup check ${check.id}: ${check.state} - ${check.detail}`);
+    })
+    .catch(error => {
+      startupChecks = [{
+        id: 'codex-app-server-steer',
+        label: 'Codex app-server steer',
+        state: 'fail',
+        ok: false,
+        detail: String(error?.message || error).slice(0, 240),
+        checkedAt: new Date().toISOString(),
+        durationMs: 0,
+      }];
+      console.error(`[bridge] startup check failed: ${error.stack || error.message || error}`);
+    });
+}
+
+async function main() {
   if (cli.command === 'doctor') {
-    runDoctor();
+    await runDoctor();
     return;
   }
 
   console.error(
     `[bridge] starting, mode=${config.mode}, eventEnabled=${config.eventEnabled}, httpPort=${config.httpPort || 'off'}`,
   );
+  startStartupChecks();
   startHttpServer();
   startDelegatePolling();
   if (config.eventEnabled) {
@@ -6158,4 +6458,7 @@ function main() {
   }
 }
 
-main();
+main().catch(error => {
+  console.error(`[bridge] fatal: ${error.stack || error.message || error}`);
+  process.exit(1);
+});

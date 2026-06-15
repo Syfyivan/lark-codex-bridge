@@ -5,23 +5,22 @@
 //
 // Enable on the bridge side with PET_SYNC_ENABLED=1 and BRIDGE_HTTP_PORT set.
 import { PET_CONFIG } from './config/pet-config.js'
-import { reactToEvent } from './reactions.js'
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787'
 
-// hooks: { say, playMotion, onStatus }
+// onEvent({ type, source, text }) — the single event handler (reaction + growth).
+// onStatus(status) — connection status ('connected' | 'offline').
 // opts: { bridgeUrl, token } — override via gitignored config/agent.local.js
-export function connectAgentSync(hooks, opts = {}) {
-  const bridgeUrl = (opts.bridgeUrl || DEFAULT_BRIDGE_URL).replace(/\/$/, '')
-  const token = opts.token || ''
+export function connectAgentSync(onEvent, { bridgeUrl, token, onStatus } = {}) {
+  const base = (bridgeUrl || DEFAULT_BRIDGE_URL).replace(/\/$/, '')
   let es
 
   function connect() {
-    const url = new URL(`${bridgeUrl}/pet/events`)
+    const url = new URL(`${base}/pet/events`)
     if (token) url.searchParams.set('token', token)
     es = new EventSource(url.toString())
-    es.onopen = () => hooks.onStatus?.('connected')
-    es.onerror = () => hooks.onStatus?.('offline') // EventSource auto-reconnects
+    es.onopen = () => onStatus?.('connected')
+    es.onerror = () => onStatus?.('offline') // EventSource auto-reconnects
 
     for (const type of Object.keys(PET_CONFIG.events)) {
       es.addEventListener(type, (ev) => {
@@ -31,7 +30,7 @@ export function connectAgentSync(hooks, opts = {}) {
         } catch {
           /* keep empty payload */
         }
-        reactToEvent({ type, source: payload.source || 'lark', text: payload.text }, hooks)
+        onEvent({ type, source: payload.source || 'lark', text: payload.text })
       })
     }
   }

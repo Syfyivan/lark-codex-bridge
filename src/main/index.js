@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, screen } = require('electron')
 const path = require('path')
 const http = require('http')
+const fs = require('fs')
 
 let win
 let tray
@@ -59,6 +60,23 @@ ipcMain.on('pet:move', (e, dx, dy) => {
   if (!w) return
   const [x, y] = w.getPosition()
   w.setPosition(Math.round(x + dx), Math.round(y + dy))
+})
+
+// Growth state (level/exp/food) persisted in userData. (P4)
+const stateFile = () => path.join(app.getPath('userData'), 'kodama-state.json')
+ipcMain.handle('pet:get-state', () => {
+  try {
+    return JSON.parse(fs.readFileSync(stateFile(), 'utf8'))
+  } catch {
+    return null
+  }
+})
+ipcMain.on('pet:save-state', (_e, state) => {
+  try {
+    fs.writeFileSync(stateFile(), JSON.stringify(state))
+  } catch (err) {
+    console.error(`[kodama] save state failed: ${err.message}`)
+  }
 })
 
 // Local receiver for Claude Code / Codex hooks. They POST lifecycle events here;

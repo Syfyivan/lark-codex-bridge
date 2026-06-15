@@ -30,7 +30,7 @@ pnpm start
 | **P1** | 飞书机器人联动：订阅 `lark-codex-bridge` 的 `/pet/events`(SSE)，把收消息/起任务/进度/回复/完成/失败同步成动作+气泡 | ✅ |
 | **P2** | ✅ JSON 动作表 + 来源标签 + 气泡优先级 + 渲染栈/模型本地化(`pnpm run setup`)；⏳ 行为状态机/命中分区 | 🚧 |
 | **P3** | ✅ 本地 Claude Code/Codex hook 接收(`source:local`)；⏳ 构建/测试/Git 联动、插件化 | 🚧 |
-| **P4** | 养成系统：token 消耗→喂食→经验→升级→解锁皮肤/动作表演；番茄钟 + 久坐提醒；本地项目任务 | ⏳ |
+| **P4** | ✅ 养成核心：事件喂食→饱食/经验→升级(带升级表演)→点击看等级，状态持久化；⏳ 番茄钟/久坐、皮肤解锁、token 用量喂食 | 🚧 |
 
 ## 飞书机器人联动（核心特色）
 
@@ -96,6 +96,17 @@ pnpm start
 ```
 
 `render.local.js` 和 `src/renderer/pets/*` 已 gitignore——私人（可能有版权的）GIF 只在本机用，不会进仓库或分发包；删掉 `render.local.js` 即回到公开的 Live2D。
+
+## 养成系统（P4）
+
+桌宠会"长大"：每个 agent 事件都会喂食它。
+
+- **喂食/经验**：事件按 `src/renderer/growth.js` 的 `GAINS` 表加 🍖饱食 与 ⭐经验（`task_done` 给得最多）。
+- **升级**：经验过阈值自动升级，触发升级气泡 + 动作表演。
+- **状态持久化**：`{ level, exp, food, totalFed }` 存在主进程的 `userData/kodama-state.json`，经 preload 的 `getState/saveState`。
+- **查看**：点一下桌宠显示 `Lv.N · 🍖food · ⭐exp/next`。
+
+待做：番茄钟/久坐提醒喂食、按等级解锁皮肤与动作表演、接入真实 token 用量喂食。
 
 ## 架构
 

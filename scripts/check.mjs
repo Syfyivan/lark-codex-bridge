@@ -11,6 +11,7 @@ const ESM = [
   'src/renderer/renderer.js',
   'src/renderer/agent-sync.js',
   'src/renderer/reactions.js',
+  'src/renderer/growth.js',
   'src/renderer/backends/gif.js',
   'src/renderer/config/pet-config.js',
   'src/renderer/config/render.local.example.js',

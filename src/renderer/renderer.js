@@ -1,6 +1,7 @@
 /* global PIXI */
 import { connectAgentSync } from './agent-sync.js'
 import { reactToEvent } from './reactions.js'
+import { initGrowth, feed as feedGrowth, statusText } from './growth.js'
 
 // Live2D model is chosen by `pnpm run setup <name>` (writes ./models/current-model.js).
 const FALLBACK_MODEL_URL = './models/wanko/Wanko.model3.json'
@@ -42,7 +43,7 @@ async function init() {
     setupInteraction()
     say('你好，我是 Kodama~ 🌳', 3000)
 
-    // One pet, two sources — both flow through the same reaction entry.
+    // One pet, two sources — both flow through the same handler (reaction + growth).
     const hooks = {
       say,
       playMotion: (g) => backend?.playMotion?.(g),
@@ -51,10 +52,16 @@ async function init() {
         backend?.setStatus?.(s)
       },
     }
+    await initGrowth(hooks)
+    const handleAgentEvent = (event) => {
+      reactToEvent(event, hooks)
+      feedGrowth(event.type) // P4: events feed the pet
+    }
+
     // source 'lark' via lark-codex-bridge SSE; bridge URL/token overridable.
     const agentCfg = (await importLocal('./config/agent.local.js'))?.AGENT || {}
-    connectAgentSync(hooks, agentCfg)
-    window.pet.onAgentEvent?.((event) => reactToEvent(event, hooks)) // source 'local'
+    connectAgentSync(handleAgentEvent, { ...agentCfg, onStatus: hooks.onStatus })
+    window.pet.onAgentEvent?.(handleAgentEvent) // source 'local'
   } catch (err) {
     console.error('[kodama] init failed:', err)
     say('启动失败：' + (err?.message || err), 6000)
@@ -166,7 +173,7 @@ function setupInteraction() {
 
 function onTap() {
   backend?.playMotion('Tap')
-  say('嗯？要开始干活了吗 🐾', 1800)
+  say(`🐾 ${statusText()}`, 2500)
 }
 
 // ---------- bubble ----------

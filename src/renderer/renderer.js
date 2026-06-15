@@ -66,6 +66,13 @@ async function init() {
     // P4: poll local token usage and feed the pet by token delta.
     refreshTokens()
     setInterval(refreshTokens, 5 * 60 * 1000)
+
+    // P4: pomodoro / sedentary bubbles from the main process.
+    window.pet.onNotify?.(({ text, status, motion }) => {
+      if (status) backend?.setStatus?.(status)
+      if (motion) backend?.playMotion?.(motion)
+      if (text) say(text, 3500)
+    })
   } catch (err) {
     console.error('[kodama] init failed:', err)
     say('启动失败：' + (err?.message || err), 6000)

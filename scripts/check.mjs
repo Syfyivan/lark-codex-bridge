@@ -6,7 +6,12 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const CJS = ['src/main/index.js', 'src/main/preload.js', 'src/main/token-usage.js']
+const CJS = [
+  'src/main/index.js',
+  'src/main/preload.js',
+  'src/main/token-usage.js',
+  'src/main/pomodoro.js',
+]
 const ESM = [
   'src/renderer/renderer.js',
   'src/renderer/agent-sync.js',

@@ -11,4 +11,6 @@ contextBridge.exposeInMainWorld('pet', {
   saveState: (state) => ipcRenderer.send('pet:save-state', state),
   // local token usage stats (P4)
   tokenStats: () => ipcRenderer.invoke('pet:token-stats'),
+  // pomodoro / reminder bubbles from main (P4)
+  onNotify: (cb) => ipcRenderer.on('pet-notify', (_e, payload) => cb(payload)),
 })

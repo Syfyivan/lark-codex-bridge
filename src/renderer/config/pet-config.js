@@ -15,5 +15,6 @@ export const PET_CONFIG = {
     task_waiting: { status: 'waiting', motion: 'Idle', priority: 5, ms: 6000, bubble: '{icon} {label}需要你确认一下！👉' },
     task_done: { status: 'done', motion: 'Tap', priority: 4, ms: 5000, bubble: '{icon} {label}搞定啦 🎉 {text}' },
     task_failed: { status: 'failed', motion: null, priority: 5, ms: 6000, bubble: '{icon} {label}任务失败了… 去看日志 😣' },
+    pomodoro_completed: { status: 'done', motion: 'Tap', priority: 4, ms: 5000, bubble: '🍅 番茄钟完成！好棒，奖励经验~' },
   },
 }

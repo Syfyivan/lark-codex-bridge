@@ -3,9 +3,15 @@ const path = require('path')
 const http = require('http')
 const fs = require('fs')
 const tokenUsage = require('./token-usage')
+const { createPomodoro } = require('./pomodoro')
 
 let win
 let tray
+let pomodoro = null
+
+function sendToPet(channel, payload) {
+  if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+}
 
 function createWindow() {
   const { workArea } = screen.getPrimaryDisplay()
@@ -179,6 +185,22 @@ function fmtTokens(n) {
   return String(n)
 }
 
+function fmtClock(s) {
+  const m = Math.floor(s / 60)
+  return `${m}:${String(s % 60).padStart(2, '0')}`
+}
+
+// Live countdown in the menu-bar title (cheap, called every tick).
+function updateTrayClock(st) {
+  if (!tray || process.platform !== 'darwin') return
+  if (!st || st.phase === 'idle') {
+    tray.setTitle('🌳')
+    return
+  }
+  const emoji = st.phase === 'focus' ? '🍅' : '☕'
+  tray.setTitle(`${emoji} ${fmtClock(st.remaining)}${st.paused ? ' ⏸' : ''}`)
+}
+
 function refreshTray() {
   if (!tray) return
   let stats = { today: 0, last7: 0 }
@@ -187,16 +209,22 @@ function refreshTray() {
   } catch {
     /* keep zeros */
   }
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: 'Kodama 桌宠', enabled: false },
-      { type: 'separator' },
-      { label: `今日 token：${fmtTokens(stats.today)}`, enabled: false },
-      { label: `近 7 天：${fmtTokens(stats.last7)}`, enabled: false },
-      { type: 'separator' },
-      { label: '退出 Quit', click: () => app.quit() },
-    ]),
+  const ps = pomodoro ? pomodoro.state() : { phase: 'idle', paused: false }
+  const items = [{ label: 'Kodama 桌宠', enabled: false }, { type: 'separator' }]
+  if (ps.phase === 'idle') {
+    items.push({ label: '🍅 开始番茄钟', click: () => pomodoro?.start() })
+  } else {
+    items.push({ label: ps.paused ? '▶ 继续' : '⏸ 暂停', click: () => pomodoro?.pauseResume() })
+    items.push({ label: '✕ 放弃', click: () => pomodoro?.abandon() })
+  }
+  items.push(
+    { type: 'separator' },
+    { label: `今日 token：${fmtTokens(stats.today)}`, enabled: false },
+    { label: `近 7 天：${fmtTokens(stats.last7)}`, enabled: false },
+    { type: 'separator' },
+    { label: '退出 Quit', click: () => app.quit() },
   )
+  tray.setContextMenu(Menu.buildFromTemplate(items))
 }
 
 function createTray() {
@@ -213,6 +241,25 @@ app.whenReady().then(() => {
   createWindow()
   createTray()
   startLocalAgentServer()
+
+  // Pomodoro: main owns the timer + tray controls; the renderer just animates.
+  pomodoro = createPomodoro({
+    onNotify: (n) => {
+      sendToPet('pet-notify', n) // bubble + status/motion in renderer
+      refreshTray() // menu reflects the new phase
+    },
+    onReward: () => sendToPet('agent-event', { type: 'pomodoro_completed', source: 'local' }),
+    onTick: (st) => updateTrayClock(st),
+  })
+  setInterval(() => pomodoro.tick(), 1000)
+
+  // Sedentary nudge: gentle bubble unless you're already on a break.
+  setInterval(() => {
+    const phase = pomodoro?.state().phase
+    if (phase === 'short_break' || phase === 'long_break') return
+    sendToPet('pet-notify', { text: '🪑 久坐啦，起来走两步~', status: 'looking' })
+  }, 45 * 60 * 1000)
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

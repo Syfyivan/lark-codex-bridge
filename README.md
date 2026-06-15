@@ -8,6 +8,7 @@
 
 ```bash
 pnpm install
+pnpm run setup   # 下载渲染栈 + Live2D 模型到本地（首次必跑，之后离线可用）
 pnpm start
 ```
 
@@ -17,7 +18,7 @@ pnpm start
 - **按住拖动**可以挪位置
 - **菜单栏 🌳 图标** → 退出
 
-> P0 的渲染依赖（PixiJS / pixi-live2d-display / Cubism Core）和示例模型从 CDN 加载，**首次启动需联网**。P1 起会把它们打包到本地。
+> 渲染栈（PixiJS / pixi-live2d-display / Cubism Core）和示例模型由 `pnpm run setup` 下载到本地 `src/renderer/vendor`、`src/renderer/models`（已 gitignore：Cubism Core 与官方模型受再分发限制，故按需下载而非提交）。下载后运行时**完全离线**。
 
 ## 路线图
 
@@ -25,8 +26,9 @@ pnpm start
 |------|------|------|
 | **P0** | 透明置顶窗 + Live2D 模型 + 待机动画 + 拖动 + 点击穿透 | ✅ |
 | **P1** | 飞书机器人联动：订阅 `lark-codex-bridge` 的 `/pet/events`(SSE)，把收消息/起任务/进度/回复/完成/失败同步成动作+气泡 | ✅ |
-| **P2** | ✅ JSON 动作表(`config/pet-config.js`) + 来源标签 + 气泡优先级；⏳ 行为状态机/命中分区/渲染栈本地化 | 🚧 |
-| **P3** | ✅ 本地 Claude Code/Codex hook 接收(`source:local`)；⏳ 番茄钟/久坐提醒、构建/测试/Git 联动、插件化 | 🚧 |
+| **P2** | ✅ JSON 动作表 + 来源标签 + 气泡优先级 + 渲染栈/模型本地化(`pnpm run setup`)；⏳ 行为状态机/命中分区 | 🚧 |
+| **P3** | ✅ 本地 Claude Code/Codex hook 接收(`source:local`)；⏳ 构建/测试/Git 联动、插件化 | 🚧 |
+| **P4** | 养成系统：token 消耗→喂食→经验→升级→解锁皮肤/动作表演；番茄钟 + 久坐提醒；本地项目任务 | ⏳ |
 
 ## 飞书机器人联动（核心特色）
 

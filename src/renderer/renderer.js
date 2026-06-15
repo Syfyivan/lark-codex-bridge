@@ -2,9 +2,8 @@
 import { connectAgentSync } from './agent-sync.js'
 import { reactToEvent } from './reactions.js'
 
-// A cute Cubism 4 sample model (Haru). Swapped for a local model in P1.
-const MODEL_URL =
-  'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json'
+// Cute Cubism 4 sample model (Haru), served locally — run `pnpm run setup`.
+const MODEL_URL = './models/haru/haru_greeter_t03.model3.json'
 
 const { Live2DModel } = PIXI.live2d
 
@@ -112,7 +111,7 @@ function playMotion(group) {
 function onTap() {
   // Best-effort tap reaction; idle/blink/breath play automatically.
   try {
-    model.motion('TapBody')
+    model.motion('Tap')
   } catch (_) {
     /* model may not define this group */
   }

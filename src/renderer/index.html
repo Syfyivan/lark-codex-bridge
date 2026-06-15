@@ -3,24 +3,33 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self' 'unsafe-inline' https://cubism.live2d.com https://cdn.jsdelivr.net data: blob:; img-src * data: blob:; connect-src *;" />
+      content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: file:; img-src 'self' data: blob: file:; connect-src 'self' data: blob: file: http://127.0.0.1:* http://localhost:*;" />
     <title>Kodama</title>
     <link rel="stylesheet" href="./style.css" />
 
     <!--
-      P0 loads the rendering stack from CDNs so you can SEE a moving pet immediately.
-      In P1 we vendor these locally (Cubism Core is proprietary and must ship inside the app).
+      Rendering stack served locally (run `pnpm run setup` to download into
+      vendor/). Cubism Core is proprietary and must ship inside the app; the
+      sample model lives under ./models. Load order matters: core -> pixi ->
+      the display plugin (which reads window.PIXI).
     -->
-    <!-- Live2D Cubism Core (proprietary; official CDN) -->
-    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
-    <!-- PixiJS v6 (UMD browser build) -->
-    <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
-    <!-- pixi-live2d-display, Cubism 4 build (registers PIXI.live2d) -->
-    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+    <script src="./vendor/live2dcubismcore.min.js"></script>
+    <script src="./vendor/pixi.min.js"></script>
+    <script src="./vendor/cubism4.min.js"></script>
   </head>
   <body>
     <canvas id="pet-canvas"></canvas>
     <div id="bubble" class="hidden"></div>
+    <!-- surface any load/runtime error as a visible bubble instead of a blank window -->
+    <script>
+      window.addEventListener('error', function (e) {
+        var b = document.getElementById('bubble')
+        if (b) {
+          b.textContent = '⚠️ ' + (e.message || 'load error')
+          b.classList.remove('hidden')
+        }
+      })
+    </script>
     <script type="module" src="./renderer.js"></script>
   </body>
 </html>

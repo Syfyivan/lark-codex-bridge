@@ -4,6 +4,7 @@
   "description": "Kodama — a Live2D desktop pet that reacts to your coding agents (Claude Code / Codex).",
   "main": "src/main/index.js",
   "scripts": {
+    "setup": "node scripts/setup-assets.mjs",
     "start": "electron .",
     "dev": "electron ."
   },

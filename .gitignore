@@ -1,0 +1,9 @@
+node_modules/
+dist/
+out/
+.DS_Store
+*.log
+
+# Generated/downloaded assets (vendored locally from P1 onward)
+src/renderer/vendor/
+src/renderer/models/

@@ -30,7 +30,7 @@ pnpm start
 | **P1** | 飞书机器人联动：订阅 `lark-codex-bridge` 的 `/pet/events`(SSE)，把收消息/起任务/进度/回复/完成/失败同步成动作+气泡 | ✅ |
 | **P2** | ✅ JSON 动作表 + 来源标签 + 气泡优先级 + 渲染栈/模型本地化(`pnpm run setup`)；⏳ 行为状态机/命中分区 | 🚧 |
 | **P3** | ✅ 本地 Claude Code/Codex hook 接收(`source:local`)；⏳ 构建/测试/Git 联动、插件化 | 🚧 |
-| **P4** | ✅ 养成核心：事件喂食→饱食/经验→升级(带升级表演)→点击看等级，状态持久化；⏳ 番茄钟/久坐、皮肤解锁、token 用量喂食 | 🚧 |
+| **P4** | ✅ 养成核心 + 本地 token 统计/喂食（今日·近7天，托盘 + 点击查看）；⏳ 跨源 token 归账（飞书侧）、番茄钟/久坐、皮肤解锁 | 🚧 |
 
 ## 飞书机器人联动（核心特色）
 
@@ -106,7 +106,17 @@ pnpm start
 - **状态持久化**：`{ level, exp, food, totalFed }` 存在主进程的 `userData/kodama-state.json`，经 preload 的 `getState/saveState`。
 - **查看**：点一下桌宠显示 `Lv.N · 🍖food · ⭐exp/next`。
 
-待做：番茄钟/久坐提醒喂食、按等级解锁皮肤与动作表演、接入真实 token 用量喂食。
+待做：番茄钟/久坐提醒喂食、按等级解锁皮肤与动作表演。
+
+## Token 用量与喂食（P4）
+
+桌宠会因为你"用 token"而长大——这也是本项目的核心新意（跨来源统一归账）的本地半边。
+
+- **取数**：主进程 `src/main/token-usage.js` 读本地 JSONL —— Claude Code(`~/.claude/projects`，读 `message.usage`) + Codex(`~/.codex/sessions`，尽力解析)，按天聚合。
+- **统计**：托盘菜单显示「今日 token / 近 7 天」，点桌宠显示「今日 X tok」。IPC `pet:token-stats` 返回 `{today,last7,total,byDay}`。
+- **喂食**：`growth.js` 的 `feedTokens(total)` 首次只记基线（不把历史用量一次性灌成升级），之后按 token 增量喂食（默认每 2000 token = 1 🍖）。
+- ⚠️ JSONL 的 token 数是**近似值**（缓存 token、字段缺失会导致与官方计量有偏差），够用来"喂宠物 + 看大致用量"，不是账单级精度。
+- **跨源（待做，真正的新意点）**：让 bridge 在事件里带上飞书侧跑 Codex 的 usage，并入**同一本账**，做"本地 + 飞书"统一 token 归账。
 
 ## 架构
 

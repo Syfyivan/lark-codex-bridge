@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, screen } = require('electron')
 const path = require('path')
 const http = require('http')
 const fs = require('fs')
+const tokenUsage = require('./token-usage')
 
 let win
 let tray
@@ -76,6 +77,17 @@ ipcMain.on('pet:save-state', (_e, state) => {
     fs.writeFileSync(stateFile(), JSON.stringify(state))
   } catch (err) {
     console.error(`[kodama] save state failed: ${err.message}`)
+  }
+})
+
+// Local token usage (Claude Code + Codex JSONL). The Feishu/bridge half merges
+// in later (source-tagged) for the cross-source ledger. (P4)
+ipcMain.handle('pet:token-stats', () => {
+  try {
+    return tokenUsage.summarize()
+  } catch (err) {
+    console.error(`[kodama] token stats failed: ${err.message}`)
+    return { today: 0, last7: 0, total: 0, byDay: {} }
   }
 })
 
@@ -161,19 +173,40 @@ function startLocalAgentServer() {
   return server
 }
 
+function fmtTokens(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`
+  return String(n)
+}
+
+function refreshTray() {
+  if (!tray) return
+  let stats = { today: 0, last7: 0 }
+  try {
+    stats = tokenUsage.summarize()
+  } catch {
+    /* keep zeros */
+  }
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Kodama 桌宠', enabled: false },
+      { type: 'separator' },
+      { label: `今日 token：${fmtTokens(stats.today)}`, enabled: false },
+      { label: `近 7 天：${fmtTokens(stats.last7)}`, enabled: false },
+      { type: 'separator' },
+      { label: '退出 Quit', click: () => app.quit() },
+    ]),
+  )
+}
+
 function createTray() {
   // No icon asset yet in P0 — use a menu-bar title on macOS so it stays clickable.
   const { nativeImage } = require('electron')
   tray = new Tray(nativeImage.createEmpty())
   if (process.platform === 'darwin') tray.setTitle('🌳')
   tray.setToolTip('Kodama')
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: 'Kodama 桌宠', enabled: false },
-      { type: 'separator' },
-      { label: '退出 Quit', click: () => app.quit() },
-    ]),
-  )
+  refreshTray()
+  setInterval(refreshTray, 5 * 60 * 1000)
 }
 
 app.whenReady().then(() => {

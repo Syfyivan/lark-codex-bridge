@@ -1,7 +1,7 @@
 /* global PIXI */
 import { connectAgentSync } from './agent-sync.js'
 import { reactToEvent } from './reactions.js'
-import { initGrowth, feed as feedGrowth, statusText } from './growth.js'
+import { initGrowth, feed as feedGrowth, feedTokens, statusText } from './growth.js'
 
 // Live2D model is chosen by `pnpm run setup <name>` (writes ./models/current-model.js).
 const FALLBACK_MODEL_URL = './models/wanko/Wanko.model3.json'
@@ -62,6 +62,10 @@ async function init() {
     const agentCfg = (await importLocal('./config/agent.local.js'))?.AGENT || {}
     connectAgentSync(handleAgentEvent, { ...agentCfg, onStatus: hooks.onStatus })
     window.pet.onAgentEvent?.(handleAgentEvent) // source 'local'
+
+    // P4: poll local token usage and feed the pet by token delta.
+    refreshTokens()
+    setInterval(refreshTokens, 5 * 60 * 1000)
   } catch (err) {
     console.error('[kodama] init failed:', err)
     say('启动失败：' + (err?.message || err), 6000)
@@ -173,7 +177,27 @@ function setupInteraction() {
 
 function onTap() {
   backend?.playMotion('Tap')
-  say(`🐾 ${statusText()}`, 2500)
+  say(`🐾 ${statusText()} · 今日 ${fmtTokens(tokenStats.today)} tok`, 3000)
+}
+
+let tokenStats = { today: 0, last7: 0, total: 0 }
+
+function fmtTokens(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`
+  return String(n)
+}
+
+async function refreshTokens() {
+  try {
+    const s = await window.pet.tokenStats?.()
+    if (s) {
+      tokenStats = s
+      feedTokens(s.total)
+    }
+  } catch (_) {
+    /* main not ready */
+  }
 }
 
 // ---------- bubble ----------

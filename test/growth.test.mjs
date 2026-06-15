@@ -12,7 +12,7 @@ globalThis.window = {
   },
 }
 
-const { initGrowth, feed, statusText, getState } = await import('../src/renderer/growth.js')
+const { initGrowth, feed, feedTokens, statusText, getState } = await import('../src/renderer/growth.js')
 
 test('task_done events accrue exp and eventually level up', async () => {
   await initGrowth({ say() {}, playMotion() {} })
@@ -29,4 +29,17 @@ test('unknown event type feeds nothing', async () => {
   const before = getState().exp
   feed('definitely-not-an-event')
   assert.equal(getState().exp, before)
+})
+
+test('feedTokens only sets a baseline on first call (no feed)', () => {
+  const before = getState().food
+  feedTokens(10000) // first call -> baseline
+  assert.equal(getState().food, before)
+  assert.equal(getState().lastTokens, 10000)
+})
+
+test('feedTokens feeds the delta afterwards (2000 tok = 1 food)', () => {
+  const before = getState().food
+  feedTokens(10000 + 4000) // +4000 tokens => +2 food
+  assert.equal(getState().food, before + 2)
 })

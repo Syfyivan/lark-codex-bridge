@@ -9,4 +9,6 @@ contextBridge.exposeInMainWorld('pet', {
   // growth state (P4)
   getState: () => ipcRenderer.invoke('pet:get-state'),
   saveState: (state) => ipcRenderer.send('pet:save-state', state),
+  // local token usage stats (P4)
+  tokenStats: () => ipcRenderer.invoke('pet:token-stats'),
 })

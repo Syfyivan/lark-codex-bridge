@@ -86,14 +86,50 @@ ipcMain.on('pet:save-state', (_e, state) => {
   }
 })
 
-// Local token usage (Claude Code + Codex JSONL). The Feishu/bridge half merges
-// in later (source-tagged) for the cross-source ledger. (P4)
+// Feishu (lark) token ledger — accumulated from bridge events (source-tagged).
+// Kept in its own file so the renderer's growth-state writes don't clobber it.
+// Safe to add on the same machine without double-counting: the bridge runs Codex
+// with --ephemeral, so those sessions are NOT in local ~/.codex.
+const larkTokensFile = () => path.join(app.getPath('userData'), 'kodama-lark-tokens.json')
+function loadLarkLedger() {
+  try {
+    return JSON.parse(fs.readFileSync(larkTokensFile(), 'utf8'))
+  } catch {
+    return {}
+  }
+}
+ipcMain.on('pet:add-lark-tokens', (_e, tokens) => {
+  const n = Number(tokens)
+  if (!Number.isFinite(n) || n <= 0) return
+  const day = new Date().toISOString().slice(0, 10)
+  const led = loadLarkLedger()
+  led[day] = (led[day] || 0) + n
+  try {
+    fs.writeFileSync(larkTokensFile(), JSON.stringify(led))
+  } catch (err) {
+    console.error(`[kodama] save lark tokens failed: ${err.message}`)
+  }
+})
+
+// Cross-source token stats: local JSONL (direct) + lark ledger (Feishu), merged.
+function mergedTokenStats() {
+  const now = new Date()
+  const local = tokenUsage.summarizeByDay(tokenUsage.usageByDay(), now)
+  const lark = tokenUsage.summarizeByDay(loadLarkLedger(), now)
+  return {
+    today: local.today + lark.today,
+    last7: local.last7 + lark.last7,
+    total: local.total + lark.total,
+    local,
+    lark,
+  }
+}
 ipcMain.handle('pet:token-stats', () => {
   try {
-    return tokenUsage.summarize()
+    return mergedTokenStats()
   } catch (err) {
     console.error(`[kodama] token stats failed: ${err.message}`)
-    return { today: 0, last7: 0, total: 0, byDay: {} }
+    return { today: 0, last7: 0, total: 0, local: {}, lark: {} }
   }
 })
 
@@ -203,9 +239,9 @@ function updateTrayClock(st) {
 
 function refreshTray() {
   if (!tray) return
-  let stats = { today: 0, last7: 0 }
+  let stats = { today: 0, last7: 0, lark: { today: 0 } }
   try {
-    stats = tokenUsage.summarize()
+    stats = mergedTokenStats()
   } catch {
     /* keep zeros */
   }
@@ -217,9 +253,11 @@ function refreshTray() {
     items.push({ label: ps.paused ? '▶ 继续' : '⏸ 暂停', click: () => pomodoro?.pauseResume() })
     items.push({ label: '✕ 放弃', click: () => pomodoro?.abandon() })
   }
+  const larkToday = stats.lark?.today || 0
   items.push(
     { type: 'separator' },
     { label: `今日 token：${fmtTokens(stats.today)}`, enabled: false },
+    { label: `　飞书：${fmtTokens(larkToday)} / 本地：${fmtTokens(stats.today - larkToday)}`, enabled: false },
     { label: `近 7 天：${fmtTokens(stats.last7)}`, enabled: false },
     { type: 'separator' },
     { label: '退出 Quit', click: () => app.quit() },

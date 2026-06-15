@@ -9,8 +9,9 @@ contextBridge.exposeInMainWorld('pet', {
   // growth state (P4)
   getState: () => ipcRenderer.invoke('pet:get-state'),
   saveState: (state) => ipcRenderer.send('pet:save-state', state),
-  // local token usage stats (P4)
+  // token usage stats (P4) — local + Feishu(lark) merged
   tokenStats: () => ipcRenderer.invoke('pet:token-stats'),
+  addLarkTokens: (tokens) => ipcRenderer.send('pet:add-lark-tokens', tokens),
   // pomodoro / reminder bubbles from main (P4)
   onNotify: (cb) => ipcRenderer.on('pet-notify', (_e, payload) => cb(payload)),
 })

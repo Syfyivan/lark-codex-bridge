@@ -89,8 +89,9 @@ function dayString(d) {
   return d.toISOString().slice(0, 10)
 }
 
-function summarize({ now = new Date(), ...roots } = {}) {
-  const byDay = usageByDay(roots)
+// Roll a {day -> tokens} map up into today / last-7-day / total. Reused for
+// both the local JSONL ledger and the Feishu (lark) event ledger.
+function summarizeByDay(byDay, now = new Date()) {
   const total = Object.values(byDay).reduce((a, b) => a + b, 0)
   let last7 = 0
   for (let i = 0; i < 7; i++) {
@@ -98,7 +99,12 @@ function summarize({ now = new Date(), ...roots } = {}) {
     d.setDate(d.getDate() - i)
     last7 += byDay[dayString(d)] || 0
   }
-  return { today: byDay[dayString(now)] || 0, last7, total, byDay }
+  return { today: byDay[dayString(now)] || 0, last7, total }
 }
 
-module.exports = { usageByDay, summarize }
+function summarize({ now = new Date(), ...roots } = {}) {
+  const byDay = usageByDay(roots)
+  return { ...summarizeByDay(byDay, now), byDay }
+}
+
+module.exports = { usageByDay, summarize, summarizeByDay }

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 const require = createRequire(import.meta.url)
-const { usageByDay, summarize } = require('../src/main/token-usage.js')
+const { usageByDay, summarize, summarizeByDay } = require('../src/main/token-usage.js')
 
 function writeClaudeFixture() {
   const root = mkdtempSync(join(tmpdir(), 'kodama-claude-'))
@@ -41,4 +41,12 @@ test('summarize computes today/last7/total', () => {
 test('missing dirs yield empty totals, no throw', () => {
   const s = summarize({ claudeRoot: '/nope', codexRoot: '/nope', now: new Date('2026-06-15T00:00:00Z') })
   assert.equal(s.total, 0)
+})
+
+test('summarizeByDay rolls a day map into today/last7/total (used for the lark ledger)', () => {
+  const byDay = { '2026-06-15': 100, '2026-06-12': 30, '2026-06-01': 999 }
+  const s = summarizeByDay(byDay, new Date('2026-06-15T12:00:00Z'))
+  assert.equal(s.today, 100)
+  assert.equal(s.last7, 130) // 06-15 + 06-12 within 7 days; 06-01 excluded
+  assert.equal(s.total, 1129)
 })

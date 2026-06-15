@@ -123,7 +123,7 @@ pnpm start
 - **统计**：托盘菜单显示「今日 token / 近 7 天」，点桌宠显示「今日 X tok」。IPC `pet:token-stats` 返回 `{today,last7,total,byDay}`。
 - **喂食**：`growth.js` 的 `feedTokens(total)` 首次只记基线（不把历史用量一次性灌成升级），之后按 token 增量喂食（默认每 2000 token = 1 🍖）。
 - ⚠️ JSONL 的 token 数是**近似值**（缓存 token、字段缺失会导致与官方计量有偏差），够用来"喂宠物 + 看大致用量"，不是账单级精度。
-- **跨源（待做，真正的新意点）**：让 bridge 在事件里带上飞书侧跑 Codex 的 usage，并入**同一本账**，做"本地 + 飞书"统一 token 归账。
+- **跨源归账（Kodama 侧已就绪）**：飞书事件带 `tokens` 即并入独立的 lark 账本（`userData/kodama-lark-tokens.json`），与本地合并出「今日/近7天/总量 + 本地/飞书明细」（托盘 + 点击桌宠显示）。因 bridge 用 `--ephemeral`（飞书 Codex 不落本地 `~/.codex`），相加不会重复计数。**待 bridge 侧**：从 Codex `turn.usage` 取 token 塞进 `task_done` 事件（需真实任务验证字段）。
 
 ## 架构
 

@@ -30,7 +30,7 @@ export function connectAgentSync(onEvent, { bridgeUrl, token, onStatus } = {}) {
         } catch {
           /* keep empty payload */
         }
-        onEvent({ type, source: payload.source || 'lark', text: payload.text })
+        onEvent({ type, source: payload.source || 'lark', text: payload.text, tokens: payload.tokens })
       })
     }
   }

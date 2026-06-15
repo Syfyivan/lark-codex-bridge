@@ -56,6 +56,8 @@ async function init() {
     const handleAgentEvent = (event) => {
       reactToEvent(event, hooks)
       feedGrowth(event.type) // P4: events feed the pet
+      // Cross-source token ledger: bridge (source 'lark') events may carry tokens.
+      if (event.source === 'lark' && event.tokens) window.pet.addLarkTokens?.(event.tokens)
     }
 
     // source 'lark' via lark-codex-bridge SSE; bridge URL/token overridable.
@@ -184,10 +186,12 @@ function setupInteraction() {
 
 function onTap() {
   backend?.playMotion('Tap')
-  say(`🐾 ${statusText()} · 今日 ${fmtTokens(tokenStats.today)} tok`, 3000)
+  const lark = tokenStats.lark?.today || 0
+  const larkPart = lark > 0 ? `（飞书 ${fmtTokens(lark)}）` : ''
+  say(`🐾 ${statusText()} · 今日 ${fmtTokens(tokenStats.today)} tok${larkPart}`, 3000)
 }
 
-let tokenStats = { today: 0, last7: 0, total: 0 }
+let tokenStats = { today: 0, last7: 0, total: 0, local: {}, lark: {} }
 
 function fmtTokens(n) {
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`

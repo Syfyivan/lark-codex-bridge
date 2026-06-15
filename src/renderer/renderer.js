@@ -11,16 +11,25 @@ const bubble = document.getElementById('bubble')
 // Active rendering backend: { getBounds(), playMotion(pref), setStatus(status) }.
 let backend = null
 
+// Import an optional gitignored local config. Returns null if the file simply
+// doesn't exist; surfaces real errors (syntax/path) instead of hiding them.
+async function importLocal(path) {
+  try {
+    return await import(path)
+  } catch (e) {
+    const msg = String(e?.message || e)
+    if (/not found|failed to fetch|cannot find|err_module_not_found/i.test(msg)) return null
+    say(`⚠️ ${path} 出错：${msg}`, 6000)
+    console.error(`[kodama] local config error: ${path}`, e)
+    return null
+  }
+}
+
 async function init() {
   try {
     // A gitignored config/render.local.js opts into the PRIVATE gif backend;
     // without it we use the public Live2D backend.
-    let local = null
-    try {
-      local = await import('./config/render.local.js')
-    } catch (_) {
-      /* no override → Live2D */
-    }
+    const local = await importLocal('./config/render.local.js')
 
     if (local?.RENDER?.backend === 'gif') {
       const { initGifBackend } = await import('./backends/gif.js')
@@ -42,7 +51,9 @@ async function init() {
         backend?.setStatus?.(s)
       },
     }
-    connectAgentSync(hooks) // source 'lark' via lark-codex-bridge SSE
+    // source 'lark' via lark-codex-bridge SSE; bridge URL/token overridable.
+    const agentCfg = (await importLocal('./config/agent.local.js'))?.AGENT || {}
+    connectAgentSync(hooks, agentCfg)
     window.pet.onAgentEvent?.((event) => reactToEvent(event, hooks)) // source 'local'
   } catch (err) {
     console.error('[kodama] init failed:', err)

@@ -2,6 +2,11 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
+    <!--
+      'unsafe-eval' is required by PixiJS v6 (runtime shader compilation via
+      new Function). To drop it later, switch to the @pixi/unsafe-eval module.
+      connect-src is limited to loopback (bridge SSE + local hook); no public hosts.
+    -->
     <meta http-equiv="Content-Security-Policy"
       content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: file:; img-src 'self' data: blob: file:; connect-src 'self' data: blob: file: http://127.0.0.1:* http://localhost:*;" />
     <title>Kodama</title>

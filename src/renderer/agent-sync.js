@@ -7,15 +7,19 @@
 import { PET_CONFIG } from './config/pet-config.js'
 import { reactToEvent } from './reactions.js'
 
-const BRIDGE_PORT = 8787
-const BRIDGE_URL = `http://127.0.0.1:${BRIDGE_PORT}`
+const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787'
 
 // hooks: { say, playMotion, onStatus }
-export function connectAgentSync(hooks) {
+// opts: { bridgeUrl, token } — override via gitignored config/agent.local.js
+export function connectAgentSync(hooks, opts = {}) {
+  const bridgeUrl = (opts.bridgeUrl || DEFAULT_BRIDGE_URL).replace(/\/$/, '')
+  const token = opts.token || ''
   let es
 
   function connect() {
-    es = new EventSource(`${BRIDGE_URL}/pet/events`)
+    const url = new URL(`${bridgeUrl}/pet/events`)
+    if (token) url.searchParams.set('token', token)
+    es = new EventSource(url.toString())
     es.onopen = () => hooks.onStatus?.('connected')
     es.onerror = () => hooks.onStatus?.('offline') // EventSource auto-reconnects
 

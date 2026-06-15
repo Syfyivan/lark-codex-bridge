@@ -65,6 +65,8 @@ ipcMain.on('pet:move', (e, dx, dy) => {
 // we map them to pet events (source:'local') and forward to the renderer, so
 // local sessions and the Feishu bot share one pet.
 const LOCAL_AGENT_PORT = 7766
+const HOOK_TOKEN = process.env.KODAMA_HOOK_TOKEN || '' // optional shared secret
+const MAX_BODY_BYTES = 64 * 1024
 
 function mapHookToEvent(data) {
   switch (data.hook_event_name) {
@@ -82,6 +84,13 @@ function mapHookToEvent(data) {
   }
 }
 
+function tokenOk(req) {
+  if (!HOOK_TOKEN) return true // no token configured -> accept (loopback only)
+  const header = req.headers['x-kodama-token'] || ''
+  const bearer = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '')
+  return header === HOOK_TOKEN || bearer === HOOK_TOKEN
+}
+
 function startLocalAgentServer() {
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST') {
@@ -89,9 +98,30 @@ function startLocalAgentServer() {
       res.end()
       return
     }
+    if (!(req.headers['content-type'] || '').includes('application/json')) {
+      res.writeHead(415)
+      res.end()
+      return
+    }
+    if (!tokenOk(req)) {
+      res.writeHead(401)
+      res.end()
+      return
+    }
     let body = ''
-    req.on('data', (c) => (body += c))
+    let aborted = false
+    req.on('data', (c) => {
+      if (aborted) return
+      body += c
+      if (body.length > MAX_BODY_BYTES) {
+        aborted = true
+        res.writeHead(413)
+        res.end()
+        req.destroy()
+      }
+    })
     req.on('end', () => {
+      if (aborted) return
       let data = {}
       try {
         data = JSON.parse(body || '{}')

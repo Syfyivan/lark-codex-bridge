@@ -13,6 +13,13 @@ export function initGifBackend(cfg = {}) {
   const img = document.createElement('img')
   img.id = 'pet-gif'
   img.draggable = false
+  img.addEventListener('error', () => {
+    const b = document.getElementById('bubble')
+    if (b) {
+      b.textContent = `⚠️ 缺少 ${base}${img.getAttribute('data-file') || 'idle.gif'}`
+      b.classList.remove('hidden')
+    }
+  })
   document.body.appendChild(img)
 
   let ongoing = 'idle' // the looping baseline state to revert to
@@ -22,7 +29,9 @@ export function initGifBackend(cfg = {}) {
 
   function render(state) {
     if (img.getAttribute('data-state') === state) return
-    img.src = base + fileFor(state)
+    const file = fileFor(state)
+    img.setAttribute('data-file', file)
+    img.src = base + file
     img.setAttribute('data-state', state)
   }
 

@@ -6,7 +6,9 @@
   "scripts": {
     "setup": "node scripts/setup-assets.mjs",
     "start": "electron .",
-    "dev": "electron ."
+    "dev": "electron .",
+    "check": "node scripts/check.mjs",
+    "test": "node --test"
   },
   "license": "MIT",
   "devDependencies": {

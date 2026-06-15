@@ -14,6 +14,19 @@ body {
   height: 100%;
 }
 
+/* GIF backend: a single sprite anchored bottom-center */
+#pet-gif {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  max-width: 92%;
+  max-height: 82%;
+  pointer-events: none; /* window-level hit-test handles interaction */
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
 #bubble {
   position: fixed;
   top: 12px;

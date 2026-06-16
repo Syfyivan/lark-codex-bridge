@@ -15,8 +15,7 @@ function sendToPet(channel, payload) {
 
 function createWindow() {
   const { workArea } = screen.getPrimaryDisplay()
-  const width = 360
-  const height = 520
+  const { width, height } = loadWindowSize()
 
   win = new BrowserWindow({
     width,
@@ -38,21 +37,50 @@ function createWindow() {
     },
   })
 
-  // Float above everything, including fullscreen apps, on all desktops.
-  win.setAlwaysOnTop(true, 'screen-saver')
-  win.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
-    skipTransformProcessType: true,
-  })
-
+  reassertTopmost()
   // Click-through by default; the renderer flips this on when the cursor is
   // over the model (forward:true keeps mousemove events flowing for hit-testing).
   win.setIgnoreMouseEvents(true, { forward: true })
-
   win.loadFile(path.join(__dirname, '../renderer/index.html'))
+  // macOS resets collection behavior on show; re-assert so the pet floats over
+  // other apps' fullscreen spaces, not just the desktop.
+  win.once('ready-to-show', reassertTopmost)
+  win.on('show', reassertTopmost)
 
   // Uncomment while debugging:
   // win.webContents.openDevTools({ mode: 'detach' })
+}
+
+// Float above everything — including other apps' fullscreen spaces — on all desktops.
+function reassertTopmost() {
+  if (!win || win.isDestroyed()) return
+  win.setAlwaysOnTop(true, 'screen-saver')
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
+}
+
+const DEFAULT_WINDOW = { width: 360, height: 520 }
+const windowStateFile = () => path.join(app.getPath('userData'), 'kodama-window.json')
+function loadWindowSize() {
+  try {
+    const s = JSON.parse(fs.readFileSync(windowStateFile(), 'utf8'))
+    if (s && s.width > 0 && s.height > 0) return { width: s.width, height: s.height }
+  } catch {
+    /* fall back to default */
+  }
+  return { ...DEFAULT_WINDOW }
+}
+function setPetSize(width, height) {
+  if (!win || win.isDestroyed()) return
+  const { workArea } = screen.getPrimaryDisplay()
+  win.setResizable(true) // some platforms ignore setSize while non-resizable
+  win.setSize(width, height)
+  win.setResizable(false)
+  win.setPosition(workArea.x + workArea.width - width - 24, workArea.y + workArea.height - height - 24)
+  try {
+    fs.writeFileSync(windowStateFile(), JSON.stringify({ width, height }))
+  } catch (err) {
+    console.error(`[kodama] save window size failed: ${err.message}`)
+  }
 }
 
 // renderer -> main: toggle click-through
@@ -141,6 +169,13 @@ const HOOK_TOKEN = process.env.KODAMA_HOOK_TOKEN || '' // optional shared secret
 const MAX_BODY_BYTES = 64 * 1024
 
 function mapHookToEvent(data) {
+  // Codex `notify` payloads use `type` (no hook_event_name).
+  if (!data.hook_event_name && data.type) {
+    if (data.type === 'agent-turn-complete') {
+      return { type: 'task_done', source: 'local', text: String(data['last-assistant-message'] || '').slice(0, 80) }
+    }
+    return null
+  }
   switch (data.hook_event_name) {
     case 'UserPromptSubmit':
       return { type: 'task_started', source: 'local', text: '' }
@@ -253,6 +288,15 @@ function refreshTray() {
     items.push({ label: ps.paused ? '▶ 继续' : '⏸ 暂停', click: () => pomodoro?.pauseResume() })
     items.push({ label: '✕ 放弃', click: () => pomodoro?.abandon() })
   }
+  items.push({
+    label: '大小',
+    submenu: [
+      { label: '很小', click: () => setPetSize(200, 290) },
+      { label: '小', click: () => setPetSize(280, 400) },
+      { label: '中（默认）', click: () => setPetSize(360, 520) },
+      { label: '大', click: () => setPetSize(460, 650) },
+    ],
+  })
   const larkToday = stats.lark?.today || 0
   items.push(
     { type: 'separator' },

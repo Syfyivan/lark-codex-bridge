@@ -5216,6 +5216,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     ? null
     : await createProgressReporter(event, prompt || stripBridgeTraceText(rawText));
   emitPet('task_started', { contextKey, text: prompt || stripBridgeTraceText(rawText) });
+  const usageRef = {};
   try {
     const reply = await buildReply(codexPrompt, {
       progress,
@@ -5223,10 +5224,11 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       cwd: executionOptions.cwd || config.codexCwd,
       contextKey,
       signal: abortController.signal,
+      usageRef,
     });
     const finalReply = normalizeDirectBotReply(reply);
     if (progress) await progress.finish(finalReply);
-    emitPet('task_done', { contextKey, text: finalReply });
+    emitPet('task_done', { contextKey, text: finalReply, tokens: usageRef.tokens || 0 });
     recordThreadMemoryIfEnabled(event, rawText, finalReply, executionOptions);
     recordMemoryCandidatesIfEnabled(event, rawText, finalReply);
     if (config.progressCardFinalReply || !progress) {
@@ -5969,6 +5971,8 @@ function startDelegatePolling() {
 
 async function buildReply(prompt, options = {}) {
   const result = await backendRunner.run(prompt, options);
+  // Surface token usage to callers that opt in (for the desktop pet's cross-source ledger).
+  if (options.usageRef) options.usageRef.tokens = Number(result?.tokens) || 0;
   return result.text || '后端执行完成，但没有返回文本。';
 }
 

@@ -251,15 +251,26 @@ export function createCodexAppServerRunner(config, deps = {}) {
         signal: options.signal,
       });
       const text = extractFinalAgentText(turn);
+      const usage = turn?.usage || turn?.tokenUsage || turn?.token_usage || null;
+      const tokens =
+        typeof usage === 'number'
+          ? usage
+          : usage
+            ? (usage.input_tokens || usage.inputTokens || 0) +
+              (usage.output_tokens || usage.outputTokens || 0) +
+              (usage.cached_input_tokens || usage.cache_read_input_tokens || usage.cachedInputTokens || 0)
+            : 0;
       return {
         text: clampReply(text || 'Codex app-server 执行完成，但没有返回文本。'),
         raw: {
           runner: 'codex-app-server',
           threadId: session.threadId,
           turnId: turn?.id || '',
+          usage, // kept for debugging the exact usage shape
         },
         sessionId: session.threadId,
         taskId: turn?.id || '',
+        tokens,
       };
     },
   };

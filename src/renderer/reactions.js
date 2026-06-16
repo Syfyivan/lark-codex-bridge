@@ -11,6 +11,17 @@ function interpolate(tpl, vars) {
     .trim()
 }
 
+// Native OS notification (popup + sound) for important events — the in-window
+// bubble is easy to miss. Guarded so node tests (no `window`) don't throw.
+function notify(title, body) {
+  if (typeof window === 'undefined' || !window.Notification) return
+  try {
+    if (Notification.permission === 'granted') new Notification(title, { body })
+  } catch {
+    /* ignore */
+  }
+}
+
 // Keep the currently-shown bubble from being stomped by a less important one.
 let activeUntil = 0
 let activePriority = 0
@@ -38,5 +49,6 @@ export function reactToEvent(event, hooks) {
     hooks.say?.(text, def.ms || 4000)
     activeUntil = now + (def.ms || 4000)
     activePriority = priority
+    if (def.notify) notify('Kodama 🌳', text)
   }
 }

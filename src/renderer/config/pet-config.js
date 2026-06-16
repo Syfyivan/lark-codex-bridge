@@ -12,9 +12,9 @@ export const PET_CONFIG = {
     task_started: { status: 'working', motion: 'Idle', priority: 2, ms: 4000, bubble: '{icon} {label}任务开工 🛠️' },
     task_progress: { status: 'working', motion: null, priority: 1, ms: 2500, bubble: '{icon} {text}' },
     lark_reply_sent: { status: 'replying', motion: 'Idle', priority: 3, ms: 4500, bubble: '{icon} 我刚替你回了{label}：{text}' },
-    task_waiting: { status: 'waiting', motion: 'Idle', priority: 5, ms: 6000, bubble: '{icon} {label}需要你确认一下！👉' },
-    task_done: { status: 'done', motion: 'Tap', priority: 4, ms: 5000, bubble: '{icon} {label}搞定啦 🎉 {text}' },
-    task_failed: { status: 'failed', motion: null, priority: 5, ms: 6000, bubble: '{icon} {label}任务失败了… 去看日志 😣' },
-    pomodoro_completed: { status: 'done', motion: 'Tap', priority: 4, ms: 5000, bubble: '🍅 番茄钟完成！好棒，奖励经验~' },
+    task_waiting: { status: 'waiting', motion: 'Idle', priority: 5, ms: 6000, notify: true, bubble: '{icon} {label}需要你确认一下！👉' },
+    task_done: { status: 'done', motion: 'Tap', priority: 4, ms: 5000, notify: true, bubble: '{icon} {label}搞定啦 🎉 {text}' },
+    task_failed: { status: 'failed', motion: null, priority: 5, ms: 6000, notify: true, bubble: '{icon} {label}任务失败了… 去看日志 😣' },
+    pomodoro_completed: { status: 'done', motion: 'Tap', priority: 4, ms: 5000, notify: true, bubble: '🍅 番茄钟完成！好棒，奖励经验~' },
   },
 }

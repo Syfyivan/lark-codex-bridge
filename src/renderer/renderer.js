@@ -28,6 +28,10 @@ async function importLocal(path) {
 
 async function init() {
   try {
+    // Ask for OS notification permission up front (Electron usually grants it).
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {})
+    }
     // A gitignored config/render.local.js opts into the PRIVATE gif backend;
     // without it we use the public Live2D backend.
     const local = await importLocal('./config/render.local.js')

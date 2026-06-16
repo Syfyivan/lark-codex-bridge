@@ -16,7 +16,9 @@ export function shouldSkipSenderPolicy(input) {
     loopIgnoreSenderIds = [],
     loopAllowSenderIds = [],
     loopBotSenderIds = [],
+    loopBotAllowSenderIds = [],
     loopRespondToBotSenders = false,
+    loopRequireTraceFromBotSenders = false,
     loopMaxTurns = 3,
     delegateAllowBotSenders = true,
     delegateMentionEnabled = false,
@@ -35,7 +37,17 @@ export function shouldSkipSenderPolicy(input) {
     return 'max_turns_reached';
   }
 
-  if (isKnownBotSender({ senderType, senderId, loopBotSenderIds }) && !loopRespondToBotSenders) {
+  const senderIsKnownBot = isKnownBotSender({ senderType, senderId, loopBotSenderIds });
+  if (senderIsKnownBot) {
+    if (loopBotAllowSenderIds.length && !loopBotAllowSenderIds.includes(senderId)) {
+      return 'bot_sender_not_allowed';
+    }
+    if (loopRequireTraceFromBotSenders && !trace) {
+      return 'bot_sender_missing_trace';
+    }
+  }
+
+  if (senderIsKnownBot && !loopRespondToBotSenders) {
     const delegateMentionFromBot =
       delegateAllowBotSenders && delegateMentionEnabled && hasActionableText && mentionsDelegate;
     const botMentionFromBot = hasActionableText && mentionsBot;

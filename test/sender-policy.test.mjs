@@ -52,6 +52,46 @@ test('shouldSkipSenderPolicy allows explicit bot mentions from bot senders', () 
   );
 });
 
+test('shouldSkipSenderPolicy can restrict bot relay to an allowlist', () => {
+  assert.equal(
+    shouldSkipSenderPolicy({
+      senderType: 'bot',
+      senderId: 'ou_other_bot',
+      loopBotAllowSenderIds: ['ou_colleague_bot'],
+      hasActionableText: true,
+      mentionsBot: true,
+    }),
+    'bot_sender_not_allowed',
+  );
+});
+
+test('shouldSkipSenderPolicy can require bridge_trace from bot senders', () => {
+  assert.equal(
+    shouldSkipSenderPolicy({
+      senderType: 'bot',
+      senderId: 'ou_colleague_bot',
+      loopBotAllowSenderIds: ['ou_colleague_bot'],
+      loopRequireTraceFromBotSenders: true,
+      hasActionableText: true,
+      mentionsBot: true,
+    }),
+    'bot_sender_missing_trace',
+  );
+
+  assert.equal(
+    shouldSkipSenderPolicy({
+      senderType: 'bot',
+      senderId: 'ou_colleague_bot',
+      loopBotAllowSenderIds: ['ou_colleague_bot'],
+      loopRequireTraceFromBotSenders: true,
+      trace: { id: 'relay', turn: 1, maxTurns: 3 },
+      hasActionableText: true,
+      mentionsBot: true,
+    }),
+    '',
+  );
+});
+
 test('shouldSkipSenderPolicy allows delegated mentions from bot senders when enabled', () => {
   assert.equal(
     shouldSkipSenderPolicy({

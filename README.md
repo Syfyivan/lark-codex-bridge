@@ -239,6 +239,8 @@ BOT_SEND_ALLOW_PLAINTEXT_MENTION=0
 LOOP_MAX_TURNS=3                  # cap bridge_trace bot-to-bot turns
 LOOP_RESPOND_TO_BOT_SENDERS=0     # ignore bot senders unless they explicitly @ this bot/delegate
 LOOP_BOT_SENDER_IDS=
+LOOP_BOT_ALLOW_SENDER_IDS=        # optional bot sender allowlist for relay/canary tests
+LOOP_REQUIRE_TRACE_FROM_BOT_SENDERS=0
 LOOP_IGNORE_SENDER_IDS=
 LOOP_ALLOW_SENDER_IDS=
 
@@ -594,8 +596,24 @@ Bot-authored messages are ignored by default when
   senders;
 - a bot message explicitly mentions this bot and has non-empty actionable text.
 
-Those exceptions are still bounded by `bridge_trace` and `LOOP_MAX_TURNS`, which
-keeps bot-to-bot relay tests from running forever.
+Those exceptions are still bounded by `bridge_trace` and `LOOP_MAX_TURNS` when a
+trace is present, which keeps `/bot-send` relay tests from running forever.
+
+For controlled bot-to-bot integration with a colleague's bot, use the stricter
+relay settings:
+
+```bash
+LOOP_RESPOND_TO_BOT_SENDERS=0
+LOOP_BOT_ALLOW_SENDER_IDS=ou_colleague_bot
+LOOP_REQUIRE_TRACE_FROM_BOT_SENDERS=1
+LOOP_MAX_TURNS=3
+```
+
+Then start the exchange with `/bot-send`. The bridge-generated message carries a
+`bridge_trace`; each bridge reply increments the turn, and messages from bot
+senders without that trace are ignored. This lets two bots relay a bounded test
+conversation without letting unrelated bot messages or untraced replies start an
+open-ended loop.
 
 ## Progress Cards
 

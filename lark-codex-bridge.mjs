@@ -544,6 +544,9 @@ const config = {
   petSyncMode: (env.PET_SYNC_MODE || 'safe').toLowerCase() === 'full' ? 'full' : 'safe',
   petSyncMaxMessageChars: Math.max(80, Number(env.PET_SYNC_MAX_MESSAGE_CHARS || 280)),
   petSyncMaxEventBufferSize: Math.max(10, Number(env.PET_SYNC_MAX_EVENT_BUFFER_SIZE || 100)),
+  petAutolaunch: envFlag('PET_AUTOLAUNCH', false),
+  petCommand: env.PET_COMMAND || '',
+  petCwd: env.PET_CWD || '',
 };
 
 const seenMessages = new Set();
@@ -7256,6 +7259,32 @@ function startStartupChecks() {
     });
 }
 
+// Optionally launch the desktop pet (Kodama) as a separate, detached process.
+// Keeps the pet out of the bridge's dependencies — server deploys just leave
+// PET_AUTOLAUNCH unset and run headless.
+function maybeLaunchPet() {
+  if (!config.petAutolaunch) return;
+  const command = config.petCommand || (config.petCwd ? 'npm start' : '');
+  if (!command) {
+    console.error('[bridge] PET_AUTOLAUNCH set but no PET_COMMAND/PET_CWD; skipping pet launch');
+    return;
+  }
+  try {
+    const child = spawn(command, {
+      cwd: config.petCwd || process.cwd(),
+      shell: true,
+      detached: true,
+      stdio: 'ignore',
+      env,
+    });
+    child.on('error', err => console.error(`[bridge] failed to launch pet: ${err.message}`));
+    child.unref();
+    console.error(`[bridge] launched desktop pet: ${command} (cwd=${config.petCwd || process.cwd()})`);
+  } catch (err) {
+    console.error(`[bridge] failed to launch pet: ${err.message}`);
+  }
+}
+
 async function main() {
   if (cli.command === 'doctor') {
     await runDoctor();
@@ -7267,6 +7296,7 @@ async function main() {
   );
   startStartupChecks();
   startHttpServer();
+  maybeLaunchPet();
   startDelegatePolling();
   if (config.eventEnabled) {
     startEventSubscription();

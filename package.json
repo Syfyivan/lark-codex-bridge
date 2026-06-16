@@ -19,6 +19,7 @@
   "scripts": {
     "start": "node lark-codex-bridge.mjs",
     "doctor": "node lark-codex-bridge.mjs doctor",
+    "task-viewer:share": "node scripts/task-viewer-share.mjs",
     "check": "node --check lark-codex-bridge.mjs && find src scripts test -name '*.mjs' -print0 | xargs -0 -n1 node --check",
     "test": "node --test",
     "pack:dry": "npm pack --dry-run"

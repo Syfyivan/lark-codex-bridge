@@ -99,6 +99,11 @@ import {
 } from './src/review-automation-policy.mjs';
 import { renderSessionMarkdownBlockHtml } from './src/session-markdown.mjs';
 import {
+  createTaskRecorder,
+  defaultTaskViewerStoreDir,
+} from './src/task-recorder.mjs';
+import { renderTaskViewerHtml, writeTaskViewerSite } from './src/task-viewer.mjs';
+import {
   classifyDirectExecution,
   isReviewAutomationOnlySensitive,
 } from './src/sensitive-policy.mjs';
@@ -426,6 +431,18 @@ const config = {
   sessionShareMaxChars: Math.max(20_000, Number(env.SESSION_SHARE_MAX_CHARS || 180_000)),
   sessionShareChunkChars: Math.max(5000, Number(env.SESSION_SHARE_CHUNK_CHARS || 30_000)),
   sessionShareCandidateLimit: Math.max(3, Number(env.SESSION_SHARE_CANDIDATE_LIMIT || 6)),
+  taskViewerEnabled: envFlag('TASK_VIEWER_ENABLED', true),
+  taskViewerStoreDir: expandHomePath(env.TASK_VIEWER_STORE_DIR || defaultTaskViewerStoreDir()),
+  taskViewerMaxTasks: Math.max(10, Number(env.TASK_VIEWER_MAX_TASKS || 200)),
+  taskViewerGoofyAlias: env.TASK_VIEWER_GOOFY_ALIAS || 'bridge-task-viewer-syf',
+  taskViewerGoofyDescription: env.TASK_VIEWER_GOOFY_DESCRIPTION || 'Bridge Task Session Viewer',
+  taskViewerGoofyPreviewDir:
+    expandHomePath(
+      env.TASK_VIEWER_GOOFY_PREVIEW_DIR ||
+      join(homedir(), '.lark-codex-bridge', 'goofy-task-viewer-preview'),
+    ),
+  taskViewerGoofyExpiryDays: Math.max(1, Number(env.TASK_VIEWER_GOOFY_EXPIRY_DAYS || 365)),
+  taskViewerGoofyTimeoutMs: Math.max(60_000, Number(env.TASK_VIEWER_GOOFY_TIMEOUT_MS || 180_000)),
   delegateMentionEnabled: envFlag('DELEGATE_MENTION_ENABLED', false),
   delegateUserOpenId: env.DELEGATE_USER_OPEN_ID || '',
   delegateUserNames: splitCsv(env.DELEGATE_USER_NAMES || ''),
@@ -557,6 +574,9 @@ const bridgeStartedAtMs = Date.now();
 const petBus = config.petSyncEnabled
   ? createPetEventBus({ maxBuffer: config.petSyncMaxEventBufferSize })
   : null;
+const taskRecorder = config.taskViewerEnabled
+  ? createTaskRecorder({ storeDir: config.taskViewerStoreDir, maxTasks: config.taskViewerMaxTasks })
+  : null;
 
 // Mirror one piece of bot activity to the local desktop pet (Kodama). No-op
 // unless PET_SYNC_ENABLED. SAFE mode redacts + clamps text; FULL mode only
@@ -575,6 +595,98 @@ function emitPet(type, payload = {}) {
   } catch (error) {
     if (config.debug) console.error(`[pet] emit failed: ${error.message}`);
   }
+}
+
+function safeTaskText(text, maxChars = config.petSyncMaxMessageChars) {
+  return clampText(redactForCard(String(text || '')), Math.max(80, Number(maxChars || 1000)));
+}
+
+function startBridgeTaskRun(event, input = {}) {
+  if (!taskRecorder) return null;
+  try {
+    const prompt = safeTaskText(input.prompt || '', 1200);
+    return taskRecorder.startTask({
+      title: prompt || 'Bridge task',
+      prompt,
+      source: 'lark',
+      chatId: extractChatId(event),
+      messageId: extractMessageId(event),
+      senderId: extractSenderId(event),
+      contextKey: input.contextKey || '',
+      cwd: input.cwd || '',
+      sandbox: input.sandbox || '',
+      backend: config.backend,
+      runtime: config.codexRuntime || config.backend,
+    });
+  } catch (error) {
+    if (config.debug) console.error(`[task-viewer] start failed: ${error.message}`);
+    return null;
+  }
+}
+
+function recordBridgeTaskEvent(taskId, type, payload = {}) {
+  if (!taskRecorder || !taskId) return;
+  try {
+    const out = { ...payload };
+    if (typeof out.text === 'string') out.text = safeTaskText(out.text, 1000);
+    taskRecorder.addEvent(taskId, type, out);
+  } catch (error) {
+    if (config.debug) console.error(`[task-viewer] record failed: ${error.message}`);
+  }
+}
+
+function finishBridgeTaskRun(taskId, patch = {}) {
+  if (!taskRecorder || !taskId) return;
+  try {
+    taskRecorder.finishTask(taskId, {
+      ...patch,
+      finalText: safeTaskText(patch.finalText || '', 1600),
+    });
+  } catch (error) {
+    if (config.debug) console.error(`[task-viewer] finish failed: ${error.message}`);
+  }
+}
+
+function failBridgeTaskRun(taskId, patch = {}) {
+  if (!taskRecorder || !taskId) return;
+  try {
+    taskRecorder.failTask(taskId, {
+      ...patch,
+      errorText: safeTaskText(patch.errorText || '', 1200),
+    });
+  } catch (error) {
+    if (config.debug) console.error(`[task-viewer] fail failed: ${error.message}`);
+  }
+}
+
+function createBridgeTaskProgressSink(taskId) {
+  if (!taskId && !petBus) return null;
+  return {
+    add(item) {
+      const text = safeTaskText(item, 500);
+      if (!text) return;
+      emitPet('task_progress', { text });
+      recordBridgeTaskEvent(taskId, 'task_progress', { text });
+    },
+    async finish() {},
+    async fail() {},
+  };
+}
+
+function combineProgressReporters(...reporters) {
+  const active = reporters.filter(Boolean);
+  if (!active.length) return null;
+  return {
+    add(item) {
+      for (const reporter of active) reporter.add?.(item);
+    },
+    async finish(finalText) {
+      await Promise.all(active.map(reporter => reporter.finish?.(finalText)).filter(Boolean));
+    },
+    async fail(errorText) {
+      await Promise.all(active.map(reporter => reporter.fail?.(errorText)).filter(Boolean));
+    },
+  };
 }
 const backendRunner = createRunner(config, { clampReply, runProcessFn: runProcess });
 const profilePolicy = loadProfilePolicy({
@@ -2258,6 +2370,53 @@ async function deploySessionShareGoofyPreview(currentShareFile) {
     cwd: config.codexCwd,
   });
   return extractGoofyPreviewBaseUrl(stdout);
+}
+
+function taskViewerTasks(limit = config.taskViewerMaxTasks) {
+  if (!taskRecorder) return [];
+  return taskRecorder.exportTasks({ limit });
+}
+
+function taskViewerHtml(limit = config.taskViewerMaxTasks) {
+  return renderTaskViewerHtml({
+    title: 'Bridge Task Session Viewer',
+    generatedAt: new Date().toISOString(),
+    tasks: taskViewerTasks(limit),
+  });
+}
+
+function prepareTaskViewerGoofyPreviewSource(limit = config.taskViewerMaxTasks) {
+  const tasks = taskViewerTasks(limit);
+  writeTaskViewerSite({
+    tasks,
+    outDir: config.taskViewerGoofyPreviewDir,
+    title: 'Bridge Task Session Viewer',
+  });
+  return { sourceDir: config.taskViewerGoofyPreviewDir, tasks };
+}
+
+async function deployTaskViewerGoofyPreview(limit = config.taskViewerMaxTasks) {
+  const alias = String(config.taskViewerGoofyAlias || '').trim();
+  if (!alias) throw new Error('TASK_VIEWER_GOOFY_ALIAS is required');
+  const { sourceDir, tasks } = prepareTaskViewerGoofyPreviewSource(limit);
+  const { stdout } = await runProcess(config.bytedCliBin, [
+    '--json',
+    'goofy',
+    'preview',
+    'deploy',
+    sourceDir,
+    '--alias',
+    alias,
+    '--override',
+    '--description',
+    config.taskViewerGoofyDescription,
+    '--expiry-days',
+    String(config.taskViewerGoofyExpiryDays),
+  ], {
+    timeoutMs: config.taskViewerGoofyTimeoutMs,
+    cwd: config.codexCwd,
+  });
+  return { url: extractGoofyPreviewBaseUrl(stdout), tasks: tasks.length, sourceDir };
 }
 
 function makeWebShareId(sessionId) {
@@ -5219,9 +5378,19 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
   }
 
   const { trace, prompt, codexPrompt } = buildDirectCodexPrompt(event, rawText, executionOptions);
-  const progress = options.progress === false
+  const taskRun = startBridgeTaskRun(event, {
+    prompt: prompt || stripBridgeTraceText(rawText),
+    contextKey,
+    cwd: executionOptions.cwd || config.codexCwd,
+    sandbox: executionOptions.sandbox || config.codexSandbox,
+  });
+  const cardProgress = options.progress === false
     ? null
     : await createProgressReporter(event, prompt || stripBridgeTraceText(rawText));
+  const progress = combineProgressReporters(
+    cardProgress,
+    createBridgeTaskProgressSink(taskRun?.id),
+  );
   emitPet('task_started', { contextKey, text: prompt || stripBridgeTraceText(rawText) });
   const usageRef = {};
   try {
@@ -5236,6 +5405,8 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     const finalReply = normalizeDirectBotReply(reply);
     if (progress) await progress.finish(finalReply);
     emitPet('task_done', { contextKey, text: finalReply, tokens: usageRef.tokens || 0 });
+    recordBridgeTaskEvent(taskRun?.id, 'task_done', { text: finalReply, tokens: usageRef.tokens || 0 });
+    finishBridgeTaskRun(taskRun?.id, { finalText: finalReply, tokens: usageRef.tokens || 0 });
     recordThreadMemoryIfEnabled(event, rawText, finalReply, executionOptions);
     recordMemoryCandidatesIfEnabled(event, rawText, finalReply);
     if (config.progressCardFinalReply || !progress) {
@@ -5251,6 +5422,8 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       console.error(`[bridge] direct task stopped in ${contextKey}: ${error.message || error}`);
       if (progress) await progress.fail('任务已停止。');
       emitPet('task_failed', { contextKey, text: '任务已停止', reason: 'stopped' });
+      recordBridgeTaskEvent(taskRun?.id, 'task_cancelled', { text: '任务已停止', reason: 'stopped' });
+      failBridgeTaskRun(taskRun?.id, { status: 'cancelled', errorText: '任务已停止' });
       await replyToLark(
         event,
         '任务已停止。',
@@ -5261,6 +5434,8 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     console.error(`[bridge] ${error.stack || error.message}`);
     if (progress) await progress.fail(error.message || error);
     emitPet('task_failed', { contextKey, text: String(error?.message || error), reason: 'error' });
+    recordBridgeTaskEvent(taskRun?.id, 'task_failed', { text: String(error?.message || error), reason: 'error' });
+    failBridgeTaskRun(taskRun?.id, { errorText: String(error?.message || error) });
     await replyToLark(
       event,
       `执行失败：${clampReply(error.message || error)}`,
@@ -6372,6 +6547,34 @@ async function handleHttpRequest(request, response) {
     return;
   }
 
+  if (request.method === 'GET' && url.pathname === '/task-viewer') {
+    if (config.httpToken && !isAuthorized(request)) {
+      jsonResponse(response, 401, { ok: false, error: 'unauthorized' });
+      return;
+    }
+    if (!taskRecorder) {
+      textResponse(response, 404, 'task viewer disabled');
+      return;
+    }
+    const limit = Math.max(1, Number(url.searchParams.get('limit') || config.taskViewerMaxTasks));
+    textResponse(response, 200, taskViewerHtml(limit), 'text/html; charset=utf-8');
+    return;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/task-viewer/tasks.json') {
+    if (config.httpToken && !isAuthorized(request)) {
+      jsonResponse(response, 401, { ok: false, error: 'unauthorized' });
+      return;
+    }
+    if (!taskRecorder) {
+      jsonResponse(response, 404, { ok: false, error: 'task viewer disabled' });
+      return;
+    }
+    const limit = Math.max(1, Number(url.searchParams.get('limit') || config.taskViewerMaxTasks));
+    jsonResponse(response, 200, { ok: true, tasks: taskViewerTasks(limit) });
+    return;
+  }
+
   if (request.method === 'GET' && url.pathname === '/pet/state') {
     if (!petBus) {
       jsonResponse(response, 404, { ok: false, error: 'pet sync disabled' });
@@ -6410,6 +6613,17 @@ async function handleHttpRequest(request, response) {
         findOnly: Boolean(body.find_only || body.findOnly),
       });
       jsonResponse(response, result.ok ? 200 : result.status || 500, result);
+      return;
+    }
+
+    if (url.pathname === '/v1/bridge/task-viewer/share') {
+      if (!taskRecorder) {
+        jsonResponse(response, 404, { ok: false, error: 'task viewer disabled' });
+        return;
+      }
+      const limit = Math.max(1, Number(body.limit || body.max_tasks || config.taskViewerMaxTasks));
+      const result = await deployTaskViewerGoofyPreview(limit);
+      jsonResponse(response, 200, { ok: true, ...result });
       return;
     }
 
@@ -6828,7 +7042,6 @@ async function createProgressReporter(event, prompt) {
       if (!text) return;
       if (state.items[state.items.length - 1] === text) return;
       state.items.push(text);
-      emitPet('task_progress', { text });
       if (state.items.length > config.progressCardMaxItems * 2) {
         state.items = state.items.slice(-config.progressCardMaxItems * 2);
       }

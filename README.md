@@ -20,6 +20,7 @@ Lark bot event -> lark-cli -> backend runner -> Lark reply or progress card
 - Select first-class backend runners with `BRIDGE_BACKEND=codex|claude|coco|agent|api`.
 - Show an interactive progress card while the selected backend is working.
 - Replace the progress card with the final answer when the task finishes.
+- Record safe bridge task timelines and export a visual Task Session Viewer.
 - Render final answers with card Markdown so fenced code blocks display cleanly.
 - Find local Codex sessions and generate snapshot links from a card button.
 - Owner-only ops commands for health, version, and log tail checks from Lark.
@@ -309,6 +310,14 @@ SESSION_SHARE_GOOFY_EXPIRY_DAYS=365
 SESSION_SHARE_GOOFY_TIMEOUT_MS=180000
 BYTEDCLI_BIN=bytedcli
 SESSION_SHARE_REPLY_STYLE=card
+
+TASK_VIEWER_ENABLED=1
+TASK_VIEWER_STORE_DIR=~/.lark-codex-bridge/task-runs
+TASK_VIEWER_MAX_TASKS=200
+TASK_VIEWER_GOOFY_ALIAS=bridge-task-viewer-syf
+TASK_VIEWER_GOOFY_DESCRIPTION="Bridge Task Session Viewer"
+TASK_VIEWER_GOOFY_EXPIRY_DAYS=365
+TASK_VIEWER_GOOFY_TIMEOUT_MS=180000
 ```
 
 ## Owner Ops Commands
@@ -558,6 +567,45 @@ bytedcli --json goofy preview deploy <snapshot-dir> --alias <alias> --override
 
 The returned card points to a Goofy Preview HTTPS URL instead of a local
 `http://10.*:8787` URL, so coworkers do not need to reach your Mac directly.
+
+## Bridge Task Session Viewer
+
+Codex bridge tasks are often `CODEX_EPHEMERAL=1`, so they do not appear in
+`~/.codex/sessions`. The bridge keeps its own safe task timeline instead:
+
+```text
+~/.lark-codex-bridge/task-runs/
+  index.jsonl
+  tasks/<task-id>.jsonl
+```
+
+The recorder stores safe summaries only: request summary, context, cwd/sandbox,
+public progress items, final reply summary, failure reason, and token totals when
+the backend exposes them. It does not export hidden reasoning or raw tool output.
+
+Local viewer:
+
+```bash
+curl -H "Authorization: Bearer $(cat ~/.lark-codex-bridge-http-token)" \
+  http://127.0.0.1:8787/task-viewer
+```
+
+Share a static visual viewer to Goofy Preview:
+
+```bash
+TOKEN="$(cat ~/.lark-codex-bridge-http-token)"
+curl -sS -X POST http://127.0.0.1:8787/v1/bridge/task-viewer/share \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":100}'
+```
+
+You can also deploy from the checkout without hitting the running bridge:
+
+```bash
+TASK_VIEWER_GOOFY_ALIAS=bridge-task-viewer-syf \
+  npm run task-viewer:share -- --deploy
+```
 
 Natural direct messages also work when they include a session ID, for example:
 

@@ -369,7 +369,8 @@ const config = {
   loopBotAllowSenderIds: splitCsv(env.LOOP_BOT_ALLOW_SENDER_IDS),
   loopRespondToBotSenders: envFlag('LOOP_RESPOND_TO_BOT_SENDERS', false),
   loopRequireTraceFromBotSenders: envFlag('LOOP_REQUIRE_TRACE_FROM_BOT_SENDERS', false),
-  loopMaxTurns: Math.max(1, Number(env.LOOP_MAX_TURNS || 3)),
+  loopHardMaxTurns: Math.max(0, Number(env.LOOP_HARD_MAX_TURNS || 0)),
+  loopTraceTtlMs: Math.max(60_000, Number(env.LOOP_TRACE_TTL_MS || 6 * 60 * 60 * 1000)),
   traceMarker: env.BRIDGE_TRACE_MARKER || 'bridge_trace',
   contextQueueEnabled: envFlag('CONTEXT_QUEUE_ENABLED', true),
   oncallBindingsFile:
@@ -1126,17 +1127,34 @@ function escapeRegExp(value) {
 
 function bridgeTracePattern() {
   return new RegExp(
-    `\\[${escapeRegExp(config.traceMarker)}\\s+id=([A-Za-z0-9_-]+)\\s+turn=(\\d+)\\/(\\d+)\\]`,
+    `\\[${escapeRegExp(config.traceMarker)}\\b([^\\]]*)\\]`,
   );
+}
+
+function parseBridgeTraceAttrs(rawAttrs) {
+  const attrs = {};
+  const pattern = /([A-Za-z_][A-Za-z0-9_-]*)=("[^"]*"|'[^']*'|[^\s\]]+)/g;
+  let match;
+  while ((match = pattern.exec(rawAttrs || ''))) {
+    const value = match[2].replace(/^['"]|['"]$/g, '');
+    attrs[match[1]] = value;
+  }
+  return attrs;
 }
 
 function extractBridgeTrace(text) {
   const match = bridgeTracePattern().exec(text || '');
   if (!match) return null;
+  const attrs = parseBridgeTraceAttrs(match[1]);
+  const [turnRaw, legacyMaxRaw = ''] = String(attrs.turn || '').split('/');
+  if (!attrs.id) return null;
   return {
-    id: match[1],
-    turn: Number(match[2]),
-    maxTurns: Number(match[3]),
+    id: attrs.id,
+    turn: Math.max(0, Number(turnRaw || 0)),
+    startedAt: Math.max(0, Number(attrs.started || attrs.started_at || 0)),
+    ttlMs: Math.max(0, Number(attrs.ttl || attrs.ttl_ms || 0)),
+    hardMaxTurns: Math.max(0, Number(attrs.max || attrs.hard_max_turns || 0)),
+    legacyMaxTurns: Math.max(0, Number(legacyMaxRaw || attrs.max_turns || 0)),
   };
 }
 
@@ -1145,7 +1163,15 @@ function stripBridgeTraceText(text) {
 }
 
 function formatBridgeTrace(trace) {
-  return `[${config.traceMarker} id=${trace.id} turn=${trace.turn}/${trace.maxTurns}]`;
+  const hardMaxTurns = Math.max(0, Number(trace.hardMaxTurns || config.loopHardMaxTurns || 0));
+  const parts = [
+    `id=${trace.id}`,
+    `turn=${Math.max(0, Number(trace.turn || 0))}`,
+    `started=${Math.max(0, Number(trace.startedAt || Date.now()))}`,
+    `ttl=${Math.max(60_000, Number(trace.ttlMs || config.loopTraceTtlMs))}`,
+  ];
+  if (hardMaxTurns > 0) parts.push(`max=${hardMaxTurns}`);
+  return `[${config.traceMarker} ${parts.join(' ')}]`;
 }
 
 function appendBridgeTrace(text, trace) {
@@ -1153,13 +1179,22 @@ function appendBridgeTrace(text, trace) {
 }
 
 function nextTrace(parentTrace = null) {
+  const now = Date.now();
   if (!parentTrace) {
-    return { id: randomUUID(), turn: 1, maxTurns: config.loopMaxTurns };
+    return {
+      id: randomUUID(),
+      turn: 1,
+      startedAt: now,
+      ttlMs: config.loopTraceTtlMs,
+      hardMaxTurns: config.loopHardMaxTurns,
+    };
   }
   return {
     id: parentTrace.id,
-    turn: parentTrace.turn + 1,
-    maxTurns: Math.min(parentTrace.maxTurns || config.loopMaxTurns, config.loopMaxTurns),
+    turn: Math.max(0, Number(parentTrace.turn || 0)) + 1,
+    startedAt: Number(parentTrace.startedAt || now),
+    ttlMs: Number(parentTrace.ttlMs || config.loopTraceTtlMs),
+    hardMaxTurns: Math.max(0, Number(parentTrace.hardMaxTurns || config.loopHardMaxTurns || 0)),
   };
 }
 
@@ -1184,7 +1219,8 @@ function shouldSkipSender(event, rawText) {
     loopBotAllowSenderIds: config.loopBotAllowSenderIds,
     loopRespondToBotSenders: config.loopRespondToBotSenders,
     loopRequireTraceFromBotSenders: config.loopRequireTraceFromBotSenders,
-    loopMaxTurns: config.loopMaxTurns,
+    loopHardMaxTurns: config.loopHardMaxTurns,
+    loopTraceTtlMs: config.loopTraceTtlMs,
     delegateAllowBotSenders: config.delegateAllowBotSenders,
     delegateMentionEnabled: config.delegateMentionEnabled,
     hasActionableText: hasActionableDelegateText(rawText),
@@ -1216,7 +1252,7 @@ function parseBotSendCommand(rawText, event) {
       targetAppId: parsed.target_app_id || parsed.bot_app_id || parsed.app_id || '',
       targetName: parsed.target_name || parsed.bot_name || parsed.name || '',
       text: parsed.text || parsed.message || '',
-      maxTurns: Number(parsed.max_turns || config.loopMaxTurns),
+      hardMaxTurns: Number(parsed.hard_max_turns || parsed.max_turns || config.loopHardMaxTurns || 0),
     };
   }
 
@@ -1234,7 +1270,7 @@ function parseBotSendCommand(rawText, event) {
     targetAppId: targetId.startsWith('cli_') ? targetId : '',
     targetName: inlineName || (!targetId.startsWith('ou_') && !targetId.startsWith('cli_') ? targetId : ''),
     text,
-    maxTurns: config.loopMaxTurns,
+    hardMaxTurns: config.loopHardMaxTurns,
   };
 }
 
@@ -1347,7 +1383,13 @@ async function sendBotMessage(command) {
   }
 
   command = normalizeBotSendTarget(command);
-  const trace = nextTrace({ id: randomUUID(), turn: 0, maxTurns: command.maxTurns || config.loopMaxTurns });
+  const trace = nextTrace({
+    id: randomUUID(),
+    turn: 0,
+    startedAt: Date.now(),
+    ttlMs: config.loopTraceTtlMs,
+    hardMaxTurns: command.hardMaxTurns || config.loopHardMaxTurns,
+  });
   await maybeInviteBotByAppId(command);
   const text = buildBotSendText(command, trace);
   const stdout = await runCli([
@@ -1369,7 +1411,8 @@ async function sendBotMessage(command) {
     command.targetOpenId || !command.targetAppId
       ? ''
       : '\n注意：只提供 cli_xxx 时无法构造真实 @，建议补目标机器人的 open_id（ou_xxx）以触发对方机器人。';
-  return `已发送给机器人目标，trace=${trace.id}，turn=${trace.turn}/${trace.maxTurns}${messageId ? `，message_id=${messageId}` : ''}。${caveat}`;
+  const hardCapText = trace.hardMaxTurns > 0 ? `，hard_max_turns=${trace.hardMaxTurns}` : '';
+  return `已发送给机器人目标，trace=${trace.id}，turn=${trace.turn}${hardCapText}，ttl_ms=${trace.ttlMs}${messageId ? `，message_id=${messageId}` : ''}。${caveat}`;
 }
 
 function sessionCommandText(rawText) {

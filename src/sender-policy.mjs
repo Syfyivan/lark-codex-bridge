@@ -19,7 +19,9 @@ export function shouldSkipSenderPolicy(input) {
     loopBotAllowSenderIds = [],
     loopRespondToBotSenders = false,
     loopRequireTraceFromBotSenders = false,
-    loopMaxTurns = 3,
+    loopHardMaxTurns = 0,
+    loopTraceTtlMs = 0,
+    nowMs = Date.now(),
     delegateAllowBotSenders = true,
     delegateMentionEnabled = false,
     hasActionableText = false,
@@ -33,11 +35,20 @@ export function shouldSkipSenderPolicy(input) {
     return 'sender_not_allowed';
   }
 
-  if (trace && trace.turn >= Math.min(trace.maxTurns || loopMaxTurns, loopMaxTurns)) {
-    return 'max_turns_reached';
+  const senderIsKnownBot = isKnownBotSender({ senderType, senderId, loopBotSenderIds });
+  if (senderIsKnownBot && trace) {
+    const hardMaxTurns = Math.max(0, Number(trace.hardMaxTurns || loopHardMaxTurns || 0));
+    if (hardMaxTurns > 0 && Number(trace.turn || 0) >= hardMaxTurns) {
+      return 'max_turns_reached';
+    }
+
+    const startedAt = Number(trace.startedAt || 0);
+    const ttlMs = Math.max(0, Number(trace.ttlMs || loopTraceTtlMs || 0));
+    if (startedAt > 0 && ttlMs > 0 && Number(nowMs || Date.now()) - startedAt > ttlMs) {
+      return 'trace_expired';
+    }
   }
 
-  const senderIsKnownBot = isKnownBotSender({ senderType, senderId, loopBotSenderIds });
   if (senderIsKnownBot) {
     if (loopBotAllowSenderIds.length && !loopBotAllowSenderIds.includes(senderId)) {
       return 'bot_sender_not_allowed';

@@ -26,10 +26,42 @@ test('shouldSkipSenderPolicy filters self, ignored, and non-allowed senders', ()
   );
 });
 
-test('shouldSkipSenderPolicy enforces trace turn caps', () => {
+test('shouldSkipSenderPolicy does not cap traced relay turns by default', () => {
   assert.equal(
-    shouldSkipSenderPolicy({ trace: { id: 't', turn: 3, maxTurns: 3 }, loopMaxTurns: 3 }),
+    shouldSkipSenderPolicy({
+      senderType: 'bot',
+      trace: { id: 't', turn: 30, legacyMaxTurns: 3 },
+      hasActionableText: true,
+      mentionsBot: true,
+    }),
+    '',
+  );
+});
+
+test('shouldSkipSenderPolicy enforces optional hard trace turn caps', () => {
+  assert.equal(
+    shouldSkipSenderPolicy({ senderType: 'bot', trace: { id: 't', turn: 50 }, loopHardMaxTurns: 50 }),
     'max_turns_reached',
+  );
+});
+
+test('shouldSkipSenderPolicy rejects expired relay traces', () => {
+  assert.equal(
+    shouldSkipSenderPolicy({
+      trace: { id: 't', turn: 8, startedAt: 1_000, ttlMs: 10_000 },
+      senderType: 'bot',
+      nowMs: 12_001,
+    }),
+    'trace_expired',
+  );
+
+  assert.equal(
+    shouldSkipSenderPolicy({
+      trace: { id: 't', turn: 8, startedAt: 1_000, ttlMs: 10_000 },
+      senderType: 'user',
+      nowMs: 12_001,
+    }),
+    '',
   );
 });
 
@@ -84,7 +116,8 @@ test('shouldSkipSenderPolicy can require bridge_trace from bot senders', () => {
       senderId: 'ou_colleague_bot',
       loopBotAllowSenderIds: ['ou_colleague_bot'],
       loopRequireTraceFromBotSenders: true,
-      trace: { id: 'relay', turn: 1, maxTurns: 3 },
+      trace: { id: 'relay', turn: 12, startedAt: 1_000, ttlMs: 10_000 },
+      nowMs: 5_000,
       hasActionableText: true,
       mentionsBot: true,
     }),

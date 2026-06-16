@@ -1,0 +1,25 @@
+{
+  "requiredPromptSubstrings": [
+    "profile 定义的是当前聊天/群的协作语境和能力边界",
+    "不代表提问者身份",
+    "抽奖进度展示",
+    "PRD 摘要",
+    "Migo 需求",
+    "设计稿状态",
+    "代码模块地图",
+    "进度口径",
+    "接口压力"
+  ],
+  "forbiddenPromptSubstrings": [
+    "作为产品经理"
+  ],
+  "requiredMemoryBlocks": [
+    "Base Soul",
+    "Current Chat Summary",
+    "Current Thread Summary",
+    "Current Project Summary",
+    "Relevant Decisions",
+    "Relevant Risks",
+    "Current Project Open Questions"
+  ]
+}

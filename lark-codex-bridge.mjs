@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
@@ -26,13 +27,44 @@ import {
   splitCsv,
 } from './src/env.mjs';
 import {
-  createCodexExecRunner,
   createNonOwnerCodexExecutionContext,
   nonOwnerGuardNotice,
   normalizeNonOwnerSandboxMode,
   normalizeSandboxMode,
 } from './src/codex-runner.mjs';
+import { normalizeCodexRuntime } from './src/codex-app-server.mjs';
+import {
+  conversationKeyForEvent,
+  createContextQueueRuntime,
+  createStopRegistry,
+  isStopCommand,
+  parseQueueCommand,
+} from './src/context-queue.mjs';
 import { closeUnclosedCodeFence } from './src/lark-format.mjs';
+import { createPetEventBus } from './src/pet-event-bus.mjs';
+import {
+  appendJsonl,
+  appendMemoryCandidate,
+  appendThreadExchange,
+  approveMemoryCandidates,
+  compactMemoryRoute,
+  memoryPaths,
+  readMemoryCandidates,
+  readTextFile,
+  rejectMemoryCandidates,
+  writeTextFile,
+} from './src/memory-store.mjs';
+import { extractMemoryCandidates } from './src/memory-extractor.mjs';
+import {
+  canWriteMemory,
+  parseMemoryCommand,
+  shouldAutoWriteThreadSummary,
+} from './src/memory-policy.mjs';
+import { buildMemoryPromptContext } from './src/memory-prompt.mjs';
+import {
+  readVisibleMemoryBundle,
+  resolveMemoryRoute,
+} from './src/memory-router.mjs';
 import {
   checkCodexAppServerSteerSupport,
   formatHealthReport,
@@ -40,7 +72,26 @@ import {
   formatVersionReport,
   parseOpsCommand,
 } from './src/ops-policy.mjs';
+import {
+  clearOncallBinding,
+  getOncallBinding,
+  normalizeOncallPath,
+  parseOncallCommand,
+  readOncallBindings,
+  setOncallBinding,
+  writeOncallBindings,
+} from './src/oncall-policy.mjs';
 import { runProcess } from './src/process-manager.mjs';
+import {
+  evaluateProfilePolicy,
+  isProfileOwner,
+  loadProfilePolicy,
+} from './src/profile-policy.mjs';
+import {
+  createRunner,
+  normalizeRunnerId,
+  SUPPORTED_RUNNERS,
+} from './src/runners/index.mjs';
 import {
   canDirectReviewAutomation,
   extractCodebaseMrUrls,
@@ -285,8 +336,18 @@ function readOptionalSecret(value, file) {
   return readFileSync(file, 'utf8').trim();
 }
 
+function expandHomePath(value) {
+  const text = String(value || '');
+  if (text === '~') return homedir();
+  if (text.startsWith('~/')) return join(homedir(), text.slice(2));
+  return text;
+}
+
+const configuredSoulsDir = expandHomePath(env.SOULS_DIR || join(homedir(), '.lark-codex-bridge', 'souls'));
+
 const config = {
-  mode: env.BRIDGE_MODE || 'codex',
+  mode: normalizeRunnerId(env.BRIDGE_BACKEND || env.BRIDGE_MODE || 'codex'),
+  backend: normalizeRunnerId(env.BRIDGE_BACKEND || env.BRIDGE_MODE || 'codex'),
   debug: env.BRIDGE_DEBUG === '1',
   prefix: env.BRIDGE_PREFIX || '',
   reactionOnReceive: env.REACTION_ON_RECEIVE || '',
@@ -303,6 +364,32 @@ const config = {
   loopRespondToBotSenders: envFlag('LOOP_RESPOND_TO_BOT_SENDERS', false),
   loopMaxTurns: Math.max(1, Number(env.LOOP_MAX_TURNS || 3)),
   traceMarker: env.BRIDGE_TRACE_MARKER || 'bridge_trace',
+  contextQueueEnabled: envFlag('CONTEXT_QUEUE_ENABLED', true),
+  oncallBindingsFile:
+    expandHomePath(env.ONCALL_BINDINGS_FILE || join(homedir(), '.lark-codex-bridge', 'oncall-bindings.json')),
+  profilePolicyEnabled: envFlag(
+    'PROFILE_POLICY_ENABLED',
+    Boolean(env.PROFILE_CONFIG_FILE || env.BRIDGE_PROFILE_CONFIG_FILE),
+  ),
+  profileConfigFile:
+    expandHomePath(
+      env.PROFILE_CONFIG_FILE ||
+        env.BRIDGE_PROFILE_CONFIG_FILE ||
+        join(homedir(), '.lark-codex-bridge', 'profiles.json'),
+    ),
+  memoryEnabled: envFlag('MEMORY_ENABLED', false),
+  memoryRootDir: expandHomePath(env.MEMORY_ROOT_DIR || join(homedir(), '.lark-codex-bridge', 'memory')),
+  soulsDir: configuredSoulsDir,
+  baseSoulFile: expandHomePath(env.BASE_SOUL_FILE || join(configuredSoulsDir, 'base.md')),
+  memoryPromptBudgetChars: Math.max(1000, Number(env.MEMORY_PROMPT_BUDGET_CHARS || 12_000)),
+  memoryJsonlItemLimit: Math.max(1, Number(env.MEMORY_JSONL_ITEM_LIMIT || 8)),
+  memoryDefaultProjectId: env.MEMORY_DEFAULT_PROJECT_ID || '',
+  memoryAutoThreadSummary: envFlag('MEMORY_AUTO_THREAD_SUMMARY', false),
+  memoryThreadMaxChars: Math.max(4000, Number(env.MEMORY_THREAD_MAX_CHARS || 20_000)),
+  memoryExtractorEnabled: envFlag('MEMORY_EXTRACTOR_ENABLED', false),
+  memoryPendingLimit: Math.max(1, Number(env.MEMORY_PENDING_LIMIT || 20)),
+  memoryCompactMaxTextChars: Math.max(4000, Number(env.MEMORY_COMPACT_MAX_TEXT_CHARS || 20_000)),
+  memoryCompactMaxJsonlRecords: Math.max(10, Number(env.MEMORY_COMPACT_MAX_JSONL_RECORDS || 100)),
   botSendCommands: splitCsv(env.BOT_SEND_COMMANDS || '/bot-send,/send-bot,发给机器人'),
   botSendInviteByAppId: envFlag('BOT_SEND_INVITE_BY_APP_ID', false),
   botSendTargetOpenIds: parseAliasOpenIdMap(env.BOT_SEND_TARGET_OPEN_IDS || ''),
@@ -405,10 +492,38 @@ const config = {
   codexNonOwnerSandbox: normalizeNonOwnerSandboxMode(env.CODEX_NON_OWNER_SANDBOX),
   codexNonOwnerScratchRoot: env.CODEX_NON_OWNER_SCRATCH_ROOT || tmpdir(),
   codexModel: env.CODEX_MODEL || '',
+  codexRuntime: normalizeCodexRuntime(env.CODEX_RUNTIME || env.CODEX_RUNNER || 'exec'),
+  codexAppServerStartTimeoutMs: Math.max(1000, Number(env.CODEX_APP_SERVER_START_TIMEOUT_MS || 10_000)),
+  codexAppServerRequestTimeoutMs: Math.max(1000, Number(env.CODEX_APP_SERVER_REQUEST_TIMEOUT_MS || 30_000)),
   codexTimeoutMs: Number(env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
   codexEphemeral: env.CODEX_EPHEMERAL !== '0',
   codexSkipGitRepoCheck: envFlag('CODEX_SKIP_GIT_REPO_CHECK', true),
   codexResume: env.CODEX_RESUME || '',
+  claudeCodeBin: env.CLAUDE_CODE_BIN || env.CLAUDE_BIN || 'claude',
+  claudeCodeOutputFormat: env.CLAUDE_CODE_OUTPUT_FORMAT || 'json',
+  claudeCodePermissionMode: env.CLAUDE_CODE_PERMISSION_MODE || 'plan',
+  claudeCodeMaxTurns: Math.max(1, Number(env.CLAUDE_CODE_MAX_TURNS || 3)),
+  claudeCodeNoSessionPersistence: envFlag('CLAUDE_CODE_NO_SESSION_PERSISTENCE', true),
+  claudeCodeTimeoutMs: Number(env.CLAUDE_CODE_TIMEOUT_MS || env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
+  claudeCodeExtraArgs: splitCsv(env.CLAUDE_CODE_EXTRA_ARGS || ''),
+  cocoRunMode: ['chat', 'task'].includes(String(env.COCO_RUN_MODE || '').trim().toLowerCase())
+    ? String(env.COCO_RUN_MODE).trim().toLowerCase()
+    : 'chat',
+  cocoRepoId: env.COCO_REPO_ID || '',
+  cocoCommitId: env.COCO_COMMIT_ID || '',
+  cocoBranch: env.COCO_BRANCH || '',
+  cocoMergeRequestNumber: env.COCO_MERGE_REQUEST_NUMBER || '',
+  cocoTaskId: env.COCO_TASK_ID || '',
+  cocoModelName: env.COCO_MODEL_NAME || '',
+  cocoAgentName: env.COCO_AGENT_NAME || '',
+  cocoEnvironment: env.COCO_ENVIRONMENT || '',
+  cocoEnvironmentImage: env.COCO_ENVIRONMENT_IMAGE || '',
+  cocoEnvironmentTtl: env.COCO_ENVIRONMENT_TTL || '',
+  cocoEnvironmentVars: splitCsv(env.COCO_ENVIRONMENT_VARS || env.COCO_ENVIRONMENT_VAR || ''),
+  cocoTaskWait: envFlag('COCO_TASK_WAIT', false),
+  cocoTaskSubscribe: envFlag('COCO_TASK_SUBSCRIBE', true),
+  cocoTimeoutMs: Number(env.COCO_TIMEOUT_MS || env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
+  cocoTaskWaitTimeoutMs: Number(env.COCO_TASK_WAIT_TIMEOUT_MS || env.COCO_TIMEOUT_MS || env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
   progressCardEnabled: envFlag('PROGRESS_CARD_ENABLED', false),
   progressCardUpdateIntervalMs: Math.max(3000, Number(env.PROGRESS_CARD_UPDATE_INTERVAL_MS || 8000)),
   progressCardMaxItems: Math.max(3, Number(env.PROGRESS_CARD_MAX_ITEMS || 8)),
@@ -425,19 +540,57 @@ const config = {
       '执行任何可能有副作用的命令前，先在回复中说明将要做什么；在非交互环境不能确认时，给出待执行命令而不是擅自执行。MR review 自动化 prompt 明确允许的 review/comment/approve 操作、Reviewer 回复闭环自动化 prompt 明确允许的代码修复/提交/push/复审消息除外。',
       '不要输出 token、secret、cookie、JWT、appSecret、服务账号 ID、服务账号名称或服务账号密钥；除非用户明确要求核对身份，也只描述为“已配置的服务账号”。',
     ].join('\n'),
+  petSyncEnabled: envFlag('PET_SYNC_ENABLED', false),
+  petSyncMode: (env.PET_SYNC_MODE || 'safe').toLowerCase() === 'full' ? 'full' : 'safe',
+  petSyncMaxMessageChars: Math.max(80, Number(env.PET_SYNC_MAX_MESSAGE_CHARS || 280)),
+  petSyncMaxEventBufferSize: Math.max(10, Number(env.PET_SYNC_MAX_EVENT_BUFFER_SIZE || 100)),
 };
 
 const seenMessages = new Set();
 const bridgeStartedAtMs = Date.now();
-const codexRunner = createCodexExecRunner(config, { clampReply });
-let startupChecks = [];
-let mentionLookupWarningLogged = false;
 
-function requireEnv(name, value) {
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
+const petBus = config.petSyncEnabled
+  ? createPetEventBus({ maxBuffer: config.petSyncMaxEventBufferSize })
+  : null;
+
+// Mirror one piece of bot activity to the local desktop pet (Kodama). No-op
+// unless PET_SYNC_ENABLED. SAFE mode redacts + clamps text; FULL mode only
+// clamps. Never throws into the caller.
+function emitPet(type, payload = {}) {
+  if (!petBus) return;
+  try {
+    const out = { ...payload };
+    if (typeof out.text === 'string') {
+      const cleaned = config.petSyncMode === 'full' ? out.text : redactForCard(out.text);
+      out.text = clampText(cleaned, config.petSyncMaxMessageChars);
+    }
+    out.mode = config.petSyncMode;
+    out.source = out.source || 'lark';
+    petBus.emit(type, out);
+  } catch (error) {
+    if (config.debug) console.error(`[pet] emit failed: ${error.message}`);
   }
 }
+const backendRunner = createRunner(config, { clampReply, runProcessFn: runProcess });
+const profilePolicy = loadProfilePolicy({
+  enabled: config.profilePolicyEnabled,
+  configFile: config.profileConfigFile,
+});
+const stopRegistry = createStopRegistry();
+const directTaskQueue = createContextQueueRuntime({
+  contextKeyForItem: item => item.contextKey || contextKeyForBridgeEvent(item.event),
+  runItem: item => executeDirectCodexTask(item.event, item.rawText, {
+    ...item.options,
+    contextKey: item.contextKey || contextKeyForBridgeEvent(item.event),
+  }),
+  onError: (item, error) => {
+    console.error(
+      `[bridge] queued direct task failed in ${item.contextKey || contextKeyForBridgeEvent(item.event)}: ${error.stack || error.message || error}`,
+    );
+  },
+});
+let startupChecks = [];
+let mentionLookupWarningLogged = false;
 
 function appendLineBuffer(onLine) {
   let buffer = '';
@@ -589,6 +742,18 @@ function extractSenderName(event) {
   return names.find(value => typeof value === 'string' && value.trim()) || '';
 }
 
+function contextKeyForBridgeEvent(event) {
+  return conversationKeyForEvent({
+    chatId: extractChatId(event),
+    chatType: extractChatType(event),
+    senderId: extractSenderId(event),
+    threadId: findStringDeep(event, ['thread_id', 'threadId']),
+    rootId: findStringDeep(event, ['root_id', 'rootId']),
+    parentId: findStringDeep(event, ['parent_id', 'parentId']),
+    replyToMessageId: findStringDeep(event, ['reply_to_message_id', 'replyToMessageId']),
+  });
+}
+
 function isMentionableUserOpenId(value) {
   return typeof value === 'string' && value.startsWith('ou_');
 }
@@ -599,6 +764,17 @@ function isApprovalOwnerOpenId(openId) {
 
 function isApprovalOwnerEvent(event) {
   return isApprovalOwnerOpenId(extractSenderId(event));
+}
+
+function isBridgeOwnerOpenId(openId) {
+  return (
+    isApprovalOwnerOpenId(openId) ||
+    (profilePolicy.enabled && isProfileOwner(profilePolicy.config, openId))
+  );
+}
+
+function isBridgeOwnerEvent(event) {
+  return isBridgeOwnerOpenId(extractSenderId(event));
 }
 
 function mentionMatchesBot(mention) {
@@ -821,7 +997,7 @@ function shouldHandleDelegateReviewAutomation(rawText) {
 
 function canExecuteReviewAutomationDirectly(event, rawText) {
   return canDirectReviewAutomation({
-    requesterIsOwner: isApprovalOwnerEvent(event),
+    requesterIsOwner: isBridgeOwnerEvent(event),
     senderIsKnownBot: isKnownBotSender(event),
     rawText,
   });
@@ -4982,6 +5158,8 @@ function buildDirectCodexPrompt(event, rawText, options = {}) {
   const promptBase = config.prefix ? rawText.slice(config.prefix.length).trim() : rawText;
   const prompt = stripBotMentionText(stripBridgeTraceText(promptBase));
   const nonOwnerQueryNotice = options.nonOwnerQuery ? nonOwnerGuardNotice(config, options) : '';
+  const profilePromptContext = String(options.profilePromptContext || '').trim();
+  const memoryPromptContext = String(options.memoryPromptContext || '').trim();
   const approvalNotice = options.approvedBy
     ? `\n安全审批：这个非只读请求已经由 ${options.approvedBy} 通过 bridge 卡片确认，可以按原请求执行。`
     : '';
@@ -4992,9 +5170,12 @@ function buildDirectCodexPrompt(event, rawText, options = {}) {
     `message_id=${extractMessageId(event) || 'unknown'}`,
     `sender_id=${extractSenderId(event) || 'unknown'}`,
     `sender_type=${extractSenderType(event) || 'unknown'}`,
+    `context_key=${options.contextKey || contextKeyForBridgeEvent(event)}`,
     '',
     '当前处理模式：直接 @机器人 / 私聊机器人，bridge 会把你的最终回答原样发回飞书。',
     '回复格式要求：直接写给提问者；不要套用“建议操作 / 待发送回复 / 操作计划 / 草稿”等代理审批包装。',
+    profilePromptContext,
+    memoryPromptContext,
     nonOwnerQueryNotice,
     approvalNotice,
   ]
@@ -5010,25 +5191,44 @@ function buildDirectCodexPrompt(event, rawText, options = {}) {
 async function executeDirectCodexTask(event, rawText, options = {}) {
   let nonOwnerContext = null;
   const executionOptions = { ...options };
-  if (executionOptions.nonOwnerQuery && !executionOptions.cwd) {
-    nonOwnerContext = createNonOwnerCodexExecutionContext(config);
+  const contextKey = executionOptions.contextKey || contextKeyForBridgeEvent(event);
+  const startedAt = Date.now();
+  const abortController = new AbortController();
+  const unregisterStop = stopRegistry.register(contextKey, abortController);
+  if (executionOptions.nonOwnerQuery) {
+    nonOwnerContext = createNonOwnerCodexExecutionContext(config, {
+      realWorkspace: executionOptions.realWorkspace || executionOptions.cwd || config.codexCwd,
+    });
     executionOptions.cwd = nonOwnerContext.cwd;
     executionOptions.realWorkspace = nonOwnerContext.realWorkspace;
     executionOptions.sandbox = executionOptions.sandbox || nonOwnerContext.sandbox;
+  }
+
+  if (stopRegistry.isCancelled(contextKey, startedAt)) {
+    await replyToLark(event, '这条请求已被 /stop 取消，没有启动 Codex。');
+    if (nonOwnerContext) nonOwnerContext.cleanup();
+    unregisterStop();
+    return { ok: false, error: 'cancelled before start' };
   }
 
   const { trace, prompt, codexPrompt } = buildDirectCodexPrompt(event, rawText, executionOptions);
   const progress = options.progress === false
     ? null
     : await createProgressReporter(event, prompt || stripBridgeTraceText(rawText));
+  emitPet('task_started', { contextKey, text: prompt || stripBridgeTraceText(rawText) });
   try {
     const reply = await buildReply(codexPrompt, {
       progress,
       sandbox: executionOptions.sandbox || config.codexSandbox,
       cwd: executionOptions.cwd || config.codexCwd,
+      contextKey,
+      signal: abortController.signal,
     });
     const finalReply = normalizeDirectBotReply(reply);
     if (progress) await progress.finish(finalReply);
+    emitPet('task_done', { contextKey, text: finalReply });
+    recordThreadMemoryIfEnabled(event, rawText, finalReply, executionOptions);
+    recordMemoryCandidatesIfEnabled(event, rawText, finalReply);
     if (config.progressCardFinalReply || !progress) {
       await replyToLark(
         event,
@@ -5038,8 +5238,20 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     }
     return { ok: true };
   } catch (error) {
+    if (abortController.signal.aborted || error?.name === 'AbortError') {
+      console.error(`[bridge] direct task stopped in ${contextKey}: ${error.message || error}`);
+      if (progress) await progress.fail('任务已停止。');
+      emitPet('task_failed', { contextKey, text: '任务已停止', reason: 'stopped' });
+      await replyToLark(
+        event,
+        '任务已停止。',
+        options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-stopped` } : {},
+      );
+      return { ok: false, error: 'stopped' };
+    }
     console.error(`[bridge] ${error.stack || error.message}`);
     if (progress) await progress.fail(error.message || error);
+    emitPet('task_failed', { contextKey, text: String(error?.message || error), reason: 'error' });
     await replyToLark(
       event,
       `执行失败：${clampReply(error.message || error)}`,
@@ -5047,7 +5259,333 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     );
     return { ok: false, error: String(error?.stack || error?.message || error) };
   } finally {
+    unregisterStop();
     if (nonOwnerContext) nonOwnerContext.cleanup();
+  }
+}
+
+async function executeDirectCodexTaskQueued(event, rawText, options = {}) {
+  if (!config.contextQueueEnabled) return executeDirectCodexTask(event, rawText, options);
+
+  const contextKey = contextKeyForBridgeEvent(event);
+  const result = directTaskQueue.dispatch({ event, rawText, options, contextKey }, {
+    front: options.queueFront,
+  });
+  if (result.status === 'queued' && options.queuedByCommand) {
+    await replyToLark(
+      event,
+      `已加入当前上下文队列，位置：${result.position}。`,
+      { idempotencyKey: `queue-ack-${extractMessageId(event) || randomUUID()}` },
+    );
+  }
+  await result.done;
+  return { ok: true, queued: result.status === 'queued' };
+}
+
+async function handleStopCommand(event) {
+  if (!isBridgeOwnerEvent(event)) {
+    await replyToLark(event, '只有 bridge owner 可以停止当前上下文的 Codex 任务。');
+    return true;
+  }
+  const contextKey = contextKeyForBridgeEvent(event);
+  const cancelled = stopRegistry.cancel(contextKey, `Bridge stop requested by ${extractSenderId(event) || 'unknown'}`);
+  const cleared = directTaskQueue.clearQueued(contextKey);
+  await replyToLark(
+    event,
+    [
+      '已处理 /stop。',
+      `context: ${contextKey}`,
+      `已中断运行中任务：${cancelled.aborted}`,
+      `已清空排队任务：${cleared}`,
+    ].join('\n'),
+    { idempotencyKey: `stop-${extractMessageId(event) || randomUUID()}` },
+  );
+  return true;
+}
+
+function readCurrentOncallBindings() {
+  return readOncallBindings(config.oncallBindingsFile);
+}
+
+function oncallExecutionOptionsForEvent(event, requesterIsOwner) {
+  const binding = getOncallBinding(readCurrentOncallBindings(), extractChatId(event));
+  if (!binding) return {};
+  if (requesterIsOwner) return { cwd: binding.cwd, oncallCwd: binding.cwd };
+  return { realWorkspace: binding.cwd, oncallCwd: binding.cwd };
+}
+
+async function handleOncallCommand(event, command, requesterIsOwner) {
+  const chatId = extractChatId(event);
+  if (!chatId) {
+    await replyToLark(event, '当前事件没有 chat_id，无法操作 oncall 绑定。');
+    return true;
+  }
+
+  if (command.action === 'help') {
+    await replyToLark(event, [
+      'Oncall commands:',
+      '/oncall bind <path> - 绑定当前群/会话到本机项目目录（owner only）',
+      '/oncall status - 查看当前绑定',
+      '/oncall unbind - 解绑当前群/会话（owner only）',
+    ].join('\n'));
+    return true;
+  }
+
+  const bindings = readCurrentOncallBindings();
+  if (command.action === 'status') {
+    const binding = getOncallBinding(bindings, chatId);
+    await replyToLark(event, binding
+      ? [
+          '当前 oncall 绑定：',
+          `chat_id: ${chatId}`,
+          `cwd: ${binding.cwd}`,
+          binding.ownerOpenId ? `owner: ${binding.ownerOpenId}` : '',
+        ].filter(Boolean).join('\n')
+      : `当前 chat 未绑定 oncall 项目。\nchat_id: ${chatId}`);
+    return true;
+  }
+
+  if (!requesterIsOwner) {
+    await replyToLark(event, '只有 bridge owner 可以修改 oncall 绑定。');
+    return true;
+  }
+
+  if (command.action === 'unbind') {
+    writeOncallBindings(config.oncallBindingsFile, clearOncallBinding(bindings, chatId));
+    await replyToLark(event, `已解绑当前 oncall chat。\nchat_id: ${chatId}`);
+    return true;
+  }
+
+  if (command.action === 'bind') {
+    const cwd = normalizeOncallPath(command.path, { cwd: process.cwd() });
+    if (!existsSync(cwd)) {
+      await replyToLark(event, `绑定失败：目录不存在。\n${cwd}`);
+      return true;
+    }
+    if (!statSync(cwd).isDirectory()) {
+      await replyToLark(event, `绑定失败：目标不是目录。\n${cwd}`);
+      return true;
+    }
+    const next = setOncallBinding(bindings, chatId, {
+      cwd,
+      ownerOpenId: extractSenderId(event),
+    });
+    writeOncallBindings(config.oncallBindingsFile, next);
+    await replyToLark(event, [
+      '已绑定当前 oncall chat。',
+      `chat_id: ${chatId}`,
+      `cwd: ${cwd}`,
+      'owner 请求会直接在该目录运行；非 owner 请求仍在一次性 scratch 中执行，只把该目录作为只读真实工作区上下文。',
+    ].join('\n'));
+    return true;
+  }
+
+  return false;
+}
+
+function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner) {
+  const promptText = stripBotMentionText(stripBridgeTraceText(rawText));
+  const result = evaluateProfilePolicy(
+    profilePolicy,
+    {
+      chatId: extractChatId(event),
+      chatType: extractChatType(event),
+      senderId: extractSenderId(event),
+    },
+    promptText,
+    { isOwner: requesterIsOwner },
+  );
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    options: result.enabled
+      ? {
+          profilePromptContext: result.promptContext,
+          profileActor: result.actor,
+          profileId: result.profile?.id || '',
+          capabilityId: result.capability?.id || '',
+        }
+      : {},
+  };
+}
+
+function memoryRouteForEvent(event, rawText) {
+  return resolveMemoryRoute(
+    config,
+    {
+      chatId: extractChatId(event),
+      chatType: extractChatType(event),
+      senderId: extractSenderId(event),
+      messageId: extractMessageId(event),
+      threadId: findStringDeep(event, ['thread_id', 'threadId']),
+      rootId: findStringDeep(event, ['root_id', 'rootId']),
+      parentId: findStringDeep(event, ['parent_id', 'parentId']),
+    },
+    rawText,
+  );
+}
+
+function memoryPromptContextForEvent(event, rawText) {
+  if (!config.memoryEnabled) return '';
+  const route = memoryRouteForEvent(event, rawText);
+  const bundle = readVisibleMemoryBundle(config, route);
+  return buildMemoryPromptContext(bundle, config.memoryPromptBudgetChars);
+}
+
+function memoryOptionsForEvent(event, rawText) {
+  const memoryPromptContext = memoryPromptContextForEvent(event, rawText);
+  return memoryPromptContext ? { memoryPromptContext } : {};
+}
+
+function formatVisibleMemoryForEvent(event, rawText) {
+  const route = memoryRouteForEvent(event, rawText);
+  const bundle = readVisibleMemoryBundle(config, route);
+  const text = buildMemoryPromptContext(bundle, config.memoryPromptBudgetChars);
+  return text || '当前上下文没有可见记忆。';
+}
+
+async function handleMemoryCommand(event, command, rawText) {
+  if (!config.memoryEnabled) {
+    await replyToLark(event, 'Memory 当前未启用。设置 MEMORY_ENABLED=1 后可用。');
+    return true;
+  }
+
+  const actor = isBridgeOwnerEvent(event) ? 'owner' : 'member';
+  const allowed = canWriteMemory(command, actor);
+  if (!allowed.ok) {
+    await replyToLark(event, allowed.message || '没有权限操作记忆。');
+    return true;
+  }
+
+  const route = memoryRouteForEvent(event, rawText);
+  const paths = memoryPaths(config.memoryRootDir, route);
+  if (command.action === 'show') {
+    await replyToLark(event, formatVisibleMemoryForEvent(event, rawText));
+    return true;
+  }
+  if (command.action === 'pending') {
+    await replyToLark(event, formatMemoryCandidates(readMemoryCandidates(
+      config.memoryRootDir,
+      route,
+      config.memoryPendingLimit,
+    )));
+    return true;
+  }
+  if (command.action === 'approve') {
+    const result = approveMemoryCandidates(config.memoryRootDir, route, command.selector);
+    await replyToLark(event, formatMemoryCandidateResolution('已批准', result.selected));
+    return true;
+  }
+  if (command.action === 'reject') {
+    const result = rejectMemoryCandidates(config.memoryRootDir, route, command.selector);
+    await replyToLark(event, formatMemoryCandidateResolution('已拒绝', result.selected));
+    return true;
+  }
+  if (command.action === 'compact') {
+    const result = compactMemoryRoute({
+      rootDir: config.memoryRootDir,
+      route,
+      scope: command.scope,
+      maxTextChars: config.memoryCompactMaxTextChars,
+      maxJsonlRecords: config.memoryCompactMaxJsonlRecords,
+    });
+    await replyToLark(event, formatMemoryCompactResult(command.scope, result));
+    return true;
+  }
+
+  if (command.scope === 'global') {
+    const file = join(paths.globalDir, 'preferences.md');
+    const existing = readTextFile(file, '').trim();
+    writeTextFile(file, `${existing ? `${existing}\n` : ''}- ${command.text}\n`);
+  } else if (command.scope === 'project') {
+    if (!route.projectId) {
+      await replyToLark(event, '没有识别到 project_id，无法写入项目记忆。请在消息里包含 repo/MR/activity 锚点，或配置 MEMORY_DEFAULT_PROJECT_ID。');
+      return true;
+    }
+    appendJsonl(join(paths.projectDir, 'decisions.jsonl'), {
+      text: command.text,
+      source: 'manual',
+      updatedBy: extractSenderId(event),
+    });
+  } else {
+    appendJsonl(join(paths.chatDir, 'decisions.jsonl'), {
+      text: command.text,
+      source: 'manual',
+      updatedBy: extractSenderId(event),
+    });
+  }
+
+  await replyToLark(event, `已写入 ${command.scope} 记忆。`);
+  return true;
+}
+
+function formatMemoryCandidates(candidates) {
+  if (!candidates.length) return '当前上下文没有待审批记忆候选。';
+  return [
+    '待审批记忆候选：',
+    ...candidates.map(candidate => [
+      `- id: ${candidate.id}`,
+      `  scope: ${candidate.scope || 'chat'}`,
+      `  type: ${candidate.type || 'decision'}`,
+      candidate.projectId ? `  project: ${candidate.projectId}` : '',
+      `  text: ${candidate.text}`,
+    ].filter(Boolean).join('\n')),
+    '',
+    '用法：/memory-approve <id|all> 或 /memory-reject <id|all>',
+  ].join('\n');
+}
+
+function formatMemoryCandidateResolution(prefix, candidates) {
+  if (!candidates.length) return '没有匹配的待审批记忆候选。';
+  return [
+    `${prefix} ${candidates.length} 条记忆候选：`,
+    ...candidates.map(candidate => `- ${candidate.id}: ${candidate.text}`),
+  ].join('\n');
+}
+
+function formatMemoryCompactResult(scope, result) {
+  if (!result.length) return `已完成 ${scope} 记忆压缩。`;
+  const changed = result.filter(item => item.before !== item.after);
+  return [
+    `已完成 ${scope} 记忆压缩。`,
+    `处理文件：${result.length}`,
+    `发生变化：${changed.length}`,
+  ].join('\n');
+}
+
+function recordThreadMemoryIfEnabled(event, rawText, finalReply, options = {}) {
+  if (!shouldAutoWriteThreadSummary(config, options.profileActor || (isBridgeOwnerEvent(event) ? 'owner' : 'member'))) {
+    return;
+  }
+  const route = memoryRouteForEvent(event, rawText);
+  appendThreadExchange({
+    rootDir: config.memoryRootDir,
+    chatId: route.chatId,
+    threadId: route.threadId,
+    userText: stripBotMentionText(stripBridgeTraceText(rawText)),
+    assistantText: finalReply,
+    maxChars: config.memoryThreadMaxChars,
+  });
+}
+
+function recordMemoryCandidatesIfEnabled(event, rawText, finalReply) {
+  if (!config.memoryEnabled || !config.memoryExtractorEnabled) return;
+  const route = memoryRouteForEvent(event, rawText);
+  const sourceMessageId = extractMessageId(event);
+  const sourceText = [
+    stripBotMentionText(stripBridgeTraceText(rawText)),
+    finalReply,
+  ].join('\n');
+  const candidates = extractMemoryCandidates(sourceText, {
+    source: 'thread-extractor',
+    confidence: 'medium',
+  });
+  for (const candidate of candidates) {
+    appendMemoryCandidate(config.memoryRootDir, route, {
+      ...candidate,
+      scope: route.projectId ? 'project' : 'chat',
+      sourceMessageId,
+    });
   }
 }
 
@@ -5087,7 +5625,7 @@ async function executeApprovedSensitiveOperation(approval, operatorOpenId) {
     return { ok: true };
   }
 
-  return executeDirectCodexTask(event, approval.requestText, {
+  return executeDirectCodexTaskQueued(event, approval.requestText, {
     approvedBy: operatorOpenId,
     sandbox: config.codexSandbox,
     idempotencyKey: `sensitive-approved-${approval.id}`,
@@ -5429,85 +5967,9 @@ function startDelegatePolling() {
   return timer;
 }
 
-async function getByteCloudJwt() {
-  requireEnv('SERVICE_ACCOUNT_SECRET or BYTECLOUD_SA_SECRET', config.serviceAccountSecret);
-  const response = await fetch(config.jwtEndpoint, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${config.serviceAccountSecret}`,
-    },
-  });
-  const token = response.headers.get('x-jwt-token');
-  if (!response.ok || !token) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`failed to get service JWT: HTTP ${response.status} ${body.slice(0, 200)}`);
-  }
-  return token;
-}
-
-async function callTaeAgent(prompt) {
-  requireEnv('AGENT_GATEWAY_TARGET or TAE_TARGET_PSM', config.taeTargetPsm);
-  const jwt = await getByteCloudJwt();
-  const response = await fetch(config.taeAgentUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-JWT-TOKEN': jwt,
-      'x-agent-target-psm': config.taeTargetPsm,
-    },
-    body: JSON.stringify({
-      model: '',
-      stream: false,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`agent gateway call failed: HTTP ${response.status} ${text.slice(0, 500)}`);
-  }
-  const json = tryJson(text);
-  return (
-    json?.choices?.[0]?.message?.content ||
-    json?.choices?.[0]?.delta?.content ||
-    json?.content ||
-    text
-  );
-}
-
-async function callByteCloudApi(prompt) {
-  requireEnv('SERVICE_API_URL or BYTECLOUD_API_URL', config.bytecloudApiUrl);
-  const jwt = await getByteCloudJwt();
-  const method = config.bytecloudApiMethod.toUpperCase();
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-JWT-TOKEN': jwt,
-    'x-bridge-user-prompt': prompt.slice(0, 512),
-  };
-  const response = await fetch(config.bytecloudApiUrl, {
-    method,
-    headers,
-    body: method === 'GET' || method === 'HEAD' ? undefined : config.bytecloudApiBody || '{}',
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`service API call failed: HTTP ${response.status} ${text.slice(0, 500)}`);
-  }
-  return text.length > 3500 ? `${text.slice(0, 3500)}\n...` : text;
-}
-
-async function callCodex(prompt, options = {}) {
-  return codexRunner.run(prompt, options);
-}
-
 async function buildReply(prompt, options = {}) {
-  if (config.mode === 'jwt-check') {
-    await getByteCloudJwt();
-    return '服务账号 JWT 获取成功，飞书机器人到服务账号这条链路是通的。';
-  }
-  if (config.mode === 'agent' || config.mode === 'tae') return callTaeAgent(prompt);
-  if (config.mode === 'api') return callByteCloudApi(prompt);
-  if (config.mode === 'codex') return callCodex(prompt, options);
-  throw new Error(`Unsupported BRIDGE_MODE: ${config.mode}`);
+  const result = await backendRunner.run(prompt, options);
+  return result.text || '后端执行完成，但没有返回文本。';
 }
 
 function runCli(args, stdin = '', options = {}) {
@@ -5533,8 +5995,22 @@ function bridgeHealthPayload() {
     uptime_sec: uptimeSec(),
     codex_sandbox: config.codexSandbox,
     codex_non_owner_sandbox: config.codexNonOwnerSandbox,
-    codex_runner: codexRunner.id,
+    backend_runner: backendRunner.id,
+    backend_label: backendRunner.label,
+    codex_runner: backendRunner.id,
+    codex_runtime: config.codexRuntime,
     session_share_output: config.sessionShareOutput,
+    context_queue_enabled: config.contextQueueEnabled,
+    context_queue_active: directTaskQueue.activeTotal(),
+    context_queue_queued: directTaskQueue.queuedTotal(),
+    stop_registry_active: stopRegistry.activeTotal(),
+    profile_policy_enabled: profilePolicy.enabled,
+    profile_policy_loaded: profilePolicy.loaded,
+    profile_config_file: profilePolicy.path,
+    memory_enabled: config.memoryEnabled,
+    memory_root_dir: config.memoryRootDir,
+    memory_extractor_enabled: config.memoryExtractorEnabled,
+    memory_pending_limit: config.memoryPendingLimit,
     startup_checks: startupChecks,
   };
 }
@@ -5552,8 +6028,21 @@ function bridgeHealthText() {
     codexCwd: config.codexCwd,
     codexSandbox: config.codexSandbox,
     codexNonOwnerSandbox: config.codexNonOwnerSandbox,
-    codexRunner: codexRunner.id,
+    backendRunner: backendRunner.id,
+    backendLabel: backendRunner.label,
+    codexRunner: backendRunner.id,
+    codexRuntime: config.codexRuntime,
     sessionShareOutput: config.sessionShareOutput,
+    contextQueueEnabled: config.contextQueueEnabled,
+    contextQueueActive: directTaskQueue.activeTotal(),
+    contextQueueQueued: directTaskQueue.queuedTotal(),
+    profilePolicyEnabled: profilePolicy.enabled,
+    profilePolicyLoaded: profilePolicy.loaded,
+    profileConfigFile: profilePolicy.path,
+    memoryEnabled: config.memoryEnabled,
+    memoryRootDir: config.memoryRootDir,
+    memoryExtractorEnabled: config.memoryExtractorEnabled,
+    memoryPendingLimit: config.memoryPendingLimit,
     startupChecks,
   });
 }
@@ -5574,8 +6063,8 @@ function readLastLogLines(file, lines = 30) {
 }
 
 async function handleOpsCommand(event, command) {
-  if (!isApprovalOwnerEvent(event)) {
-    await replyToLark(event, '只有宋一凡本人可以执行 bridge ops 命令。');
+  if (!isBridgeOwnerEvent(event)) {
+    await replyToLark(event, '只有 bridge owner 可以执行 bridge ops 命令。');
     return true;
   }
   if (extractChatType(event) !== 'p2p' && !eventMentionsBot(event) && !textMentionsBot(extractText(event))) {
@@ -5872,6 +6361,24 @@ async function handleHttpRequest(request, response) {
     return;
   }
 
+  if (request.method === 'GET' && url.pathname === '/pet/state') {
+    if (!petBus) {
+      jsonResponse(response, 404, { ok: false, error: 'pet sync disabled' });
+      return;
+    }
+    jsonResponse(response, 200, { ok: true, ...petBus.getState() });
+    return;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/pet/events') {
+    if (!petBus) {
+      jsonResponse(response, 404, { ok: false, error: 'pet sync disabled' });
+      return;
+    }
+    handlePetEventStream(response);
+    return;
+  }
+
   if (request.method !== 'POST') {
     jsonResponse(response, 404, { ok: false, error: 'not found' });
     return;
@@ -5925,6 +6432,40 @@ async function handleHttpRequest(request, response) {
     console.error(`[bridge-http] ${error.stack || error.message}`);
     jsonResponse(response, 500, { ok: false, error: clampReply(error.message || error) });
   }
+}
+
+// Server-Sent Events stream for the local desktop pet. Pushes every pet event
+// as it happens; replays the last few so a freshly-connected pet catches up.
+function handlePetEventStream(response) {
+  response.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  response.write(': connected\n\n');
+  const send = event => {
+    try {
+      response.write(`event: ${event.type}\n`);
+      response.write(`data: ${JSON.stringify(event)}\n\n`);
+    } catch {
+      /* client gone; cleanup runs on close */
+    }
+  };
+  const unsubscribe = petBus.subscribe(send, { replay: 5 });
+  const heartbeat = setInterval(() => {
+    try {
+      response.write(': ping\n\n');
+    } catch {
+      /* ignore */
+    }
+  }, 15000);
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  };
+  response.on('close', cleanup);
+  response.on('error', cleanup);
 }
 
 function startHttpServer() {
@@ -6003,6 +6544,20 @@ async function runDoctor() {
     report(codex.ok ? 'ok' : 'fail', `Codex CLI (${config.codexBin}): ${codex.detail}`);
   }
 
+  if (config.mode === 'claude') {
+    const claude = checkCommand(config.claudeCodeBin);
+    report(claude.ok ? 'ok' : 'fail', `Claude Code CLI (${config.claudeCodeBin}): ${claude.detail}`);
+  }
+
+  if (config.mode === 'coco') {
+    const bytedcli = checkCommand(config.bytedCliBin);
+    report(bytedcli.ok ? 'ok' : 'fail', `bytedcli for Coco (${config.bytedCliBin}): ${bytedcli.detail}`);
+    report(
+      ['chat', 'task'].includes(config.cocoRunMode) ? 'ok' : 'fail',
+      `COCO_RUN_MODE=${config.cocoRunMode}`,
+    );
+  }
+
   if (config.eventEnabled || config.mode !== 'codex') {
     const larkCli = checkCommand(config.larkCliBin);
     report(larkCli.ok ? 'ok' : 'fail', `lark-cli (${config.larkCliBin}): ${larkCli.detail}`);
@@ -6046,8 +6601,8 @@ async function runDoctor() {
     }
   }
 
-  if (config.mode !== 'codex' && !['jwt-check', 'agent', 'tae', 'api'].includes(config.mode)) {
-    report('fail', `Unsupported BRIDGE_MODE: ${config.mode}`);
+  if (!SUPPORTED_RUNNERS.map(normalizeRunnerId).includes(config.mode)) {
+    report('fail', `Unsupported bridge backend: ${config.mode}`);
   }
 
   if (config.mode === 'codex') {
@@ -6227,7 +6782,7 @@ async function updateCardMessage(cardMessageId, card) {
 }
 
 async function createProgressReporter(event, prompt) {
-  if (!config.progressCardEnabled || config.mode !== 'codex') return null;
+  if (!config.progressCardEnabled || config.mode === 'jwt-check') return null;
   const state = {
     status: 'running',
     prompt,
@@ -6262,6 +6817,7 @@ async function createProgressReporter(event, prompt) {
       if (!text) return;
       if (state.items[state.items.length - 1] === text) return;
       state.items.push(text);
+      emitPet('task_progress', { text });
       if (state.items.length > config.progressCardMaxItems * 2) {
         state.items = state.items.slice(-config.progressCardMaxItems * 2);
       }
@@ -6325,6 +6881,7 @@ async function replyToLark(event, text, options = {}) {
       '--idempotency-key',
       options.idempotencyKey || `bridge-${messageId}`,
     ]);
+    emitPet('lark_reply_sent', { text, chatId: extractChatId(event) });
     return;
   }
 
@@ -6343,6 +6900,7 @@ async function replyToLark(event, text, options = {}) {
     '--idempotency-key',
     options.idempotencyKey || `bridge-${randomUUID()}`,
   ]);
+  emitPet('lark_reply_sent', { text, chatId });
 }
 
 function reactionRuleMatches(rule, text) {
@@ -6436,6 +6994,11 @@ async function handleEvent(event) {
     return;
   }
 
+  const memoryCommand = parseMemoryCommand(stripBotMentionText(rawText));
+  if (memoryCommand && await handleMemoryCommand(event, memoryCommand, rawText)) {
+    return;
+  }
+
   if (await shouldHandleDelegateMention(event, rawText)) {
     try {
       await reactToLarkMessage(event, rawText);
@@ -6487,6 +7050,60 @@ async function handleEvent(event) {
     return;
   }
 
+  emitPet('lark_message_received', {
+    text: rawText,
+    sender: extractSenderId(event),
+    chatId: extractChatId(event),
+  });
+
+  const requesterIsOwner = isBridgeOwnerEvent(event);
+  const controlText = stripBotMentionText(stripBridgeTraceText(rawText));
+  const oncallCommand = parseOncallCommand(controlText);
+  if (oncallCommand && await handleOncallCommand(event, oncallCommand, requesterIsOwner)) {
+    return;
+  }
+
+  if (isStopCommand(controlText)) {
+    await handleStopCommand(event);
+    return;
+  }
+
+  const queueCommand = parseQueueCommand(controlText);
+  if (queueCommand) {
+    if (!queueCommand.text) {
+      await replyToLark(event, '用法：/queue <要排队给 Codex 的消息>');
+      return;
+    }
+    const profileDecision = evaluateDirectProfilePolicy(event, queueCommand.text, requesterIsOwner);
+    if (!profileDecision.ok) {
+      if (!profileDecision.silent && profileDecision.message) {
+        await replyToLark(event, profileDecision.message);
+      }
+      return;
+    }
+    const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
+    await executeDirectCodexTaskQueued(
+      event,
+      queueCommand.text,
+      requesterIsOwner
+        ? {
+            ...oncallOptions,
+            ...profileDecision.options,
+            ...memoryOptionsForEvent(event, queueCommand.text),
+            queuedByCommand: true,
+          }
+        : {
+            ...oncallOptions,
+            ...profileDecision.options,
+            ...memoryOptionsForEvent(event, queueCommand.text),
+            queuedByCommand: true,
+            nonOwnerQuery: true,
+            sandbox: config.codexNonOwnerSandbox,
+          },
+    );
+    return;
+  }
+
   let botSendCommand = null;
   let sessionShareCommand = null;
   try {
@@ -6509,7 +7126,6 @@ async function handleEvent(event) {
     sessionShareCommand,
     reviewAutomation,
   });
-  const requesterIsOwner = isApprovalOwnerEvent(event);
   const canRunSensitiveDirectly =
     requesterIsOwner ||
     (
@@ -6549,12 +7165,28 @@ async function handleEvent(event) {
     return;
   }
 
-  await executeDirectCodexTask(
+  const profileDecision = evaluateDirectProfilePolicy(event, rawText, requesterIsOwner);
+  if (!profileDecision.ok) {
+    if (!profileDecision.silent && profileDecision.message) {
+      await replyToLark(event, profileDecision.message);
+    }
+    return;
+  }
+
+  const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
+  await executeDirectCodexTaskQueued(
     event,
     rawText,
     requesterIsOwner
-      ? {}
+      ? {
+          ...oncallOptions,
+          ...profileDecision.options,
+          ...memoryOptionsForEvent(event, rawText),
+        }
       : {
+          ...oncallOptions,
+          ...profileDecision.options,
+          ...memoryOptionsForEvent(event, rawText),
           nonOwnerQuery: true,
           sandbox: config.codexNonOwnerSandbox,
         },

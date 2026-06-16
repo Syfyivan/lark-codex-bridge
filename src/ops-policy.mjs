@@ -103,13 +103,22 @@ export function formatHealthReport(input) {
     `eventEnabled: ${input.eventEnabled ? 'yes' : 'no'}`,
     `http: ${input.httpHost}:${input.httpPort || 0}`,
     `codexCwd: ${input.codexCwd}`,
-    `codexRunner: ${input.codexRunner || 'exec'}`,
+    `backendRunner: ${input.backendRunner || input.codexRunner || 'codex'}`,
+    input.backendLabel ? `backendLabel: ${input.backendLabel}` : '',
+    `codexRunner: ${input.codexRunner || input.backendRunner || 'codex'}`,
+    input.codexRuntime ? `codexRuntime: ${input.codexRuntime}` : '',
     `codexSandbox: ${input.codexSandbox}`,
     `codexNonOwnerSandbox: ${input.codexNonOwnerSandbox}`,
     `sessionShareOutput: ${input.sessionShareOutput}`,
+    `contextQueue: ${input.contextQueueEnabled ? 'enabled' : 'disabled'} active=${input.contextQueueActive || 0} queued=${input.contextQueueQueued || 0}`,
+    `profilePolicy: ${input.profilePolicyEnabled ? 'enabled' : 'disabled'} loaded=${input.profilePolicyLoaded ? 'yes' : 'no'}`,
+    input.profilePolicyEnabled && input.profileConfigFile ? `profileConfig: ${input.profileConfigFile}` : '',
+    `memory: ${input.memoryEnabled ? 'enabled' : 'disabled'}`,
+    input.memoryEnabled && input.memoryRootDir ? `memoryRoot: ${input.memoryRootDir}` : '',
+    input.memoryEnabled ? `memoryExtractor: ${input.memoryExtractorEnabled ? 'enabled' : 'disabled'} pendingLimit=${input.memoryPendingLimit || 0}` : '',
     'startupChecks:',
     ...checks,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 export function formatVersionReport(input) {

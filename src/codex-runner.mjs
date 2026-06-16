@@ -18,14 +18,14 @@ export function normalizeNonOwnerSandboxMode(value) {
   return normalized;
 }
 
-export function createNonOwnerCodexExecutionContext(config) {
+export function createNonOwnerCodexExecutionContext(config, options = {}) {
   const scratchRoot = resolve(config.codexNonOwnerScratchRoot);
   mkdirSync(scratchRoot, { recursive: true });
   const scratchCwd = mkdtempSync(join(scratchRoot, 'lark-codex-non-owner-'));
   return {
     cwd: scratchCwd,
     sandbox: config.codexNonOwnerSandbox,
-    realWorkspace: config.codexCwd,
+    realWorkspace: options.realWorkspace || config.codexCwd,
     cleanup() {
       rmSync(scratchCwd, { recursive: true, force: true });
     },
@@ -127,6 +127,13 @@ export function createCodexProgressLineHandler(progress) {
   };
 }
 
+export function buildCodexPromptText(config, prompt, options = {}) {
+  const progressPrompt = options.progress
+    ? '\n\n执行时请在关键阶段用简短中文说明当前动作、已确认事实、下一步。这里只展示可见进展，不要输出隐藏推理、token、secret 或 cookie。'
+    : '';
+  return `${config.codexPromptPrefix}${progressPrompt}\n\n飞书用户消息：\n${prompt}`;
+}
+
 export function createCodexExecRunner(config, deps = {}) {
   const {
     clampReply = value => String(value || ''),
@@ -155,13 +162,11 @@ export async function callCodexExec(prompt, options = {}) {
     cwd = config.codexCwd,
     clampReply = value => String(value || ''),
     runProcessFn = runProcess,
+    signal = null,
   } = options;
   const tmp = mkdtempSync(join(tmpdir(), 'lark-codex-'));
   const outputFile = join(tmp, 'last-message.txt');
-  const progressPrompt = progress
-    ? '\n\n执行时请在关键阶段用简短中文说明当前动作、已确认事实、下一步。这里只展示可见进展，不要输出隐藏推理、token、secret 或 cookie。'
-    : '';
-  const fullPrompt = `${config.codexPromptPrefix}${progressPrompt}\n\n飞书用户消息：\n${prompt}`;
+  const fullPrompt = buildCodexPromptText(config, prompt, { progress });
 
   const args = ['exec'];
   if (config.codexResume) {
@@ -196,6 +201,7 @@ export async function callCodexExec(prompt, options = {}) {
       timeoutMs: config.codexTimeoutMs,
       cwd,
       onStdoutChunk,
+      signal,
     });
     const finalMessage = existsSync(outputFile) ? readFileSync(outputFile, 'utf8') : stdout;
     return clampReply(finalMessage || stdout || 'Codex 执行完成，但没有返回文本。');

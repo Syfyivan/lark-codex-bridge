@@ -42,6 +42,21 @@ test('createNonOwnerCodexExecutionContext creates and cleans a scratch cwd', () 
   assert.equal(existsSync(context.cwd), false);
 });
 
+test('createNonOwnerCodexExecutionContext can carry an oncall real workspace', () => {
+  const context = createNonOwnerCodexExecutionContext(
+    {
+      codexNonOwnerScratchRoot: tmpdir(),
+      codexNonOwnerSandbox: 'workspace-write',
+      codexCwd: '/default/workspace',
+    },
+    { realWorkspace: '/oncall/workspace' },
+  );
+
+  assert.equal(context.realWorkspace, '/oncall/workspace');
+  assert.notEqual(context.cwd, '/oncall/workspace');
+  context.cleanup();
+});
+
 test('nonOwnerGuardNotice describes scratch and real workspaces', () => {
   const text = nonOwnerGuardNotice(
     { codexCwd: '/real/workspace' },

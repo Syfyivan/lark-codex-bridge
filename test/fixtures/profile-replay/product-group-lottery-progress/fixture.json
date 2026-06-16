@@ -1,0 +1,12 @@
+{
+  "profile": "product_group_test",
+  "projectId": "activity:lottery_progress",
+  "question": "这个抽奖进度展示需求这周能不能上？如果不能，需要产品先确认什么？",
+  "event": {
+    "chatId": "oc_shadow_product_group",
+    "chatType": "group",
+    "senderId": "ou_shadow_engineer",
+    "messageId": "mid_shadow_product_001",
+    "threadId": "thread_shadow_product_001"
+  }
+}

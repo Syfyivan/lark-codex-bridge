@@ -1,7 +1,7 @@
 {
   "name": "@syfyivan/lark-codex-bridge",
   "version": "0.3.0",
-  "description": "Bridge Feishu/Lark bot events to the local Codex CLI.",
+  "description": "Bridge Feishu/Lark bot events to local AI backend runners.",
   "private": false,
   "type": "module",
   "bin": {
@@ -10,6 +10,7 @@
   "files": [
     "lark-codex-bridge.mjs",
     "src",
+    "scripts",
     "docs",
     ".env.example",
     "launchagent.example.plist",
@@ -18,7 +19,7 @@
   "scripts": {
     "start": "node lark-codex-bridge.mjs",
     "doctor": "node lark-codex-bridge.mjs doctor",
-    "check": "node --check lark-codex-bridge.mjs && for file in src/*.mjs test/*.mjs; do node --check \"$file\"; done",
+    "check": "node --check lark-codex-bridge.mjs && find src scripts test -name '*.mjs' -print0 | xargs -0 -n1 node --check",
     "test": "node --test",
     "pack:dry": "npm pack --dry-run"
   },

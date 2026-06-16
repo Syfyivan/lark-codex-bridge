@@ -73,10 +73,16 @@ test('formatHealthReport includes startup checks', () => {
     httpHost: '127.0.0.1',
     httpPort: 8787,
     codexCwd: '/tmp/repo',
-    codexRunner: 'exec',
+    backendRunner: 'claude',
+    backendLabel: 'Claude Code',
+    codexRunner: 'claude',
     codexSandbox: 'danger-full-access',
     codexNonOwnerSandbox: 'workspace-write',
     sessionShareOutput: 'goofy',
+    memoryEnabled: true,
+    memoryRootDir: '/tmp/memory',
+    memoryExtractorEnabled: true,
+    memoryPendingLimit: 12,
     startupChecks: [{
       id: 'codex-app-server-steer',
       label: 'Codex app-server steer',
@@ -85,6 +91,11 @@ test('formatHealthReport includes startup checks', () => {
     }],
   });
   assert.match(report, /Lark Codex Bridge Health/);
-  assert.match(report, /codexRunner: exec/);
+  assert.match(report, /backendRunner: claude/);
+  assert.match(report, /backendLabel: Claude Code/);
+  assert.match(report, /codexRunner: claude/);
+  assert.match(report, /memory: enabled/);
+  assert.match(report, /memoryRoot: \/tmp\/memory/);
+  assert.match(report, /memoryExtractor: enabled pendingLimit=12/);
   assert.match(report, /\[OK\] Codex app-server steer/);
 });

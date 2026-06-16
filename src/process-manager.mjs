@@ -8,9 +8,15 @@ export function runProcess(command, args, options = {}) {
     env = process.env,
     onStdoutChunk = null,
     onStderrChunk = null,
+    signal = null,
   } = options;
 
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(signal.reason));
+      return;
+    }
+
     const child = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
@@ -20,14 +26,32 @@ export function runProcess(command, args, options = {}) {
     let stderr = '';
     let settled = false;
     let timeout = null;
+    let killTimer = null;
+
+    const cleanup = ({ keepKillTimer = false } = {}) => {
+      if (timeout) clearTimeout(timeout);
+      if (!keepKillTimer && killTimer) clearTimeout(killTimer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    };
+
+    const terminate = (error, signalName = 'SIGTERM') => {
+      if (settled) return;
+      settled = true;
+      child.kill(signalName);
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 3000);
+      killTimer.unref();
+      cleanup({ keepKillTimer: true });
+      reject(error);
+    };
+
+    const onAbort = () => {
+      terminate(abortError(signal.reason));
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
     if (timeoutMs > 0) {
       timeout = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill('SIGTERM');
-        setTimeout(() => child.kill('SIGKILL'), 3000).unref();
-        reject(new Error(`${command} timed out after ${timeoutMs}ms`));
+        terminate(new Error(`${command} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       timeout.unref();
     }
@@ -45,13 +69,13 @@ export function runProcess(command, args, options = {}) {
     child.on('error', error => {
       if (settled) return;
       settled = true;
-      if (timeout) clearTimeout(timeout);
+      cleanup();
       reject(error);
     });
     child.on('close', code => {
       if (settled) return;
       settled = true;
-      if (timeout) clearTimeout(timeout);
+      cleanup();
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
@@ -60,4 +84,11 @@ export function runProcess(command, args, options = {}) {
     });
     child.stdin.end(stdin);
   });
+}
+
+function abortError(reason) {
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason ? String(reason) : 'process aborted');
+  error.name = 'AbortError';
+  return error;
 }

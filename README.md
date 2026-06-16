@@ -1,24 +1,34 @@
 # Lark Codex Bridge
 
-A local Node.js bridge that connects Lark/Feishu bot events to `codex exec`.
-It can also expose a small HTTP API for local automation.
+A local Node.js bridge that connects Lark/Feishu bot events to an AI backend
+runner. The default runner is `codex exec`, and the same event/progress/reply
+flow can also target Claude Code, Coco, Agent Gateway, or a generic API. It can
+also expose a small HTTP API for local automation.
 
 The bridge is designed for a personal or team bot:
 
 ```text
-Lark bot event -> lark-cli -> Codex CLI -> Lark reply or progress card
+Lark bot event -> lark-cli -> backend runner -> Lark reply or progress card
 ```
 
 ## Features
 
 - Listen to Lark bot events through `lark-cli event +subscribe`.
 - Reply only when the bot is mentioned in a group, unless configured otherwise.
-- Run non-interactive Codex tasks with `codex exec`.
-- Show an interactive progress card while Codex is working.
+- Run Codex through `codex exec`, a persistent app-server connection, or
+  `auto` fallback mode.
+- Select first-class backend runners with `BRIDGE_BACKEND=codex|claude|coco|agent|api`.
+- Show an interactive progress card while the selected backend is working.
 - Replace the progress card with the final answer when the task finishes.
 - Render final answers with card Markdown so fenced code blocks display cleanly.
 - Find local Codex sessions and generate snapshot links from a card button.
 - Owner-only ops commands for health, version, and log tail checks from Lark.
+- Per-chat direct backend task queue with `/queue` and owner-only `/stop`.
+- Bind oncall chats to local project directories with owner-only `/oncall bind`.
+- Optional profile/capability policy so configured chats can restrict what
+  non-owners may ask Codex to do before a Codex process is started.
+- Optional layered Soul/Memory MVP with chat/thread/project/global storage and
+  owner-only `/remember` commands.
 - Optional delegated-user approval flow for messages that mention another user.
 - Optional local HTTP endpoints: `POST /v1/codex/tasks` and
   `POST /v1/codex/session-shares`.
@@ -28,7 +38,8 @@ Lark bot event -> lark-cli -> Codex CLI -> Lark reply or progress card
 
 - Node.js 20 or newer.
 - `lark-cli` configured with a bot app.
-- Codex CLI available on `PATH`, or set `CODEX_BIN`.
+- The selected backend CLI available on `PATH`, or set its binary option:
+  `CODEX_BIN`, `CLAUDE_CODE_BIN`, or `BYTEDCLI_BIN`.
 
 Required Lark bot scopes depend on which features you enable. A minimal Codex
 reply bot usually needs:
@@ -103,13 +114,18 @@ node lark-codex-bridge.mjs
 ## Project Layout
 
 ```text
-lark-codex-bridge.mjs   CLI entrypoint, Lark event loop, Codex execution, HTTP API
+lark-codex-bridge.mjs   CLI entrypoint, Lark event loop, backend execution, HTTP API
 docs/architecture.md    Runtime boundaries and Codex cold-start roadmap
-src/codex-runner.mjs    Codex runner interface, exec runner, sandbox policy, scratch guard
+src/codex-runner.mjs    Codex exec runner, sandbox policy, scratch guard
 src/claude-session.mjs  Claude local session lookup and visible transcript parsing
+src/context-queue.mjs   Per-chat/thread backend task queue and stop cancellation state
 src/env.mjs             Environment parsing and option normalization
 src/lark-format.mjs     Lark reply formatting helpers
+src/memory-*.mjs        Layered Soul/Memory storage, routing, policy, prompt helpers
 src/process-manager.mjs Child process execution helper
+src/profile-policy.mjs  Optional profile/capability policy helpers
+src/project-resolver.mjs Project anchor detection for shared project memory
+src/runners/*.mjs       Backend runner adapters for Codex, Claude, Coco, agent, API
 src/sender-policy.mjs   Sender filtering and bot-loop policy
 src/sensitive-policy.mjs Sensitive operation classification
 src/session-markdown.mjs Session-share Markdown rendering
@@ -201,7 +217,8 @@ configuration.
 ## Important Options
 
 ```text
-BRIDGE_MODE=codex                 # codex | jwt-check | agent | api
+BRIDGE_BACKEND=codex              # codex | claude | coco | agent | api | jwt-check
+BRIDGE_MODE=codex                 # backward-compatible alias when BRIDGE_BACKEND is empty
 BRIDGE_EVENT_ENABLED=1            # listen to Lark events
 BRIDGE_HTTP_HOST=127.0.0.1
 BRIDGE_HTTP_PORT=8787             # 0 disables the HTTP server unless events are on
@@ -225,16 +242,56 @@ LOOP_BOT_SENDER_IDS=
 LOOP_IGNORE_SENDER_IDS=
 LOOP_ALLOW_SENDER_IDS=
 
+CONTEXT_QUEUE_ENABLED=1           # serialize direct backend tasks per chat/thread
+ONCALL_BINDINGS_FILE=~/.lark-codex-bridge/oncall-bindings.json
+PROFILE_POLICY_ENABLED=0          # enable profile/capability gate before direct backend runs
+PROFILE_CONFIG_FILE=~/.lark-codex-bridge/profiles.json
+
 CODEX_BIN=codex
 CODEX_CWD=/path/to/workspace
 CODEX_SANDBOX=read-only           # owner / approved sensitive operations use this sandbox
 CODEX_NON_OWNER_SANDBOX=workspace-write  # non-owner ordinary queries run in a disposable scratch cwd
 CODEX_NON_OWNER_SCRATCH_ROOT=     # defaults to the OS temp directory
 CODEX_MODEL=
+CODEX_RUNTIME=auto                # exec | app-server | auto
+CODEX_APP_SERVER_START_TIMEOUT_MS=10000
+CODEX_APP_SERVER_REQUEST_TIMEOUT_MS=30000
 CODEX_TIMEOUT_MS=600000
 CODEX_EPHEMERAL=1
+
+CLAUDE_CODE_BIN=claude
+CLAUDE_CODE_OUTPUT_FORMAT=json    # json | stream-json | text
+CLAUDE_CODE_PERMISSION_MODE=plan  # keep write-capable modes owner/approval-gated
+CLAUDE_CODE_MAX_TURNS=3
+CLAUDE_CODE_NO_SESSION_PERSISTENCE=1
+CLAUDE_CODE_TIMEOUT_MS=600000
+CLAUDE_CODE_EXTRA_ARGS=
+
+COCO_RUN_MODE=chat                # chat | task
+COCO_REPO_ID=
+COCO_COMMIT_ID=
+COCO_BRANCH=
+COCO_MERGE_REQUEST_NUMBER=
+COCO_TASK_WAIT=0                  # task mode returns after submit unless enabled
+COCO_TASK_SUBSCRIBE=1
+COCO_TIMEOUT_MS=600000
+COCO_TASK_WAIT_TIMEOUT_MS=1200000
+
 CLAUDE_HOME=~/.claude
 CLAUDE_PROJECTS_ROOT=~/.claude/projects
+
+MEMORY_ENABLED=0
+MEMORY_ROOT_DIR=~/.lark-codex-bridge/memory
+SOULS_DIR=~/.lark-codex-bridge/souls
+BASE_SOUL_FILE=~/.lark-codex-bridge/souls/base.md
+MEMORY_PROMPT_BUDGET_CHARS=12000
+MEMORY_DEFAULT_PROJECT_ID=
+MEMORY_AUTO_THREAD_SUMMARY=0
+MEMORY_THREAD_MAX_CHARS=20000
+MEMORY_EXTRACTOR_ENABLED=0
+MEMORY_PENDING_LIMIT=20
+MEMORY_COMPACT_MAX_TEXT_CHARS=20000
+MEMORY_COMPACT_MAX_JSONL_RECORDS=100
 
 PROGRESS_CARD_ENABLED=1
 PROGRESS_CARD_UPDATE_INTERVAL_MS=8000
@@ -261,13 +318,222 @@ The owner can mention the bot in a group, or message it directly, with:
 /version
 /logs 40
 /ops health
+/stop
 ```
 
-`/health` includes the configured sandbox modes, session-share output, and a
-startup preflight for Codex app-server `turn/steer` and `turn/interrupt`
-protocol support. It also reports the active Codex runner. The bridge still
-runs normal tasks through the `exec` runner; this check is only readiness
-information for the lower-latency app-server roadmap.
+`/health` includes the configured sandbox modes, session-share output, selected
+backend runner, profile policy status, memory status, and direct task queue
+counts. For the Codex backend it also includes a startup preflight for
+app-server `turn/steer` and `turn/interrupt` protocol support. That preflight is
+readiness information for the lower-latency app-server runtime.
+
+When `CONTEXT_QUEUE_ENABLED=1`, direct backend tasks are serialized per chat or
+thread. A normal new request in the same context waits for the current backend
+task to finish. Use `/queue <message>` to explicitly append a follow-up request
+to the same context queue. Use `/stop` as a bridge owner to abort the active
+Codex child process for the current context and clear pending queued tasks.
+
+## Oncall Chat Binding
+
+The bridge can bind a Lark chat or topic to a local project directory, inspired
+by Botmux-style oncall groups:
+
+```text
+/oncall bind /path/to/project
+/oncall status
+/oncall unbind
+```
+
+Only a bridge owner can bind or unbind. Once bound, owner requests in that chat
+run with the bound directory as `cwd`. Non-owner requests still run in a
+disposable scratch directory with `CODEX_NON_OWNER_SANDBOX`; the bound project
+is only exposed in the prompt as the real workspace to inspect. This keeps the
+oncall convenience without letting shared-chat members mutate the real repo
+without approval.
+
+## Profile Capability Policy
+
+The profile policy is optional. It is disabled unless
+`PROFILE_POLICY_ENABLED=1` or `PROFILE_CONFIG_FILE` is set. When enabled, the
+bridge evaluates direct backend requests against `profiles.json` before starting
+the runner. This is intentionally a lightweight subset of the internal
+`codex-feishu-bridge` model: no Bun, no business catalog, and no skill injection.
+
+Minimal example:
+
+```json
+{
+  "version": 1,
+  "authority": {
+    "owners": ["ou_owner_open_id"],
+    "ownerBypassesCapabilities": true
+  },
+  "defaults": {
+    "groupBehavior": "ignore",
+    "p2pProfile": "direct"
+  },
+  "profiles": {
+    "direct": {
+      "id": "direct",
+      "name": "Direct Codex",
+      "soul": "你是个人 Codex 助手。",
+      "capabilities": [
+        {
+          "id": "chat",
+          "name": "普通对话",
+          "description": "回答一般问题。",
+          "kind": "chat",
+          "safeForMembers": true,
+          "match": [".*"]
+        }
+      ]
+    },
+    "ops_readonly": {
+      "id": "ops_readonly",
+      "name": "只读运维问答",
+      "soul": "只处理本群允许的只读查询。",
+      "denyMessage": "这个群没有授权处理这类请求。",
+      "capabilities": [
+        {
+          "id": "docs",
+          "name": "文档查询",
+          "description": "只读查询和总结文档。",
+          "kind": "chat",
+          "effect": "read",
+          "safeForMembers": true,
+          "match": ["文档", "查一下", "总结"],
+          "allowedOpenIds": ["ou_member_open_id"],
+          "allowedChats": ["oc_group_chat_id"]
+        }
+      ]
+    }
+  },
+  "chats": {
+    "oc_group_chat_id": { "profile": "ops_readonly" }
+  }
+}
+```
+
+Configured `authority.owners` are treated as bridge owners for direct execution,
+ops commands, and `/stop`. Approval-card clicks still use
+`DELEGATE_APPROVER_OPEN_ID`, so enabling profile owners does not silently change
+who can approve existing delegated requests.
+
+Profiles may use either inline `soul` text or `soulFile`. Relative `soulFile`
+paths are resolved from the directory containing `profiles.json` and must stay
+under its `souls/` subdirectory.
+
+## Backend Runners
+
+`BRIDGE_BACKEND` selects the runner used by direct Lark tasks and local task API
+requests. If it is empty, `BRIDGE_MODE` is still accepted for older `.env`
+files.
+
+- `codex`: uses `CODEX_RUNTIME`:
+  - `exec` runs one `codex exec` process per turn with the existing sandbox,
+    cwd, model, timeout, and ephemeral-session behavior.
+  - `app-server` starts a local Codex app-server client, creates one Codex
+    thread per Lark context/cwd/sandbox tuple, and uses `turn/start` plus
+    `turn/interrupt`.
+  - `auto` tries app-server first and falls back to `exec` if app-server is
+    unavailable.
+- `claude`: runs Claude Code as a first-class CLI adapter with `claude -p`,
+  configurable output format, permission mode, max turns, timeout, and optional
+  `--no-session-persistence`.
+- `coco`: runs `bytedcli coco` as a Coco-specific adapter. `COCO_RUN_MODE=chat`
+  uses `coco chat --no-stream`; `COCO_RUN_MODE=task` submits a Coco task and can
+  optionally subscribe/wait for completion.
+- `agent`: mints a service JWT and calls `AGENT_GATEWAY_URL`.
+- `api`: mints a service JWT and calls `SERVICE_API_URL`.
+- `tae`: compatibility alias for the agent runner using `TAE_AGENT_URL`.
+- `jwt-check`: only checks the service JWT flow and returns token metadata.
+
+Claude Code and Coco are not treated as `CODEX_BIN` replacements because their
+CLI flags, permission controls, output formats, and session/task semantics are
+different. Keep write-capable Claude permission modes and Coco task mode behind
+the existing owner/sensitive-operation gates.
+
+## Soul / Memory MVP
+
+Memory is disabled by default. Enable it with `MEMORY_ENABLED=1`. The current
+MVP uses local files only and injects a bounded prompt context before the user
+request:
+
+```text
+~/.lark-codex-bridge/
+  souls/base.md
+  memory/global/preferences.md
+  memory/global/business-summary.md
+  memory/projects/<project_id>/shared-summary.md
+  memory/projects/<project_id>/decisions.jsonl
+  memory/projects/<project_id>/risks.jsonl
+  memory/chats/<chat_id>/summary.md
+  memory/chats/<chat_id>/decisions.jsonl
+  memory/chats/<chat_id>/pending.jsonl
+  memory/chats/<chat_id>/memory-candidates.jsonl
+  memory/threads/<chat_id>/<thread_id>.md
+```
+
+The bridge reads Base Soul, global summaries/preferences, the current chat
+summary, the current thread file, the resolved project summary, and a small
+number of recent decisions/risks. It never injects the whole memory tree.
+`MEMORY_PROMPT_BUDGET_CHARS` defaults to `12000`; when the bundle is too large,
+higher-priority entries are kept first.
+
+Owner-only commands:
+
+```text
+/memory
+/project-memory
+/remember <chat memory>
+/remember-project <project decision>
+/remember-global <global preference>
+/memory-pending
+/memory-approve <id|all>
+/memory-reject <id|all>
+/memory-compact [thread|chat|project|global]
+```
+
+Project memory is selected from repo/MR/activity anchors in the message, or from
+`MEMORY_DEFAULT_PROJECT_ID`. Automatic thread recording is off unless
+`MEMORY_AUTO_THREAD_SUMMARY=1`, and the MVP only auto-records owner turns. Treat
+cross-chat/global/Base Soul changes as policy changes: review them before
+enabling broader automation.
+
+When `MEMORY_EXTRACTOR_ENABLED=1`, lines beginning with `决定:`, `风险:`,
+`待办:`, or `问题:` in the user/assistant turn are stored as
+`memory-candidates.jsonl` instead of being applied immediately. Use
+`/memory-pending` to inspect candidates, then approve or reject them explicitly.
+Approval writes decisions/risks/pending/open-questions to the current chat or
+resolved project scope.
+
+## Profile Replay
+
+Use `scripts/profile-replay.mjs` to test a profile with shadow product-group
+context without sending messages to a real Lark group. A fixture can include
+`profiles.json`, Base Soul, chat summary, thread summary, project memory,
+decisions, risks, and open questions.
+
+```bash
+node scripts/profile-replay.mjs \
+  --fixture test/fixtures/profile-replay/product-group-lottery-progress \
+  --mode check
+```
+
+Render the exact prompt that would be sent to the backend:
+
+```bash
+node scripts/profile-replay.mjs \
+  --fixture test/fixtures/profile-replay/product-group-lottery-progress \
+  --profile engineering_group_test \
+  --question "这个需求落代码先看哪里？" \
+  --mode prompt
+```
+
+The bundled fixture models a product collaboration group with PRD, Migo,
+design-state, code-map, risks, decisions, and open questions. It checks that the
+prompt contains the route-visible business/project context and the identity
+guard that says a group profile does not rewrite the requester's role.
 
 ## Session Lookup
 
@@ -333,7 +599,7 @@ keeps bot-to-bot relay tests from running forever.
 
 ## Progress Cards
 
-When `PROGRESS_CARD_ENABLED=1`, the bridge sends a card as soon as a Codex task
+When `PROGRESS_CARD_ENABLED=1`, the bridge sends a card as soon as a backend task
 starts. While the task is running, the card shows a small list of public progress
 items. When the task finishes, the same card is updated to show only the final
 answer and metadata.
@@ -455,16 +721,20 @@ If your npm account or organization is not `syfyivan`, change the `name` field
 in `package.json` to your own scope, such as `@your-npm-name/lark-codex-bridge`,
 and publish with `npm publish --access public`.
 
-## Custom Service Modes
+## Custom Service Runner Notes
 
-The script keeps two generic non-Codex modes for custom internal integrations:
+The script keeps generic non-local-runner modes for custom internal
+integrations:
 
-- `BRIDGE_MODE=jwt-check`: call `SERVICE_JWT_ENDPOINT` using
+- `BRIDGE_BACKEND=jwt-check`: call `SERVICE_JWT_ENDPOINT` using
   `SERVICE_ACCOUNT_SECRET` or `SERVICE_ACCOUNT_SECRET_FILE`.
-- `BRIDGE_MODE=api`: mint a service JWT, then call `SERVICE_API_URL`.
-- `BRIDGE_MODE=agent`: mint a service JWT, then call `AGENT_GATEWAY_URL`.
-- `BRIDGE_MODE=tae`: compatibility alias for an agent gateway using
+- `BRIDGE_BACKEND=api`: mint a service JWT, then call `SERVICE_API_URL`.
+- `BRIDGE_BACKEND=agent`: mint a service JWT, then call `AGENT_GATEWAY_URL`.
+- `BRIDGE_BACKEND=tae`: compatibility alias for an agent gateway using
   `TAE_AGENT_URL` and `TAE_TARGET_PSM`.
+
+Older `BRIDGE_MODE=jwt-check|api|agent|tae` values still work when
+`BRIDGE_BACKEND` is unset.
 
 These modes are intentionally unconfigured by default. Do not commit service
 secrets, token files, concrete internal URLs, or production chat IDs.
@@ -479,5 +749,14 @@ secrets, token files, concrete internal URLs, or production chat IDs.
   should not be able to write directly into the real workspace.
 - `CODEX_NON_OWNER_SANDBOX=danger-full-access` is intentionally downgraded to
   `workspace-write`.
+- When `PROFILE_POLICY_ENABLED=1`, non-owner direct Codex requests must match a
+  configured capability before the backend starts. `kind: "exec"` cannot be marked
+  `safeForMembers: true`.
+- Treat `PROFILE_CONFIG_FILE` as policy, not user content. Review owner IDs,
+  allowed member IDs, allowed chats, and regex patterns before enabling it for a
+  bot used in shared groups.
+- Treat `MEMORY_ROOT_DIR`, `SOULS_DIR`, and `BASE_SOUL_FILE` as local policy and
+  context. Do not store secrets there, and keep global/project memory writes
+  owner-approved unless the policy model is expanded deliberately.
 - Do not upload logs, `.env`, token files, session exports, or approval stores.
 - Review any custom prompt prefix before enabling write-capable tools.

@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "authority": {
+    "owners": [],
+    "ownerBypassesCapabilities": true
+  },
+  "defaults": {
+    "groupBehavior": "ignore",
+    "p2pProfile": "direct"
+  },
+  "profiles": {
+    "direct": {
+      "id": "direct",
+      "name": "Direct Codex",
+      "soul": "你是个人飞书 Codex 助手。",
+      "capabilities": [
+        {
+          "id": "chat",
+          "name": "普通对话",
+          "description": "回答一般问题。",
+          "kind": "chat",
+          "effect": "read",
+          "safeForMembers": true,
+          "match": [".*"]
+        }
+      ]
+    },
+    "product_group_test": {
+      "id": "product_group_test",
+      "name": "产品群 Profile 测试",
+      "soul": "你正在模拟产品协作群。用户本人可能是研发、产品、运营或设计；profile 定义的是群协作语境，不改变提问者身份。回答时要同时理解业务目标、PRD/Migo/设计上下文和代码实现边界。对产品/运营/设计问题，用业务可决策语言解释工程可行性、风险、依赖、验收口径和需要补充的信息。",
+      "capabilities": [
+        {
+          "id": "product_group_shadow",
+          "name": "产品群影子上下文问答",
+          "description": "基于 PRD/Migo/设计/代码地图做需求澄清、可行性判断和工程风险说明。",
+          "kind": "chat",
+          "effect": "read",
+          "safeForMembers": true,
+          "match": [".*"]
+        }
+      ]
+    },
+    "engineering_group_test": {
+      "id": "engineering_group_test",
+      "name": "工程群 Profile 测试",
+      "soul": "你正在模拟工程协作群。回答要优先定位代码路径、模块边界、运行环境、风险、测试计划和回滚点；仍然保留业务上下文，但表达面向研发落地。",
+      "capabilities": [
+        {
+          "id": "engineering_group_shadow",
+          "name": "工程群影子上下文问答",
+          "description": "基于业务上下文和代码地图做工程实现、排障和测试计划分析。",
+          "kind": "chat",
+          "effect": "read",
+          "safeForMembers": true,
+          "match": [".*"]
+        }
+      ]
+    }
+  },
+  "chats": {}
+}

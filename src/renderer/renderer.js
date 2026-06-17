@@ -1,16 +1,199 @@
 /* global PIXI */
 import { connectAgentSync } from './agent-sync.js'
 import { reactToEvent } from './reactions.js'
-import { initGrowth, feed as feedGrowth, feedTokens, statusText } from './growth.js'
+import { PET_CONFIG } from './config/pet-config.js'
+import { initAccessoryLayer } from './accessories.js'
+import { ACCESSORIES, ACCESSORY_SLOTS } from './config/accessories.js'
+import { initGrowth, feed as feedGrowth, feedTokens, statusText, getState as getGrowthState, equipAccessory, configureAccessories } from './growth.js'
 
 // Live2D model is chosen by `pnpm run setup <name>` (writes ./models/current-model.js).
 const FALLBACK_MODEL_URL = './models/wanko/Wanko.model3.json'
 
 const canvas = document.getElementById('pet-canvas')
 const bubble = document.getElementById('bubble')
+const eventPanel = document.getElementById('event-panel')
+const panelStatus = document.getElementById('panel-status')
+const waitingEvents = document.getElementById('waiting-events')
+const doneEvents = document.getElementById('done-events')
+const sessionEvents = document.getElementById('session-events')
+const recentEvents = document.getElementById('recent-events')
+const configEvents = document.getElementById('config-events')
+const panelTabs = document.getElementById('panel-tabs')
+const panelHeader = document.querySelector('.panel-header')
+const panelClose = document.getElementById('event-panel-close')
+const metricWaiting = document.getElementById('metric-waiting')
+const metricDone = document.getElementById('metric-done')
+const metricTotal = document.getElementById('metric-total')
+const settingPetScale = document.getElementById('setting-pet-scale')
+const settingPetScaleValue = document.getElementById('setting-pet-scale-value')
+const settingPetOpacity = document.getElementById('setting-pet-opacity')
+const settingPetOpacityValue = document.getElementById('setting-pet-opacity-value')
+const settingHitboxScale = document.getElementById('setting-hitbox-scale')
+const settingHitboxScaleValue = document.getElementById('setting-hitbox-scale-value')
+const settingTriggerMode = document.getElementById('setting-trigger-mode')
+const settingDndMode = document.getElementById('setting-dnd-mode')
+const settingSoundEnabled = document.getElementById('setting-sound-enabled')
+const settingNotificationsEnabled = document.getElementById('setting-notifications-enabled')
+const settingFocusMinutes = document.getElementById('setting-focus-minutes')
+const settingShortBreakMinutes = document.getElementById('setting-short-break-minutes')
+const settingLongBreakMinutes = document.getElementById('setting-long-break-minutes')
+const settingSedentaryMinutes = document.getElementById('setting-sedentary-minutes')
+const settingLongBreakEvery = document.getElementById('setting-long-break-every')
+const settingLongBreakEveryValue = document.getElementById('setting-long-break-every-value')
+const settingBubbleCorner = document.getElementById('setting-bubble-corner')
+const settingPanelCorner = document.getElementById('setting-panel-corner')
+const settingBubbleAnchor = document.getElementById('setting-bubble-anchor')
+const settingBubbleAnchorValue = document.getElementById('setting-bubble-anchor-value')
+const settingBubbleGap = document.getElementById('setting-bubble-gap')
+const settingBubbleGapValue = document.getElementById('setting-bubble-gap-value')
+const settingHidePet = document.getElementById('setting-hide-pet')
+const bubbleHoverTip = document.createElement('div')
+bubbleHoverTip.id = 'bubble-hover-tip'
+bubbleHoverTip.className = 'hidden'
+document.body.appendChild(bubbleHoverTip)
 
 // Active rendering backend: { getBounds(), playMotion(pref), setStatus(status) }.
 let backend = null
+let accessoryLayer = null
+let panelVisible = false
+let agentSyncStatus = 'offline'
+let activeAgentConfig = { bridgeUrl: 'http://127.0.0.1:8787' }
+let activeAccessorySlots = ACCESSORY_SLOTS
+let activeAccessories = ACCESSORIES
+let activeBubbleEvent = null
+let activePanelTab = 'settings'
+let eventSeq = 0
+let bubbleSeq = 0
+const eventLog = []
+const bubbleLog = []
+const sessionPreviewCache = new Map()
+const MAX_EVENT_LOG = 40
+const MAX_BUBBLES = 4
+const PANEL_TABS = new Set(['settings', 'waiting', 'done', 'sessions', 'recent', 'config'])
+const UI_SETTINGS_VERSION = 3
+const CORNERS = new Set(['auto', 'near', 'top-left', 'top-right', 'bottom-left', 'bottom-right'])
+const DEFAULT_UI_SETTINGS = {
+  version: UI_SETTINGS_VERSION,
+  petScale: 0.72,
+  petOpacity: 0.82,
+  hitboxScale: 0.35,
+  triggerMode: 'right',
+  dndMode: false,
+  soundEnabled: true,
+  notificationsEnabled: true,
+  bubbleCorner: 'near',
+  panelCorner: 'near',
+  bubbleAnchor: 58,
+  bubbleGap: 4,
+}
+let uiSettings = loadUiSettings()
+let pomodoroSettings = {
+  focusMinutes: 25,
+  shortBreakMinutes: 5,
+  longBreakMinutes: 15,
+  longBreakEvery: 4,
+  sedentaryMinutes: 45,
+}
+let activeHoverBubbleId = ''
+
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+function loadUiSettings() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('kodama-ui-settings') || '{}')
+    // Older settings used a 100% pet and full transparent model bounds. Reset
+    // once so running installs pick up the compact, low-misclick defaults.
+    const source = raw.version === UI_SETTINGS_VERSION ? raw : {}
+    return {
+      version: UI_SETTINGS_VERSION,
+      petScale: clampNumber(source.petScale, 0.4, 1.25, DEFAULT_UI_SETTINGS.petScale),
+      petOpacity: clampNumber(source.petOpacity, 0.25, 1, DEFAULT_UI_SETTINGS.petOpacity),
+      hitboxScale: clampNumber(source.hitboxScale, 0.25, 1, DEFAULT_UI_SETTINGS.hitboxScale),
+      triggerMode: source.triggerMode === 'left' ? 'left' : 'right',
+      dndMode: source.dndMode === true,
+      soundEnabled: source.soundEnabled !== false,
+      notificationsEnabled: source.notificationsEnabled !== false,
+      bubbleCorner: CORNERS.has(source.bubbleCorner) ? source.bubbleCorner : DEFAULT_UI_SETTINGS.bubbleCorner,
+      panelCorner: CORNERS.has(source.panelCorner)
+        ? source.panelCorner
+        : DEFAULT_UI_SETTINGS.panelCorner,
+      bubbleAnchor: clampNumber(source.bubbleAnchor, 35, 80, DEFAULT_UI_SETTINGS.bubbleAnchor),
+      bubbleGap: clampNumber(source.bubbleGap, 0, 48, DEFAULT_UI_SETTINGS.bubbleGap),
+    }
+  } catch {
+    return { ...DEFAULT_UI_SETTINGS }
+  }
+}
+
+function saveUiSettings() {
+  localStorage.setItem('kodama-ui-settings', JSON.stringify(uiSettings))
+}
+
+function applyUiSettings() {
+  document.documentElement.style.setProperty('--pet-scale', String(uiSettings.petScale))
+  document.documentElement.style.setProperty('--pet-opacity', String(uiSettings.petOpacity))
+  backend?.applySettings?.()
+  syncAccessories()
+  window.pet.updateUiMenuState?.({
+    dndMode: uiSettings.dndMode,
+    soundEnabled: uiSettings.soundEnabled,
+    notificationsEnabled: uiSettings.notificationsEnabled,
+  })
+  positionBubble()
+  positionPanel()
+  syncSettingControls()
+}
+
+function setDndMode(enabled, announce = true) {
+  uiSettings.dndMode = enabled === true
+  saveUiSettings()
+  applyUiSettings()
+  if (announce) {
+    say(uiSettings.dndMode ? '已进入勿扰模式，事件会静默记录' : '已退出勿扰模式', 2600)
+  }
+}
+
+function setBooleanSetting(key, value) {
+  uiSettings[key] = value === true
+  saveUiSettings()
+  applyUiSettings()
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
+
+function normalizePomodoroSettings(next = {}) {
+  return {
+    focusMinutes: clampInt(next.focusMinutes, 1, 180, pomodoroSettings.focusMinutes),
+    shortBreakMinutes: clampInt(next.shortBreakMinutes, 1, 60, pomodoroSettings.shortBreakMinutes),
+    longBreakMinutes: clampInt(next.longBreakMinutes, 1, 120, pomodoroSettings.longBreakMinutes),
+    longBreakEvery: clampInt(next.longBreakEvery, 1, 12, pomodoroSettings.longBreakEvery),
+    sedentaryMinutes: clampInt(next.sedentaryMinutes, 0, 240, pomodoroSettings.sedentaryMinutes),
+  }
+}
+
+async function loadPomodoroSettings() {
+  try {
+    const settings = await window.pet.getPomodoroSettings?.()
+    if (settings) pomodoroSettings = normalizePomodoroSettings(settings)
+  } catch {
+    /* defaults are usable */
+  }
+  syncSettingControls()
+}
+
+function updatePomodoroSettings(patch) {
+  pomodoroSettings = normalizePomodoroSettings({ ...pomodoroSettings, ...patch })
+  window.pet.updatePomodoroSettings?.(pomodoroSettings)
+  syncSettingControls()
+}
 
 // Import an optional gitignored local config. Returns null if the file simply
 // doesn't exist; surfaces real errors (syntax/path) instead of hiding them.
@@ -23,6 +206,18 @@ async function importLocal(path) {
     say(`⚠️ ${path} 出错：${msg}`, 6000)
     console.error(`[kodama] local config error: ${path}`, e)
     return null
+  }
+}
+
+async function loadAccessoryPack() {
+  const local = await importLocal('./config/accessories.local.js')
+  const overrides = new Map(Array.isArray(local?.ACCESSORIES) ? local.ACCESSORIES.map(item => [item.id, item]) : [])
+  activeAccessorySlots = Array.isArray(local?.ACCESSORY_SLOTS) && local.ACCESSORY_SLOTS.length
+    ? local.ACCESSORY_SLOTS
+    : ACCESSORY_SLOTS
+  activeAccessories = ACCESSORIES.map(item => overrides.has(item.id) ? { ...item, ...overrides.get(item.id) } : item)
+  for (const [id, item] of overrides) {
+    if (!activeAccessories.some(acc => acc.id === id)) activeAccessories.push(item)
   }
 }
 
@@ -44,7 +239,12 @@ async function init() {
       backend = await initLive2D()
     }
 
+    await loadAccessoryPack()
+    configureAccessories({ accessories: activeAccessories, slots: activeAccessorySlots })
     setupInteraction()
+    accessoryLayer = initAccessoryLayer(() => backend?.getBounds?.(), { accessories: activeAccessories })
+    applyUiSettings()
+    loadPomodoroSettings()
     say('你好，我是 Kodama~ 🌳', 3000)
 
     // One pet, two sources — both flow through the same handler (reaction + growth).
@@ -52,13 +252,23 @@ async function init() {
       say,
       playMotion: (g) => backend?.playMotion?.(g),
       onStatus: (s) => {
+        agentSyncStatus = s
         console.log('[kodama] status:', s)
         backend?.setStatus?.(s)
+        syncEventPanel()
       },
+      onChange: syncAccessories,
     }
     await initGrowth(hooks)
+    syncAccessories()
     const handleAgentEvent = (event) => {
-      reactToEvent(event, hooks)
+      recordAgentEvent(event)
+      if (!uiSettings.dndMode) {
+        reactToEvent(event, hooks, {
+          sound: uiSettings.soundEnabled,
+          notifications: uiSettings.notificationsEnabled,
+        })
+      }
       feedGrowth(event.type) // P4: events feed the pet
       // Cross-source token ledger: bridge (source 'lark') events may carry tokens.
       if (event.source === 'lark' && event.tokens) window.pet.addLarkTokens?.(event.tokens)
@@ -66,8 +276,22 @@ async function init() {
 
     // source 'lark' via lark-codex-bridge SSE; bridge URL/token overridable.
     const agentCfg = (await importLocal('./config/agent.local.js'))?.AGENT || {}
+    activeAgentConfig = { bridgeUrl: agentCfg.bridgeUrl || 'http://127.0.0.1:8787', token: agentCfg.token || '' }
     connectAgentSync(handleAgentEvent, { ...agentCfg, onStatus: hooks.onStatus })
     window.pet.onAgentEvent?.(handleAgentEvent) // source 'local'
+    window.pet.onTogglePanel?.(() => togglePanel())
+    window.pet.onSetDndMode?.((enabled) => setDndMode(enabled === true))
+    setupEventPanel()
+    window.pet.onEquipAccessory?.((request) => {
+      const result = equipAccessory(request)
+      if (!result.ok) {
+        say(`🔒 ${result.reason}`, 2600)
+        return
+      }
+      syncAccessories()
+      if (result.action === 'equip') say(`已佩戴 ${result.accessory.label}`, 2200)
+      if (result.action === 'unequip') say('已摘下配饰', 1800)
+    })
 
     // P4: poll local token usage and feed the pet by token delta.
     refreshTokens()
@@ -83,6 +307,17 @@ async function init() {
     console.error('[kodama] init failed:', err)
     say('启动失败：' + (err?.message || err), 6000)
   }
+}
+
+function syncAccessories() {
+  const state = getGrowthState()
+  accessoryLayer?.setEquipped(state.equippedAccessories || {})
+  window.pet.updateAccessoryMenu?.({
+    slots: activeAccessorySlots,
+    accessories: activeAccessories.map(({ id, slot, label, unlockLevel }) => ({ id, slot, label, unlockLevel })),
+    unlocked: state.unlockedAccessories || [],
+    equipped: state.equippedAccessories || {},
+  })
 }
 
 // ---------- Live2D backend ----------
@@ -112,10 +347,13 @@ async function initLive2D() {
 
   function layout() {
     const { originalWidth, originalHeight } = model.internalModel
-    const scale = Math.min(window.innerWidth / originalWidth, window.innerHeight / originalHeight)
+    const scale = Math.min(window.innerWidth / originalWidth, window.innerHeight / originalHeight) * uiSettings.petScale
+    model.alpha = uiSettings.petOpacity
     model.scale.set(scale)
     model.x = (window.innerWidth - model.width) / 2
     model.y = window.innerHeight - model.height
+    positionBubble()
+    positionPanel()
   }
   layout()
   window.addEventListener('resize', layout)
@@ -142,14 +380,51 @@ async function initLive2D() {
     setStatus() {
       /* Live2D reacts through playMotion; no per-status sprite swap */
     },
+    applySettings: layout,
   }
 }
 
 // ---------- window interaction (backend-agnostic) ----------
-function overPet(x, y) {
-  if (!backend) return false
+function clampPoint(value, min, max) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function petBounds() {
+  if (!backend?.getBounds) return null
   const b = backend.getBounds()
+  if (!b || b.width <= 0 || b.height <= 0) return null
+  return b
+}
+
+function interactivePetBounds() {
+  const b = petBounds()
+  if (!b) return null
+  const width = b.width * uiSettings.hitboxScale
+  const height = b.height * uiSettings.hitboxScale
+  const centerX = b.x + b.width / 2
+  const centerY = b.y + b.height * 0.66
+  return {
+    x: clampPoint(centerX - width / 2, b.x, b.x + b.width - width),
+    y: clampPoint(centerY - height / 2, b.y, b.y + b.height - height),
+    width,
+    height,
+  }
+}
+
+function overPet(x, y) {
+  const b = interactivePetBounds()
+  if (!b) return false
   return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height
+}
+
+function overElement(el, x, y) {
+  if (!el || el.classList.contains('hidden')) return false
+  const r = el.getBoundingClientRect()
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
+}
+
+function overInteractiveSurface(x, y) {
+  return panelVisible || overElement(bubble, x, y) || overPet(x, y)
 }
 
 function setupInteraction() {
@@ -157,15 +432,46 @@ function setupInteraction() {
   let dragging = false
   let lastX = 0
   let lastY = 0
+  let suppressOutsidePanelClick = false
+
+  function startDrag(e, { tap = false } = {}) {
+    dragging = true
+    lastX = e.screenX
+    lastY = e.screenY
+    if (tap) onTap()
+  }
+
+  function targetInsidePanel(target) {
+    return Boolean(eventPanel && target?.nodeType && eventPanel.contains(target))
+  }
+
+  window.addEventListener('mousedown', (e) => {
+    if (!panelVisible || targetInsidePanel(e.target)) return
+    suppressOutsidePanelClick = true
+    e.preventDefault()
+    e.stopPropagation()
+    togglePanel(false)
+  }, true)
+
+  window.addEventListener('click', (e) => {
+    if (!suppressOutsidePanelClick) return
+    suppressOutsidePanelClick = false
+    e.preventDefault()
+    e.stopPropagation()
+  }, true)
+
+  window.addEventListener('blur', () => {
+    if (panelVisible) togglePanel(false)
+  })
 
   window.addEventListener('mousemove', (e) => {
     if (dragging) {
-      window.pet.move(e.screenX - lastX, e.screenY - lastY)
+      window.pet.move(e.screenX - lastX, e.screenY - lastY, petBounds())
       lastX = e.screenX
       lastY = e.screenY
       return
     }
-    const over = overPet(e.clientX, e.clientY)
+    const over = overInteractiveSurface(e.clientX, e.clientY)
     if (over && ignoring) {
       ignoring = false
       window.pet.setIgnoreMouse(false)
@@ -176,15 +482,73 @@ function setupInteraction() {
   })
 
   window.addEventListener('mousedown', (e) => {
+    if (panelVisible || e.button !== 0 || overElement(bubble, e.clientX, e.clientY)) return
+    const explicitDrag = e.altKey || e.metaKey
+    if (uiSettings.triggerMode !== 'left' && !explicitDrag) return
     if (!overPet(e.clientX, e.clientY)) return
-    dragging = true
-    lastX = e.screenX
-    lastY = e.screenY
-    onTap()
+    startDrag(e, { tap: uiSettings.triggerMode === 'left' && !explicitDrag })
   })
 
   window.addEventListener('mouseup', () => {
     dragging = false
+  })
+
+  window.addEventListener('contextmenu', (e) => {
+    if (!overInteractiveSurface(e.clientX, e.clientY)) return
+    e.preventDefault()
+    togglePanel(true)
+  })
+
+  bubble.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (e.target.closest?.('[data-dismiss-all-bubbles]')) {
+      bubbleLog.length = 0
+      hideBubbleHover()
+      renderBubbles()
+      return
+    }
+    const dismiss = e.target.closest?.('[data-dismiss-bubble]')
+    if (dismiss) {
+      hideBubbleHover()
+      removeBubble(dismiss.dataset.dismissBubble)
+      return
+    }
+    const share = e.target.closest?.('[data-share-bubble]')
+    if (share) {
+      hideBubbleHover()
+      shareBubbleSession(share.dataset.shareBubble)
+      return
+    }
+    const card = e.target.closest?.('[data-bubble-id]')
+    const item = bubbleLog.find(record => record.id === card?.dataset.bubbleId)
+    if (item) {
+      const target = targetForEvent(item.event)
+      if (target) openTarget(target)
+      return
+    }
+    openBubbleTarget(activeBubbleEvent)
+  })
+
+  bubble.addEventListener('mousemove', (e) => {
+    const card = e.target.closest?.('[data-bubble-id]')
+    if (!card) {
+      hideBubbleHover()
+      return
+    }
+    const item = bubbleLog.find(record => record.id === card.dataset.bubbleId)
+    if (!item) {
+      hideBubbleHover()
+      return
+    }
+    showBubbleHover(item, e, card)
+  })
+
+  bubble.addEventListener('mouseleave', hideBubbleHover)
+
+  panelHeader?.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || e.target.closest?.('button')) return
+    e.preventDefault()
+    startDrag(e)
   })
 }
 
@@ -216,20 +580,863 @@ async function refreshTokens() {
 }
 
 // ---------- bubble ----------
-function positionBubble() {
-  if (!backend) return
-  const b = backend.getBounds()
-  bubble.style.left = `${b.x + b.width / 2}px`
-  bubble.style.top = `${Math.max(4, b.y - bubble.offsetHeight - 8)}px`
+function visibleRectFor(el, fallbackWidth = 240, fallbackHeight = 64) {
+  const rect = el?.getBoundingClientRect?.()
+  return {
+    width: Math.ceil(rect?.width || el?.offsetWidth || fallbackWidth),
+    height: Math.ceil(Math.max(el?.scrollHeight || 0, rect?.height || el?.offsetHeight || 0, fallbackHeight)),
+  }
 }
 
-let bubbleTimer
-function say(text, ms = 2500) {
-  bubble.textContent = text
+function viewportVisibleArea() {
+  const screenLeft = Number.isFinite(window.screen?.availLeft) ? window.screen.availLeft : 0
+  const screenTop = Number.isFinite(window.screen?.availTop) ? window.screen.availTop : 0
+  const screenWidth = Number.isFinite(window.screen?.availWidth) ? window.screen.availWidth : window.screen?.width || window.innerWidth
+  const screenHeight = Number.isFinite(window.screen?.availHeight) ? window.screen.availHeight : window.screen?.height || window.innerHeight
+  const winX = Number.isFinite(window.screenX) ? window.screenX : 0
+  const winY = Number.isFinite(window.screenY) ? window.screenY : 0
+  return {
+    left: Math.max(0, screenLeft - winX),
+    top: Math.max(0, screenTop - winY),
+    right: Math.min(window.innerWidth, screenLeft + screenWidth - winX),
+    bottom: Math.min(window.innerHeight, screenTop + screenHeight - winY),
+  }
+}
+
+function clampElementToVisibleArea(left, top, width, height, padding = 8) {
+  const area = viewportVisibleArea()
+  const minLeft = area.left + padding
+  const maxLeft = area.right - width - padding
+  const minTop = area.top + padding
+  const maxTop = area.bottom - height - padding
+  return {
+    left: clampPoint(left, minLeft, Math.max(minLeft, maxLeft)),
+    top: clampPoint(top, minTop, Math.max(minTop, maxTop)),
+  }
+}
+
+function setElementMaxHeight(el, maxHeight) {
+  if (!el) return
+  const height = Math.max(44, Math.floor(maxHeight))
+  el.style.maxHeight = `${height}px`
+}
+
+function chooseCorner(width, height) {
+  const padding = 10
+  const area = viewportVisibleArea()
+  const pet = petBounds()
+  const petCenter = pet
+    ? { x: pet.x + pet.width / 2, y: pet.y + pet.height / 2 }
+    : { x: (area.left + area.right) / 2, y: area.bottom }
+  const candidates = [
+    { id: 'top-left', x: area.left + padding, y: area.top + padding },
+    { id: 'top-right', x: area.right - width - padding, y: area.top + padding },
+    { id: 'bottom-left', x: area.left + padding, y: area.bottom - height - padding },
+    { id: 'bottom-right', x: area.right - width - padding, y: area.bottom - height - padding },
+  ]
+  return candidates
+    .map((candidate) => {
+      const { left: x, top: y } = clampElementToVisibleArea(candidate.x, candidate.y, width, height, padding)
+      const cx = x + width / 2
+      const cy = y + height / 2
+      const distance = (cx - petCenter.x) ** 2 + (cy - petCenter.y) ** 2
+      return { ...candidate, x, y, distance }
+    })
+    .sort((a, b) => b.distance - a.distance)[0]
+}
+
+function setElementCorner(el, corner, fallbackWidth, fallbackHeight) {
+  if (!el) return
+  if (corner === 'near') {
+    positionNearPet(el, fallbackWidth, fallbackHeight)
+    return
+  }
+  const { width, height } = visibleRectFor(el, fallbackWidth, fallbackHeight)
+  const area = viewportVisibleArea()
+  const chosen = corner === 'auto' ? chooseCorner(width, height).id : corner
+  const padding = 10
+  const maxHeight = Math.max(44, area.bottom - area.top - padding * 2)
+  const displayHeight = Math.min(height, maxHeight)
+  const top = chosen.includes('top') ? area.top + padding : area.bottom - displayHeight - padding
+  const left = chosen.includes('left') ? area.left + padding : area.right - width - padding
+  const next = clampElementToVisibleArea(left, top, width, displayHeight, padding)
+  setElementMaxHeight(el, maxHeight)
+  el.style.transform = 'none'
+  el.style.left = `${next.left}px`
+  el.style.top = `${next.top}px`
+}
+
+function positionNearPet(el, fallbackWidth, fallbackHeight) {
+  const pet = petBounds()
+  const { width, height } = visibleRectFor(el, fallbackWidth, fallbackHeight)
+  const padding = 8
+  if (!pet) {
+    setElementCorner(el, 'top-right', fallbackWidth, fallbackHeight)
+    return
+  }
+  const area = viewportVisibleArea()
+  const gap = Math.max(14, uiSettings.bubbleGap)
+  const minLeft = area.left + padding
+  const maxRight = area.right - padding
+  const minTop = area.top + padding
+  const maxBottom = area.bottom - padding
+  const petCenterX = pet.x + pet.width / 2
+  const petCenterY = pet.y + pet.height / 2
+  const zones = [
+    {
+      place: 'above',
+      left: minLeft,
+      top: minTop,
+      right: maxRight,
+      bottom: Math.max(minTop, pet.y - gap),
+      preferredLeft: petCenterX - width / 2,
+      preferredTop: pet.y - gap - height,
+      orientation: 'vertical',
+      bias: 400,
+    },
+    {
+      place: 'below',
+      left: minLeft,
+      top: Math.min(maxBottom, pet.y + pet.height + gap),
+      right: maxRight,
+      bottom: maxBottom,
+      preferredLeft: petCenterX - width / 2,
+      preferredTop: pet.y + pet.height + gap,
+      orientation: 'vertical',
+      bias: 350,
+    },
+    {
+      place: 'right',
+      left: Math.min(maxRight, pet.x + pet.width + gap),
+      top: minTop,
+      right: maxRight,
+      bottom: maxBottom,
+      preferredLeft: pet.x + pet.width + gap,
+      preferredTop: petCenterY - height / 2,
+      orientation: 'side',
+      bias: 180,
+    },
+    {
+      place: 'left',
+      left: minLeft,
+      top: minTop,
+      right: Math.max(minLeft, pet.x - gap),
+      bottom: maxBottom,
+      preferredLeft: pet.x - gap - width,
+      preferredTop: petCenterY - height / 2,
+      orientation: 'side',
+      bias: 180,
+    },
+  ].map(zone => ({
+    ...zone,
+    width: zone.right - zone.left,
+    height: zone.bottom - zone.top,
+  })).filter(zone => zone.width >= width && zone.height > 0)
+
+  const minUsefulHeight = Math.min(Math.max(fallbackHeight, 44), height)
+  const verticalZones = zones.filter(zone => zone.orientation === 'vertical')
+  const sideZones = zones.filter(zone => zone.orientation === 'side')
+  const usefulVerticalZones = verticalZones.filter(zone => zone.height >= minUsefulHeight)
+  const usefulSideZones = sideZones.filter(zone => zone.height >= minUsefulHeight)
+  const pool = usefulVerticalZones.length
+    ? usefulVerticalZones
+    : usefulSideZones.length
+      ? usefulSideZones
+      : verticalZones.length
+        ? verticalZones
+        : sideZones
+  const chosen = pool
+    .map(zone => ({
+      ...zone,
+      score: (zone.height >= height ? 100000 : 0) + Math.min(zone.height, height) * 8 + zone.bias,
+    }))
+    .sort((a, b) => b.score - a.score)[0]
+
+  if (!chosen) {
+    setElementCorner(el, 'bottom-right', fallbackWidth, fallbackHeight)
+    return
+  }
+
+  const displayHeight = Math.min(height, chosen.height)
+  const left = clampPoint(chosen.preferredLeft, chosen.left, Math.max(chosen.left, chosen.right - width))
+  const top = clampPoint(chosen.preferredTop, chosen.top, Math.max(chosen.top, chosen.bottom - displayHeight))
+  const next = clampElementToVisibleArea(left, top, width, displayHeight, padding)
+  setElementMaxHeight(el, chosen.height)
+  el.style.transform = 'none'
+  el.style.left = `${next.left}px`
+  el.style.top = `${next.top}px`
+}
+
+function positionBubble() {
+  if (uiSettings.bubbleCorner !== 'near') {
+    setElementCorner(bubble, uiSettings.bubbleCorner, 240, 54)
+    return
+  }
+  positionNearPet(bubble, 260, 80)
+}
+
+function positionPanel() {
+  if (!eventPanel || eventPanel.classList.contains('hidden')) return
+  setElementCorner(eventPanel, uiSettings.panelCorner, 300, 260)
+}
+
+function bubbleKind(event) {
+  if (!event) return 'system'
+  if (isWaiting(event)) return 'waiting'
+  if (event.source === 'lark') return 'lark'
+  if (event.source === 'local') return 'agent'
+  if (isDone(event)) return 'done'
+  return 'system'
+}
+
+function bubbleTitle(event) {
+  if (!event) return 'Kodama'
+  return `${sourceLabel(event.source)} · ${typeLabel(event.type)}`
+}
+
+function isCodexTranscriptPath(value) {
+  return /(^|\/)\.codex\/sessions\//.test(String(value || ''))
+}
+
+function isClaudeTranscriptPath(value) {
+  return /(^|\/)\.claude\/projects\//.test(String(value || ''))
+}
+
+function inferSessionIdFromTranscriptPath(value) {
+  const file = String(value || '').split('/').pop() || ''
+  const uuid = file.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+  return uuid?.[0] || ''
+}
+
+function sessionRequestForEvent(event) {
+  if (!event || event.source !== 'local') return null
+  const transcriptPath = event.transcriptPath || event.transcript_path || ''
+  const agentTranscriptPath = event.agentTranscriptPath || event.agent_transcript_path || ''
+  const sessionId = event.sessionId || event.session_id || inferSessionIdFromTranscriptPath(transcriptPath)
+  const threadId = event.threadId || event.thread_id || event['thread-id'] || ''
+  const client = String(event.client || event.originator || '').toLowerCase()
+  const provider = isClaudeTranscriptPath(transcriptPath) || isClaudeTranscriptPath(agentTranscriptPath) || client.includes('claude')
+    ? 'claude'
+    : isCodexTranscriptPath(transcriptPath) || client.includes('codex') || threadId || sessionId
+      ? 'codex'
+      : ''
+  const id = provider === 'codex' ? (threadId || sessionId) : sessionId
+  if (!provider || !id) return null
+  return {
+    provider,
+    sessionId: id,
+    threadId,
+    transcriptPath,
+    agentTranscriptPath,
+    cwd: event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || '',
+    bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',
+    token: activeAgentConfig.token || '',
+  }
+}
+
+function shouldPersistBubble(event) {
+  return Boolean(event?.type)
+}
+
+function removeBubble(id) {
+  const index = bubbleLog.findIndex(item => item.id === String(id))
+  if (index >= 0) bubbleLog.splice(index, 1)
+  renderBubbles()
+}
+
+function trimBubbles() {
+  while (bubbleLog.length > MAX_BUBBLES) {
+    const transientIndex = bubbleLog.findLastIndex(item => !item.persistent)
+    bubbleLog.splice(transientIndex >= 0 ? transientIndex : bubbleLog.length - 1, 1)
+  }
+}
+
+function renderBubbles() {
+  if (!bubbleLog.length) {
+    bubble.classList.add('hidden')
+    bubble.innerHTML = ''
+    activeBubbleEvent = null
+    hideBubbleHover()
+    return
+  }
+  activeBubbleEvent = bubbleLog[0]?.event || null
+  const stackTools = bubbleLog.length > 1
+    ? '<div class="bubble-stack-tools"><button type="button" data-dismiss-all-bubbles="1">全部忽略</button></div>'
+    : ''
+  bubble.innerHTML = stackTools + bubbleLog.map((item) => {
+    const target = targetForEvent(item.event)
+    const targetText = target ? `<div class="bubble-target">${escapeHtml(target.label || '打开会话')}</div>` : ''
+    const shareButton = sessionRequestForEvent(item.event)
+      ? `<button type="button" data-share-bubble="${escapeHtml(item.id)}" title="生成会话分享链接">分享</button>`
+      : ''
+    return [
+      `<article class="bubble-card bubble-${escapeHtml(item.kind)}${target ? ' clickable' : ''}" data-bubble-id="${escapeHtml(item.id)}">`,
+      '<div class="bubble-head">',
+      `<strong>${escapeHtml(item.title)}</strong>`,
+      '<div class="bubble-actions">',
+      shareButton,
+      `<button type="button" data-dismiss-bubble="${escapeHtml(item.id)}" title="忽略">忽略</button>`,
+      '</div>',
+      '</div>',
+      `<div class="bubble-text">${escapeHtml(item.text)}</div>`,
+      targetText,
+      '</article>',
+    ].join('')
+  }).join('')
   bubble.classList.remove('hidden')
   positionBubble()
-  clearTimeout(bubbleTimer)
-  bubbleTimer = setTimeout(() => bubble.classList.add('hidden'), ms)
+}
+
+function say(text, ms = 2500, event = null) {
+  const id = String(++bubbleSeq)
+  const persistent = shouldPersistBubble(event)
+  bubbleLog.unshift({
+    id,
+    text,
+    event,
+    persistent,
+    kind: bubbleKind(event),
+    title: bubbleTitle(event),
+    createdAt: new Date().toISOString(),
+  })
+  trimBubbles()
+  renderBubbles()
+  if (!persistent) {
+    setTimeout(() => removeBubble(id), ms)
+  }
+}
+
+function shortText(text, max = 82) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized
+}
+
+function bubbleHoverHtml(item) {
+  const preview = item.preview
+  if (preview?.ok) {
+    const rows = [
+      `<div class="bubble-hover-title">${escapeHtml(preview.title || item.title)}</div>`,
+    ]
+    for (const line of (preview.lines || []).slice(-2)) {
+      rows.push(`<div class="bubble-hover-text">${escapeHtml(shortText(line, 74))}</div>`)
+    }
+    return rows.join('')
+  }
+  if (preview?.loading) {
+    return [
+      `<div class="bubble-hover-title">${escapeHtml(item.title)}</div>`,
+      '<div class="bubble-hover-text">正在读取会话摘要...</div>',
+    ].join('')
+  }
+  if (preview?.error) {
+    return [
+      `<div class="bubble-hover-title">${escapeHtml(item.title)}</div>`,
+      `<div class="bubble-hover-text">摘要读取失败：${escapeHtml(preview.error)}</div>`,
+    ].join('')
+  }
+  const rows = [
+    `<div class="bubble-hover-title">${escapeHtml(item.title)}</div>`,
+    `<div class="bubble-hover-text">${escapeHtml(shortText(item.text, 74))}</div>`,
+  ]
+  if (item.event?.agent) rows.push(`<div class="bubble-hover-meta">Agent：${escapeHtml(item.event.agent)}</div>`)
+  return rows.join('')
+}
+
+function showBubbleHover(item, event, anchor) {
+  activeHoverBubbleId = item.id
+  ensureBubblePreview(item, event, anchor)
+  bubbleHoverTip.innerHTML = bubbleHoverHtml(item)
+  bubbleHoverTip.classList.remove('hidden')
+  positionBubbleHover(anchor, event)
+}
+
+function positionBubbleHover(anchor, event) {
+  const { width, height } = visibleRectFor(bubbleHoverTip, 220, 72)
+  const padding = 8
+  const area = viewportVisibleArea()
+  const rect = anchor?.getBoundingClientRect?.()
+  const anchorLeft = rect ? rect.left + rect.width / 2 - width / 2 : event.clientX + 10
+  const belowTop = rect ? rect.top + rect.height + 6 : event.clientY + 10
+  const aboveTop = rect ? rect.top - height - 6 : event.clientY - height - 10
+  const top = belowTop + height <= area.bottom - padding ? belowTop : aboveTop
+  const next = clampElementToVisibleArea(anchorLeft, top, width, height, padding)
+  bubbleHoverTip.style.left = `${next.left}px`
+  bubbleHoverTip.style.top = `${next.top}px`
+}
+
+function hideBubbleHover() {
+  activeHoverBubbleId = ''
+  bubbleHoverTip.classList.add('hidden')
+}
+
+function previewKey(request) {
+  return [
+    request.provider,
+    request.sessionId,
+    request.transcriptPath || request.agentTranscriptPath || '',
+  ].join(':')
+}
+
+async function ensureBubblePreview(item, event, anchor) {
+  const request = sessionRequestForEvent(item.event)
+  if (!request || item.preview?.ok || item.preview?.loading) return
+  const key = previewKey(request)
+  if (sessionPreviewCache.has(key)) {
+    item.preview = sessionPreviewCache.get(key)
+    return
+  }
+  item.preview = { loading: true }
+  try {
+    const result = await window.pet.sessionPreview?.(request)
+    item.preview = result?.ok ? result : { ok: false, error: result?.error || '没有可见摘要' }
+  } catch (error) {
+    item.preview = { ok: false, error: String(error?.message || error) }
+  }
+  sessionPreviewCache.set(key, item.preview)
+  if (activeHoverBubbleId === item.id) {
+    bubbleHoverTip.innerHTML = bubbleHoverHtml(item)
+    positionBubbleHover(anchor, event)
+  }
 }
 
 init()
+
+function setupEventPanel() {
+  panelClose?.addEventListener('click', () => togglePanel(false))
+  settingPetScale?.addEventListener('input', () => {
+    uiSettings.petScale = clampNumber(Number(settingPetScale.value) / 100, 0.4, 1.25, DEFAULT_UI_SETTINGS.petScale)
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingPetOpacity?.addEventListener('input', () => {
+    uiSettings.petOpacity = clampNumber(Number(settingPetOpacity.value) / 100, 0.25, 1, DEFAULT_UI_SETTINGS.petOpacity)
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingHitboxScale?.addEventListener('input', () => {
+    uiSettings.hitboxScale = clampNumber(Number(settingHitboxScale.value) / 100, 0.25, 1, DEFAULT_UI_SETTINGS.hitboxScale)
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingBubbleCorner?.addEventListener('change', () => {
+    uiSettings.bubbleCorner = CORNERS.has(settingBubbleCorner.value) ? settingBubbleCorner.value : DEFAULT_UI_SETTINGS.bubbleCorner
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingPanelCorner?.addEventListener('change', () => {
+    uiSettings.panelCorner = CORNERS.has(settingPanelCorner.value)
+      ? settingPanelCorner.value
+      : DEFAULT_UI_SETTINGS.panelCorner
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingTriggerMode?.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-trigger-mode]')
+    if (!button) return
+    uiSettings.triggerMode = button.dataset.triggerMode === 'left' ? 'left' : 'right'
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingDndMode?.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-dnd-mode]')
+    if (!button) return
+    setDndMode(button.dataset.dndMode === 'true')
+  })
+  settingSoundEnabled?.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-sound-enabled]')
+    if (!button) return
+    setBooleanSetting('soundEnabled', button.dataset.soundEnabled === 'true')
+  })
+  settingNotificationsEnabled?.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-notifications-enabled]')
+    if (!button) return
+    setBooleanSetting('notificationsEnabled', button.dataset.notificationsEnabled === 'true')
+  })
+  settingFocusMinutes?.addEventListener('change', () => {
+    updatePomodoroSettings({ focusMinutes: settingFocusMinutes.value })
+  })
+  settingShortBreakMinutes?.addEventListener('change', () => {
+    updatePomodoroSettings({ shortBreakMinutes: settingShortBreakMinutes.value })
+  })
+  settingLongBreakMinutes?.addEventListener('change', () => {
+    updatePomodoroSettings({ longBreakMinutes: settingLongBreakMinutes.value })
+  })
+  settingSedentaryMinutes?.addEventListener('change', () => {
+    updatePomodoroSettings({ sedentaryMinutes: settingSedentaryMinutes.value })
+  })
+  settingLongBreakEvery?.addEventListener('input', () => {
+    updatePomodoroSettings({ longBreakEvery: settingLongBreakEvery.value })
+  })
+  settingBubbleAnchor?.addEventListener('input', () => {
+    uiSettings.bubbleAnchor = clampNumber(settingBubbleAnchor.value, 35, 80, DEFAULT_UI_SETTINGS.bubbleAnchor)
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingBubbleGap?.addEventListener('input', () => {
+    uiSettings.bubbleGap = clampNumber(settingBubbleGap.value, 0, 48, DEFAULT_UI_SETTINGS.bubbleGap)
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingHidePet?.addEventListener('click', () => window.pet.setHidden?.(true))
+  eventPanel?.addEventListener('click', (e) => {
+    const tabButton = e.target.closest?.('[data-tab]')
+    if (tabButton) {
+      setActivePanelTab(tabButton.dataset.tab)
+      return
+    }
+    const sizeButton = e.target.closest?.('[data-window-size]')
+    if (sizeButton) {
+      const [width, height] = String(sizeButton.dataset.windowSize || '').split('x').map(Number)
+      window.pet.setWindowSize?.({ width, height })
+      return
+    }
+    const item = e.target.closest?.('[data-event-id]')
+    if (!item) return
+    openEventById(item.dataset.eventId)
+  })
+  syncEventPanel()
+}
+
+function setActivePanelTab(tab) {
+  activePanelTab = PANEL_TABS.has(tab) ? tab : 'settings'
+  eventPanel?.querySelectorAll('[data-tab]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.tab === activePanelTab)
+  })
+  eventPanel?.querySelectorAll('[data-tab-panel]').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.tabPanel === activePanelTab)
+  })
+  positionPanel()
+}
+
+function togglePanel(force) {
+  panelVisible = typeof force === 'boolean' ? force : !panelVisible
+  eventPanel?.classList.toggle('hidden', !panelVisible)
+  if (panelVisible) {
+    window.pet.setIgnoreMouse(false)
+    requestAnimationFrame(positionPanel)
+  } else {
+    window.pet.setIgnoreMouse(true, { forward: true })
+  }
+  syncEventPanel()
+}
+
+function recordAgentEvent(event) {
+  if (!event || !event.type) return
+  const record = {
+    ...event,
+    id: String(++eventSeq),
+    target: targetForEvent(event),
+    receivedAt: new Date().toISOString(),
+  }
+  eventLog.unshift(record)
+  if (eventLog.length > MAX_EVENT_LOG) eventLog.length = MAX_EVENT_LOG
+  syncEventPanel()
+}
+
+function targetForEvent(event) {
+  if (!event) return null
+  const url = event.url || event.link || event.deepLink || event.deep_link || ''
+  if (url) return { kind: 'url', url, label: '打开链接' }
+  const chatId = event.chatId || event.chat_id || ''
+  if (chatId) {
+    const messageId = event.messageId || event.message_id || ''
+    return {
+      kind: 'lark',
+      chatId,
+      messageId,
+      label: messageId ? `飞书消息 ${messageId}` : `飞书会话 ${chatId}`,
+    }
+  }
+  const session = sessionRequestForEvent(event)
+  if (session) {
+    if (session.provider === 'codex') {
+      return {
+        kind: 'codex-thread',
+        threadId: session.sessionId,
+        turnId: event.turnId || event.turn_id || event['turn-id'] || '',
+        url: `codex://threads/${encodeURIComponent(session.sessionId)}`,
+        label: '打开 Codex 会话',
+        fallbackPath: session.transcriptPath,
+      }
+    }
+    if (session.provider === 'claude') {
+      return {
+        kind: 'terminal-session',
+        sessionId: session.sessionId,
+        tty: event.tty || '',
+        cwd: session.cwd,
+        label: '打开 Claude Code 终端',
+        fallbackPath: session.transcriptPath,
+      }
+    }
+  }
+  return null
+}
+
+function targetKey(target) {
+  if (!target) return ''
+  return target.url || target.path || target.threadId || target.sessionId || `${target.chatId || ''}:${target.messageId || ''}`
+}
+
+function openableEvents() {
+  const seen = new Set()
+  const out = []
+  for (const event of eventLog) {
+    if (!event.target) continue
+    const key = targetKey(event.target)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(event)
+  }
+  return out
+}
+
+async function openTarget(target) {
+  if (!target) return false
+  const result = await window.pet.openTarget?.(target)
+  if (!result?.ok) {
+    const suffix = result?.copiedUrl ? '，已复制链接' : ''
+    say(`跳转失败：${result?.error || '没有会话信息'}${suffix}`, 3200)
+    return false
+  }
+  const text = target.kind === 'local-path'
+    ? '正在打开本地记录'
+    : target.kind === 'terminal-session'
+      ? '正在打开 Agent 终端'
+      : target.kind === 'codex-thread'
+        ? '正在打开 Codex 会话'
+        : '正在打开飞书会话'
+  say(text, 1400)
+  return true
+}
+
+async function shareBubbleSession(id) {
+  const item = bubbleLog.find(record => record.id === String(id))
+  const request = sessionRequestForEvent(item?.event)
+  if (!request) {
+    say('这条气泡没有可分享的会话信息', 2400)
+    return
+  }
+  say('正在生成会话分享链接...', 2200)
+  try {
+    const result = await window.pet.shareSession?.(request)
+    if (!result?.ok) {
+      say(`分享失败：${result?.error || 'bridge 没返回链接'}`, 4200)
+      return
+    }
+    const url = result.url || result.share?.url
+    say('分享链接已生成，已复制', 0, {
+      source: 'local',
+      type: 'task_done',
+      text: url || '分享链接已生成',
+      url,
+    })
+  } catch (error) {
+    say(`分享失败：${error?.message || error}`, 4200)
+  }
+}
+
+function openEventById(id) {
+  const event = eventLog.find(item => item.id === String(id))
+  if (event?.target) openTarget(event.target)
+}
+
+function openBubbleTarget(event = activeBubbleEvent) {
+  const bubbleTarget = targetForEvent(event)
+  const sessions = openableEvents()
+  const hasOtherSession = bubbleTarget && sessions.some(event => targetKey(event.target) !== targetKey(bubbleTarget))
+  if (bubbleTarget && !hasOtherSession) {
+    openTarget(bubbleTarget)
+    return
+  }
+  if (sessions.length === 1) {
+    openTarget(sessions[0].target)
+    return
+  }
+  if (sessions.length > 1) {
+    togglePanel(true)
+    return
+  }
+  togglePanel(true)
+}
+
+function syncSettingControls() {
+  if (settingPetScale) settingPetScale.value = String(Math.round(uiSettings.petScale * 100))
+  if (settingPetScaleValue) settingPetScaleValue.textContent = `${Math.round(uiSettings.petScale * 100)}%`
+  if (settingPetOpacity) settingPetOpacity.value = String(Math.round(uiSettings.petOpacity * 100))
+  if (settingPetOpacityValue) settingPetOpacityValue.textContent = `${Math.round(uiSettings.petOpacity * 100)}%`
+  if (settingHitboxScale) settingHitboxScale.value = String(Math.round(uiSettings.hitboxScale * 100))
+  if (settingHitboxScaleValue) settingHitboxScaleValue.textContent = `${Math.round(uiSettings.hitboxScale * 100)}%`
+  if (settingBubbleCorner) settingBubbleCorner.value = uiSettings.bubbleCorner
+  if (settingPanelCorner) settingPanelCorner.value = uiSettings.panelCorner
+  if (settingTriggerMode) {
+    settingTriggerMode.querySelectorAll('[data-trigger-mode]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.triggerMode === uiSettings.triggerMode)
+    })
+  }
+  if (settingDndMode) {
+    settingDndMode.querySelectorAll('[data-dnd-mode]').forEach((button) => {
+      button.classList.toggle('active', (button.dataset.dndMode === 'true') === uiSettings.dndMode)
+    })
+  }
+  if (settingSoundEnabled) {
+    settingSoundEnabled.querySelectorAll('[data-sound-enabled]').forEach((button) => {
+      button.classList.toggle('active', (button.dataset.soundEnabled === 'true') === uiSettings.soundEnabled)
+    })
+  }
+  if (settingNotificationsEnabled) {
+    settingNotificationsEnabled.querySelectorAll('[data-notifications-enabled]').forEach((button) => {
+      button.classList.toggle('active', (button.dataset.notificationsEnabled === 'true') === uiSettings.notificationsEnabled)
+    })
+  }
+  if (settingFocusMinutes) settingFocusMinutes.value = String(pomodoroSettings.focusMinutes)
+  if (settingShortBreakMinutes) settingShortBreakMinutes.value = String(pomodoroSettings.shortBreakMinutes)
+  if (settingLongBreakMinutes) settingLongBreakMinutes.value = String(pomodoroSettings.longBreakMinutes)
+  if (settingSedentaryMinutes) settingSedentaryMinutes.value = String(pomodoroSettings.sedentaryMinutes)
+  if (settingLongBreakEvery) settingLongBreakEvery.value = String(pomodoroSettings.longBreakEvery)
+  if (settingLongBreakEveryValue) settingLongBreakEveryValue.textContent = `${pomodoroSettings.longBreakEvery}轮`
+  if (settingBubbleAnchor) settingBubbleAnchor.value = String(Math.round(uiSettings.bubbleAnchor))
+  if (settingBubbleAnchorValue) settingBubbleAnchorValue.textContent = `${Math.round(uiSettings.bubbleAnchor)}%`
+  if (settingBubbleGap) settingBubbleGap.value = String(Math.round(uiSettings.bubbleGap))
+  if (settingBubbleGapValue) settingBubbleGapValue.textContent = `${Math.round(uiSettings.bubbleGap)}px`
+}
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function typeLabel(type) {
+  return {
+    lark_message_received: '飞书消息',
+    task_started: '开工',
+    task_progress: '进度',
+    lark_reply_sent: '飞书回复',
+    task_waiting: '待交互',
+    agent_done: 'Agent 完成',
+    task_done: '完成',
+    task_failed: '失败',
+    pomodoro_completed: '番茄钟',
+  }[type] || type
+}
+
+function sourceLabel(source) {
+  const src = PET_CONFIG.sources[source] || PET_CONFIG.sources.lark
+  return `${src.icon} ${src.label}`
+}
+
+function isWaiting(event) {
+  return event.type === 'task_waiting'
+}
+
+function isDone(event) {
+  return event.type === 'task_done' || event.type === 'agent_done'
+}
+
+function eventText(event) {
+  return event.text || event.agent || typeLabel(event.type)
+}
+
+function fmtTime(value) {
+  try {
+    return new Date(value).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return ''
+  }
+}
+
+function renderEventList(el, list) {
+  if (!el) return
+  if (!list.length) {
+    el.className = 'event-list empty'
+    el.textContent = '暂无'
+    return
+  }
+  el.className = 'event-list'
+  el.innerHTML = list.map((event) => {
+    const cls = [
+      isWaiting(event) ? 'waiting' : '',
+      isDone(event) ? 'done' : '',
+      event.source === 'lark' ? 'source-lark' : event.source === 'local' ? 'source-local' : '',
+    ].filter(Boolean).map(item => ` ${item}`).join('')
+    const agent = event.agent ? ` · ${escapeHtml(event.agent)}` : ''
+    const target = event.target ? `<div class="event-target">${escapeHtml(event.target.label || '打开会话')}</div>` : ''
+    return [
+      `<article class="event-item${cls}" data-event-id="${escapeHtml(event.id || '')}">`,
+      '<div class="event-meta">',
+      `<span>${escapeHtml(sourceLabel(event.source))} · ${escapeHtml(typeLabel(event.type))}${agent}</span>`,
+      `<time>${escapeHtml(fmtTime(event.receivedAt))}</time>`,
+      '</div>',
+      `<div class="event-text">${escapeHtml(eventText(event))}</div>`,
+      target,
+      '</article>',
+    ].join('')
+  }).join('')
+}
+
+function renderSessionList(el, list) {
+  if (!el) return
+  if (!list.length) {
+    el.className = 'event-list empty'
+    el.textContent = '暂无可跳转会话'
+    return
+  }
+  el.className = 'event-list sessions'
+  el.innerHTML = list.map((event) => [
+    `<article class="event-item" data-event-id="${escapeHtml(event.id || '')}">`,
+    '<div class="event-meta">',
+    `<span>${escapeHtml(sourceLabel(event.source))} · ${escapeHtml(typeLabel(event.type))}</span>`,
+    `<time>${escapeHtml(fmtTime(event.receivedAt))}</time>`,
+    '</div>',
+    `<div class="event-text">${escapeHtml(eventText(event))}</div>`,
+    `<div class="event-target">${escapeHtml(event.target?.label || '打开会话')}</div>`,
+    '</article>',
+  ].join('')).join('')
+}
+
+function renderConfig() {
+  if (!configEvents) return
+  const notif = typeof Notification === 'undefined' ? '不可用' : Notification.permission
+  const tokenText = activeAgentConfig.token ? '已配置' : '未配置'
+  configEvents.innerHTML = [
+    ['Bridge', activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787'],
+    ['SSE', agentSyncStatus === 'connected' ? '已连接' : '离线/重连中'],
+    ['Hook', '127.0.0.1:7766'],
+    ['Token', tokenText],
+    ['勿扰', uiSettings.dndMode ? '开启' : '关闭'],
+    ['声音', uiSettings.soundEnabled ? '开启' : '关闭'],
+    ['系统通知', uiSettings.notificationsEnabled ? '开启' : '关闭'],
+    ['通知权限', notif],
+    ['番茄钟', `${pomodoroSettings.focusMinutes}/${pomodoroSettings.shortBreakMinutes}/${pomodoroSettings.longBreakMinutes} min`],
+    ['久坐提醒', pomodoroSettings.sedentaryMinutes > 0 ? `${pomodoroSettings.sedentaryMinutes} min` : '关闭'],
+  ].map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')
+}
+
+function syncEventPanel() {
+  const waiting = eventLog.filter(isWaiting)
+  const done = eventLog.filter(isDone)
+  if (metricWaiting) metricWaiting.textContent = String(waiting.length)
+  if (metricDone) metricDone.textContent = String(done.length)
+  if (metricTotal) metricTotal.textContent = String(eventLog.length)
+  if (panelStatus) {
+    const statusText = agentSyncStatus === 'connected' ? 'Bridge 已连接' : 'Bridge 离线/重连中'
+    panelStatus.textContent = `${statusText} · Hook 127.0.0.1:7766`
+  }
+  renderEventList(waitingEvents, waiting.slice(0, 6))
+  renderEventList(doneEvents, done.slice(0, 8))
+  renderSessionList(sessionEvents, openableEvents().slice(0, 8))
+  renderEventList(recentEvents, eventLog.slice(0, 8))
+  renderConfig()
+  syncSettingControls()
+  setActivePanelTab(activePanelTab)
+  positionPanel()
+}
+
+window.addEventListener('resize', () => {
+  positionBubble()
+  positionPanel()
+})

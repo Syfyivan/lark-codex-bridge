@@ -27,6 +27,12 @@ test('local source uses the 💻 prefix', () => {
   assert.match(out.says[0], /💻/)
 })
 
+test('agent_done renders the completed agent text', () => {
+  const out = collect({ type: 'agent_done', source: 'local', text: 'verifier 完成任务' })
+  assert.match(out.says[0], /verifier 完成任务/)
+  assert.deepEqual(out.status, ['done'])
+})
+
 test('unknown event type is ignored', () => {
   const out = collect({ type: 'nope', source: 'lark' })
   assert.equal(out.says.length, 0)

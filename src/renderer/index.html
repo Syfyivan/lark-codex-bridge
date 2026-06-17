@@ -25,6 +25,155 @@
   <body>
     <canvas id="pet-canvas"></canvas>
     <div id="bubble" class="hidden"></div>
+    <section id="event-panel" class="hidden" aria-live="polite">
+      <header class="panel-header">
+        <strong><span class="drag-handle" title="拖动移动桌宠">⠿</span> 事件 / 配置</strong>
+        <button id="event-panel-close" type="button" title="关闭">×</button>
+      </header>
+      <div id="panel-status" class="panel-status"></div>
+      <div class="panel-metrics">
+        <button type="button" data-tab="waiting"><span id="metric-waiting">0</span><small>待交互</small></button>
+        <button type="button" data-tab="done"><span id="metric-done">0</span><small>已完成</small></button>
+        <button type="button" data-tab="recent"><span id="metric-total">0</span><small>事件</small></button>
+      </div>
+      <nav id="panel-tabs" class="panel-tabs" aria-label="事件面板">
+        <button type="button" data-tab="settings">设置</button>
+        <button type="button" data-tab="waiting">待交互</button>
+        <button type="button" data-tab="done">已完成</button>
+        <button type="button" data-tab="sessions">会话</button>
+        <button type="button" data-tab="recent">最近</button>
+      </nav>
+      <div class="panel-section tab-panel" data-tab-panel="settings">
+        <h2>设置</h2>
+        <div class="settings-list">
+          <label>
+            <span>图案大小</span>
+            <input id="setting-pet-scale" type="range" min="40" max="125" step="5" />
+            <output id="setting-pet-scale-value"></output>
+          </label>
+          <label>
+            <span>透明度</span>
+            <input id="setting-pet-opacity" type="range" min="25" max="100" step="5" />
+            <output id="setting-pet-opacity-value"></output>
+          </label>
+          <label>
+            <span>点击范围</span>
+            <input id="setting-hitbox-scale" type="range" min="25" max="100" step="5" />
+            <output id="setting-hitbox-scale-value"></output>
+          </label>
+          <div class="segmented-setting">
+            <span>触发</span>
+            <div id="setting-trigger-mode" class="segmented-control" aria-label="触发方式">
+              <button type="button" data-trigger-mode="right">右键</button>
+              <button type="button" data-trigger-mode="left">左键</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>勿扰</span>
+            <div id="setting-dnd-mode" class="segmented-control" aria-label="勿扰模式">
+              <button type="button" data-dnd-mode="false">关闭</button>
+              <button type="button" data-dnd-mode="true">开启</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>声音</span>
+            <div id="setting-sound-enabled" class="segmented-control" aria-label="声音提醒">
+              <button type="button" data-sound-enabled="true">开启</button>
+              <button type="button" data-sound-enabled="false">关闭</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>通知</span>
+            <div id="setting-notifications-enabled" class="segmented-control" aria-label="系统通知">
+              <button type="button" data-notifications-enabled="true">开启</button>
+              <button type="button" data-notifications-enabled="false">关闭</button>
+            </div>
+          </div>
+          <div class="number-grid" aria-label="番茄钟时长">
+            <label>
+              <span>专注</span>
+              <input id="setting-focus-minutes" type="number" min="1" max="180" step="1" />
+            </label>
+            <label>
+              <span>短休</span>
+              <input id="setting-short-break-minutes" type="number" min="1" max="60" step="1" />
+            </label>
+            <label>
+              <span>长休</span>
+              <input id="setting-long-break-minutes" type="number" min="1" max="120" step="1" />
+            </label>
+            <label>
+              <span>久坐</span>
+              <input id="setting-sedentary-minutes" type="number" min="0" max="240" step="1" />
+            </label>
+          </div>
+          <label>
+            <span>长休间隔</span>
+            <input id="setting-long-break-every" type="range" min="1" max="12" step="1" />
+            <output id="setting-long-break-every-value"></output>
+          </label>
+          <label>
+            <span>气泡位置</span>
+            <select id="setting-bubble-corner">
+              <option value="near">贴近宠物</option>
+              <option value="auto">自动避让</option>
+              <option value="top-left">左上</option>
+              <option value="top-right">右上</option>
+              <option value="bottom-left">左下</option>
+              <option value="bottom-right">右下</option>
+            </select>
+          </label>
+          <label>
+            <span>面板位置</span>
+            <select id="setting-panel-corner">
+              <option value="near">贴近宠物</option>
+              <option value="auto">自动避让</option>
+              <option value="top-left">左上</option>
+              <option value="top-right">右上</option>
+              <option value="bottom-left">左下</option>
+              <option value="bottom-right">右下</option>
+            </select>
+          </label>
+          <label>
+            <span>气泡高度</span>
+            <input id="setting-bubble-anchor" type="range" min="35" max="80" step="1" />
+            <output id="setting-bubble-anchor-value"></output>
+          </label>
+          <label>
+            <span>气泡间距</span>
+            <input id="setting-bubble-gap" type="range" min="0" max="48" step="2" />
+            <output id="setting-bubble-gap-value"></output>
+          </label>
+          <div class="window-size-buttons" aria-label="窗口大小">
+            <button type="button" data-window-size="200x290">很小</button>
+            <button type="button" data-window-size="280x400">小</button>
+            <button type="button" data-window-size="360x520">中</button>
+            <button type="button" data-window-size="460x650">大</button>
+          </div>
+          <button id="setting-hide-pet" class="settings-action" type="button">隐藏桌宠</button>
+        </div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="waiting">
+        <h2>待交互</h2>
+        <div id="waiting-events" class="event-list empty">暂无</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="done">
+        <h2>已完成</h2>
+        <div id="done-events" class="event-list empty">暂无</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="sessions">
+        <h2>会话</h2>
+        <div id="session-events" class="event-list empty">暂无可跳转会话</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="recent">
+        <h2>最近事件</h2>
+        <div id="recent-events" class="event-list empty">暂无</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="config">
+        <h2>配置</h2>
+        <dl id="config-events" class="config-list"></dl>
+      </div>
+    </section>
     <!-- surface any load/runtime error as a visible bubble instead of a blank window -->
     <script>
       window.addEventListener('error', function (e) {

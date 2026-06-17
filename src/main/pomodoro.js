@@ -6,29 +6,40 @@
 // Completing a focus calls onReward(); abandoning gives NO reward (loss-aversion,
 // not punishment — matches the pet's gentle tone).
 function createPomodoro(opts = {}) {
-  const focus = opts.focus ?? 25 * 60
-  const short = opts.short ?? 5 * 60
-  const long = opts.long ?? 15 * 60
-  const longEvery = opts.longEvery ?? 4
   const { onNotify, onReward, onTick } = opts
+  const durations = {
+    focus: positiveInt(opts.focus, 25 * 60),
+    short: positiveInt(opts.short, 5 * 60),
+    long: positiveInt(opts.long, 15 * 60),
+    longEvery: positiveInt(opts.longEvery, 4),
+  }
 
   let phase = 'idle'
   let paused = false
   let remaining = 0
   let completed = 0
 
-  const emitTick = () => onTick?.({ phase, paused, remaining, completed })
+  const emitTick = () => onTick?.({ phase, paused, remaining, completed, settings: settings() })
+
+  function positiveInt(value, fallback) {
+    const n = Number(value)
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback
+  }
+
+  function settings() {
+    return { ...durations }
+  }
 
   function enter(next) {
     phase = next
     if (next === 'focus') {
-      remaining = focus
+      remaining = durations.focus
       onNotify?.({ text: '🍅 专注开始，加油！', status: 'working' })
     } else if (next === 'short_break') {
-      remaining = short
+      remaining = durations.short
       onNotify?.({ text: '☕ 短休一下~', status: 'replying', motion: 'Tap' })
     } else if (next === 'long_break') {
-      remaining = long
+      remaining = durations.long
       onNotify?.({ text: '🛋️ 长休息，放松一下', status: 'replying', motion: 'Tap' })
     } else {
       remaining = 0
@@ -41,7 +52,7 @@ function createPomodoro(opts = {}) {
     if (phase === 'focus') {
       completed += 1
       onReward?.() // pomodoro_completed -> feeds the pet
-      enter(completed % longEvery === 0 ? 'long_break' : 'short_break')
+      enter(completed % durations.longEvery === 0 ? 'long_break' : 'short_break')
     } else if (phase === 'short_break') {
       enter('focus')
     } else {
@@ -75,6 +86,16 @@ function createPomodoro(opts = {}) {
       )
       emitTick()
     },
+    configure(next = {}) {
+      const before = durations[phase] || 0
+      if (next.focus) durations.focus = positiveInt(next.focus, durations.focus)
+      if (next.short) durations.short = positiveInt(next.short, durations.short)
+      if (next.long) durations.long = positiveInt(next.long, durations.long)
+      if (next.longEvery) durations.longEvery = positiveInt(next.longEvery, durations.longEvery)
+      const after = durations[phase] || 0
+      if (phase !== 'idle' && before > 0 && after > 0) remaining = Math.min(remaining, after)
+      emitTick()
+    },
     tick() {
       if (paused || phase === 'idle') return
       remaining -= 1
@@ -82,8 +103,9 @@ function createPomodoro(opts = {}) {
       if (remaining <= 0) advance()
     },
     state() {
-      return { phase, paused, remaining, completed }
+      return { phase, paused, remaining, completed, settings: settings() }
     },
+    settings,
   }
 }
 

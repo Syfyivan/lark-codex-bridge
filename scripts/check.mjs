@@ -9,19 +9,25 @@ import { join } from 'node:path'
 const CJS = [
   'src/main/index.js',
   'src/main/preload.js',
+  'src/main/hook-events.js',
   'src/main/token-usage.js',
   'src/main/pomodoro.js',
 ]
 const ESM = [
   'src/renderer/renderer.js',
   'src/renderer/agent-sync.js',
+  'src/renderer/accessories.js',
   'src/renderer/reactions.js',
   'src/renderer/growth.js',
+  'src/renderer/config/accessories.js',
   'src/renderer/backends/gif.js',
   'src/renderer/config/pet-config.js',
   'src/renderer/config/render.local.example.js',
   'src/renderer/config/agent.local.example.js',
+  'src/renderer/config/accessories.local.example.js',
   'scripts/setup-assets.mjs',
+  'scripts/kodama-control.mjs',
+  'scripts/start-detached.mjs',
   'scripts/check.mjs',
 ]
 

@@ -44,3 +44,16 @@ test('pause stops the countdown', () => {
   p.tick()
   assert.equal(p.state().remaining, r0) // unchanged while paused
 })
+
+test('configure updates future durations and caps current remaining time', () => {
+  const p = createPomodoro({ focus: 10, short: 3, long: 6, longEvery: 4 })
+  p.start()
+  p.tick()
+  assert.equal(p.state().remaining, 9)
+  p.configure({ focus: 5, short: 2, long: 4, longEvery: 2 })
+  assert.equal(p.state().remaining, 5)
+  assert.deepEqual(p.settings(), { focus: 5, short: 2, long: 4, longEvery: 2 })
+  while (p.state().phase === 'focus') p.tick()
+  assert.equal(p.state().phase, 'short_break')
+  assert.equal(p.state().remaining, 2)
+})

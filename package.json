@@ -2,16 +2,74 @@
   "name": "kodama",
   "version": "0.1.0",
   "description": "Kodama — a Live2D desktop pet that reacts to your coding agents (Claude Code / Codex).",
+  "author": "Syfyivan",
   "main": "src/main/index.js",
   "scripts": {
     "setup": "node scripts/setup-assets.mjs",
     "start": "electron .",
+    "start:detached": "node scripts/start-detached.mjs",
+    "show": "node scripts/kodama-control.mjs show",
+    "hide": "node scripts/kodama-control.mjs hide",
+    "toggle": "node scripts/kodama-control.mjs toggle",
+    "panel": "node scripts/kodama-control.mjs panel",
+    "healthz": "node scripts/kodama-control.mjs healthz",
+    "tokens": "node scripts/kodama-control.mjs tokens",
+    "token:test": "node scripts/kodama-control.mjs token-test 1234",
     "dev": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac dmg",
+    "dist:win": "electron-builder --win nsis",
+    "dist:linux": "electron-builder --linux AppImage",
     "check": "node scripts/check.mjs",
     "test": "node --test"
   },
   "license": "MIT",
+  "build": {
+    "appId": "io.syfyivan.kodama",
+    "productName": "Kodama",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "package.json",
+      "src/**/*",
+      "scripts/**/*",
+      "!src/renderer/config/*.local.js",
+      "!src/renderer/pets/**",
+      "!**/*.map"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg"
+      ]
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
+    }
+  },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "dmg-builder": "26.15.3",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3",
+    "electron-builder-squirrel-windows": "26.15.3"
   }
 }

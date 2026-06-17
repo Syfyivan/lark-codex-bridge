@@ -3,7 +3,12 @@ const { contextBridge, ipcRenderer } = require('electron')
 // Minimal, safe bridge exposed to the renderer as window.pet
 contextBridge.exposeInMainWorld('pet', {
   setIgnoreMouse: (ignore, opts) => ipcRenderer.send('pet:set-ignore-mouse', ignore, opts),
-  move: (dx, dy) => ipcRenderer.send('pet:move', dx, dy),
+  move: (dx, dy, visibleBounds) => ipcRenderer.send('pet:move', dx, dy, visibleBounds),
+  setWindowSize: (size) => ipcRenderer.send('pet:set-window-size', size),
+  setHidden: (hidden) => ipcRenderer.send('pet:set-hidden', hidden),
+  openTarget: (target) => ipcRenderer.invoke('pet:open-target', target),
+  sessionPreview: (request) => ipcRenderer.invoke('pet:session-preview', request),
+  shareSession: (request) => ipcRenderer.invoke('pet:share-session', request),
   // local Claude Code / Codex hook events forwarded from the main process
   onAgentEvent: (cb) => ipcRenderer.on('agent-event', (_e, event) => cb(event)),
   // growth state (P4)
@@ -14,4 +19,12 @@ contextBridge.exposeInMainWorld('pet', {
   addLarkTokens: (tokens) => ipcRenderer.send('pet:add-lark-tokens', tokens),
   // pomodoro / reminder bubbles from main (P4)
   onNotify: (cb) => ipcRenderer.on('pet-notify', (_e, payload) => cb(payload)),
+  getPomodoroSettings: () => ipcRenderer.invoke('pet:pomodoro-settings'),
+  updatePomodoroSettings: (settings) => ipcRenderer.send('pet:pomodoro-settings', settings),
+  onTogglePanel: (cb) => ipcRenderer.on('pet:toggle-panel', () => cb()),
+  updateUiMenuState: (state) => ipcRenderer.send('pet:ui-menu-state', state),
+  onSetDndMode: (cb) => ipcRenderer.on('pet:set-dnd-mode', (_e, enabled) => cb(enabled)),
+  // accessory tray menu state and commands
+  updateAccessoryMenu: (state) => ipcRenderer.send('pet:accessory-menu', state),
+  onEquipAccessory: (cb) => ipcRenderer.on('pet:equip-accessory', (_e, payload) => cb(payload)),
 })

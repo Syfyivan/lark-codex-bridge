@@ -22,19 +22,45 @@ function notify(title, body) {
   }
 }
 
-// Keep the currently-shown bubble from being stomped by a less important one.
-let activeUntil = 0
-let activePriority = 0
+let lastSoundAt = 0
+function playCue(type) {
+  if (typeof window === 'undefined') return
+  const AudioContext = window.AudioContext || window.webkitAudioContext
+  if (!AudioContext) return
+  const now = Date.now()
+  if (now - lastSoundAt < 900) return
+  lastSoundAt = now
+  try {
+    const ctx = new AudioContext()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    const frequency = {
+      task_waiting: 740,
+      task_failed: 220,
+      agent_done: 660,
+      task_done: 880,
+      pomodoro_completed: 820,
+    }[type] || 520
+    osc.type = type === 'task_failed' ? 'sawtooth' : 'sine'
+    osc.frequency.setValueAtTime(frequency, ctx.currentTime)
+    gain.gain.setValueAtTime(0.001, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18)
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.2)
+    osc.addEventListener('ended', () => ctx.close().catch(() => {}), { once: true })
+  } catch {
+    /* audio is best-effort */
+  }
+}
 
 // event: { type, source, text }
 // hooks: { say(text, ms), playMotion(group), onStatus(status) }
-export function reactToEvent(event, hooks) {
+export function reactToEvent(event, hooks, options = {}) {
   const def = PET_CONFIG.events[event.type]
   if (!def) return
-
-  const now = Date.now()
-  const priority = def.priority || 1
-  if (now < activeUntil && priority < activePriority) return
 
   const src = PET_CONFIG.sources[event.source] || PET_CONFIG.sources.lark
   const text = interpolate(def.bubble, {
@@ -46,9 +72,8 @@ export function reactToEvent(event, hooks) {
   if (def.motion) hooks.playMotion?.(def.motion)
   hooks.onStatus?.(def.status)
   if (text) {
-    hooks.say?.(text, def.ms || 4000)
-    activeUntil = now + (def.ms || 4000)
-    activePriority = priority
-    if (def.notify) notify('Kodama 🌳', text)
+    hooks.say?.(text, def.ms || 4000, event)
+    if (def.notify && options.notifications !== false) notify('Kodama 🌳', text)
+    if (def.notify && options.sound !== false) playCue(event.type)
   }
 }

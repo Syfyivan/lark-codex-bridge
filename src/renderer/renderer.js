@@ -705,9 +705,10 @@ function prepareFloatingElement(el, preferredWidth, fallbackHeight, padding = FL
     el.style.maxWidth = `${availableWidth}px`
   }
   const rect = visibleRectFor(el, width, fallbackHeight)
-  const height = Math.min(rect.height, availableHeight)
+  const naturalHeight = rect.height
+  const height = Math.min(naturalHeight, availableHeight)
   setElementMaxHeight(el, availableHeight)
-  return { area, padding, width, height, availableHeight }
+  return { area, padding, width, height, naturalHeight, availableHeight }
 }
 
 function setElementMaxHeight(el, maxHeight) {
@@ -817,7 +818,7 @@ function setElementCorner(el, corner, fallbackWidth, fallbackHeight) {
 
 function positionNearPet(el, fallbackWidth, fallbackHeight) {
   const pet = petBounds()
-  const { width, height, area, padding } = prepareFloatingElement(el, fallbackWidth, fallbackHeight)
+  const { width, height, naturalHeight, area, padding } = prepareFloatingElement(el, fallbackWidth, fallbackHeight)
   if (!pet) {
     setElementCorner(el, 'top-right', fallbackWidth, fallbackHeight)
     return
@@ -831,45 +832,111 @@ function positionNearPet(el, fallbackWidth, fallbackHeight) {
     area.top + padding,
     area.bottom - padding,
   )
-  const candidates = [
-    { id: 'top-left', left: anchorX - width, top: pet.y - gap - height, side: 'left', vertical: 'top' },
-    { id: 'top-right', left: anchorX, top: pet.y - gap - height, side: 'right', vertical: 'top' },
-    { id: 'bottom-left', left: anchorX - width, top: pet.y + pet.height + gap, side: 'left', vertical: 'bottom' },
-    { id: 'bottom-right', left: anchorX, top: pet.y + pet.height + gap, side: 'right', vertical: 'bottom' },
-    { id: 'left-top', left: pet.x - gap - width, top: anchorY - height, side: 'left', vertical: 'top' },
-    { id: 'left-bottom', left: pet.x - gap - width, top: anchorY, side: 'left', vertical: 'bottom' },
-    { id: 'right-top', left: pet.x + pet.width + gap, top: anchorY - height, side: 'right', vertical: 'top' },
-    { id: 'right-bottom', left: pet.x + pet.width + gap, top: anchorY, side: 'right', vertical: 'bottom' },
-  ]
-
   const petOffRight = pet.x + pet.width > area.right - padding
   const petOffLeft = pet.x < area.left + padding
   const petOffBottom = pet.y + pet.height > area.bottom - padding
   const petOffTop = pet.y < area.top + padding
-  const scored = candidates.map((candidate) => {
-    const overflow =
-      Math.max(0, area.left + padding - candidate.left) +
-      Math.max(0, candidate.left + width + padding - area.right) +
-      Math.max(0, area.top + padding - candidate.top) +
-      Math.max(0, candidate.top + height + padding - area.bottom)
+
+  if (visiblePet) {
+    const minLeft = area.left + padding
+    const maxRight = area.right - padding
+    const minTop = area.top + padding
+    const maxBottom = area.bottom - padding
+    const zones = [
+      {
+        id: 'above',
+        side: anchorX < visiblePet.left + visiblePet.width / 2 ? 'left' : 'right',
+        vertical: 'top',
+        left: minLeft,
+        top: minTop,
+        right: maxRight,
+        bottom: Math.max(minTop, visiblePet.top - gap),
+        preferredLeft: anchorX - width / 2,
+        preferredTop: visiblePet.top - gap - Math.min(naturalHeight, Math.max(44, visiblePet.top - gap - minTop)),
+      },
+      {
+        id: 'below',
+        side: anchorX < visiblePet.left + visiblePet.width / 2 ? 'left' : 'right',
+        vertical: 'bottom',
+        left: minLeft,
+        top: Math.min(maxBottom, visiblePet.bottom + gap),
+        right: maxRight,
+        bottom: maxBottom,
+        preferredLeft: anchorX - width / 2,
+        preferredTop: visiblePet.bottom + gap,
+      },
+      {
+        id: 'left',
+        side: 'left',
+        vertical: anchorY < visiblePet.top + visiblePet.height / 2 ? 'top' : 'bottom',
+        left: minLeft,
+        top: minTop,
+        right: Math.max(minLeft, visiblePet.left - gap),
+        bottom: maxBottom,
+        preferredLeft: visiblePet.left - gap - width,
+        preferredTop: anchorY - height / 2,
+      },
+      {
+        id: 'right',
+        side: 'right',
+        vertical: anchorY < visiblePet.top + visiblePet.height / 2 ? 'top' : 'bottom',
+        left: Math.min(maxRight, visiblePet.right + gap),
+        top: minTop,
+        right: maxRight,
+        bottom: maxBottom,
+        preferredLeft: visiblePet.right + gap,
+        preferredTop: anchorY - height / 2,
+      },
+    ].map(zone => ({
+      ...zone,
+      zoneWidth: zone.right - zone.left,
+      zoneHeight: zone.bottom - zone.top,
+    })).filter(zone => zone.zoneWidth >= width && zone.zoneHeight >= 44)
+
+    const chosen = zones.map((zone) => {
+      const displayHeight = Math.min(naturalHeight, zone.zoneHeight)
+      const left = clampPoint(zone.preferredLeft, zone.left, Math.max(zone.left, zone.right - width))
+      const top = clampPoint(zone.preferredTop, zone.top, Math.max(zone.top, zone.bottom - displayHeight))
+      const edgeBonus =
+        (petOffRight && zone.side === 'left' ? 5000 : 0) +
+        (petOffLeft && zone.side === 'right' ? 5000 : 0) +
+        (petOffBottom && zone.vertical === 'top' ? 2200 : 0) +
+        (petOffTop && zone.vertical === 'bottom' ? 2200 : 0)
+      const fitsNaturalHeight = zone.zoneHeight >= naturalHeight ? 100000 : 0
+      const centerDistance = (left + width / 2 - anchorX) ** 2 + (top + displayHeight / 2 - anchorY) ** 2
+      return {
+        ...zone,
+        left,
+        top,
+        displayHeight,
+        score: fitsNaturalHeight + edgeBonus + displayHeight * 12 + zone.zoneWidth - centerDistance * 0.01,
+      }
+    }).sort((a, b) => b.score - a.score)[0]
+
+    if (chosen) {
+      setElementMaxHeight(el, chosen.zoneHeight)
+      el.style.transform = 'none'
+      el.style.left = `${chosen.left}px`
+      el.style.top = `${chosen.top}px`
+      return
+    }
+  }
+
+  const fallbackCandidates = [
+    { left: anchorX - width, top: pet.y - gap - height, side: 'left', vertical: 'top' },
+    { left: anchorX, top: pet.y - gap - height, side: 'right', vertical: 'top' },
+    { left: anchorX - width, top: pet.y + pet.height + gap, side: 'left', vertical: 'bottom' },
+    { left: anchorX, top: pet.y + pet.height + gap, side: 'right', vertical: 'bottom' },
+  ].map((candidate) => {
     const next = clampElementToVisibleArea(candidate.left, candidate.top, width, height, padding)
     const placed = { left: next.left, top: next.top, right: next.left + width, bottom: next.top + height, width, height }
     const overlap = rectArea(rectIntersection(placed, visiblePet))
-    const edgeBonus =
-      (petOffRight && candidate.side === 'left' ? 5000 : 0) +
-      (petOffLeft && candidate.side === 'right' ? 5000 : 0) +
-      (petOffBottom && candidate.vertical === 'top' ? 1600 : 0) +
-      (petOffTop && candidate.vertical === 'bottom' ? 1600 : 0)
-    const distance = (next.left - candidate.left) ** 2 + (next.top - candidate.top) ** 2
     return {
-      ...candidate,
       ...next,
-      score: edgeBonus - overflow * 100 - overlap * 5 - distance * 0.02,
+      score: -overlap * 20 - ((next.left - candidate.left) ** 2 + (next.top - candidate.top) ** 2) * 0.02,
     }
   }).sort((a, b) => b.score - a.score)
-
-  const chosen = scored[0] || clampElementToVisibleArea(area.right - width - padding, area.bottom - height - padding, width, height, padding)
-  const next = clampElementToVisibleArea(chosen.left, chosen.top, width, height, padding)
+  const next = fallbackCandidates[0] || clampElementToVisibleArea(area.right - width - padding, area.bottom - height - padding, width, height, padding)
   el.style.transform = 'none'
   el.style.left = `${next.left}px`
   el.style.top = `${next.top}px`

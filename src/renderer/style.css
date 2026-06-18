@@ -692,7 +692,14 @@ body {
   gap: 6px;
 }
 
-.window-size-buttons button {
+.config-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.window-size-buttons button,
+.config-buttons button {
   height: 28px;
   border: 1px solid rgba(111, 125, 145, 0.22);
   border-radius: 7px;
@@ -713,7 +720,8 @@ body {
 }
 
 .settings-action:hover,
-.window-size-buttons button:hover {
+.window-size-buttons button:hover,
+.config-buttons button:hover {
   background: #eef5ff;
   color: #23549a;
 }

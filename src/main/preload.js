@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('pet', {
   shareBridgeTasks: (request) => ipcRenderer.invoke('pet:share-bridge-tasks', request),
   openBridgeTasksWindow: () => ipcRenderer.invoke('pet:open-bridge-tasks-window'),
   copyText: (text) => ipcRenderer.invoke('pet:copy-text', text),
+  readText: () => ipcRenderer.invoke('pet:read-text'),
   // local Claude Code / Codex hook events forwarded from the main process
   onAgentEvent: (cb) => ipcRenderer.on('agent-event', (_e, event) => cb(event)),
   // growth state (P4)

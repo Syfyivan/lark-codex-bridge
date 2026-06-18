@@ -212,16 +212,19 @@ function clampWindowByVisibleBounds(state, visibleBounds, workArea) {
     return clampWindowState(state, workArea)
   }
   const margin = 6
+  const minVisibleRatio = Math.min(1, Math.max(0.25, Number(visibleBounds.minVisibleRatio) || 1))
   const bounds = {
     x: Number(visibleBounds.x) || 0,
     y: Number(visibleBounds.y) || 0,
     width: Number(visibleBounds.width) || 0,
     height: Number(visibleBounds.height) || 0,
   }
-  const minX = workArea.x + margin - bounds.x
-  const maxX = workArea.x + workArea.width - margin - bounds.x - bounds.width
-  const minY = workArea.y + margin - bounds.y
-  const maxY = workArea.y + workArea.height - margin - bounds.y - bounds.height
+  const horizontalOverflow = bounds.width * (1 - minVisibleRatio)
+  const verticalOverflow = bounds.height * (1 - minVisibleRatio)
+  const minX = workArea.x + margin - bounds.x - horizontalOverflow
+  const maxX = workArea.x + workArea.width - margin - bounds.x - bounds.width + horizontalOverflow
+  const minY = workArea.y + margin - bounds.y - verticalOverflow
+  const maxY = workArea.y + workArea.height - margin - bounds.y - bounds.height + verticalOverflow
   return {
     ...state,
     x: Math.round(Math.min(Math.max(state.x, minX), Math.max(minX, maxX))),
@@ -881,6 +884,10 @@ ipcMain.handle('pet:open-bridge-tasks-window', () => {
 ipcMain.handle('pet:copy-text', (_e, text) => {
   clipboard.writeText(String(text || ''))
   return { ok: true }
+})
+
+ipcMain.handle('pet:read-text', () => {
+  return { ok: true, text: clipboard.readText() }
 })
 
 // Growth state (level/exp/food) persisted in userData. (P4)

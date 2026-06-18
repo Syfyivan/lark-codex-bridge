@@ -73,6 +73,27 @@
             </div>
           </div>
           <div class="segmented-setting">
+            <span>贴边</span>
+            <div id="setting-edge-mode" class="segmented-control" aria-label="贴边方式">
+              <button type="button" data-edge-mode="half">半露</button>
+              <button type="button" data-edge-mode="inside">屏内</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>抚摸</span>
+            <div id="setting-petting-enabled" class="segmented-control" aria-label="双击抚摸">
+              <button type="button" data-petting-enabled="true">开启</button>
+              <button type="button" data-petting-enabled="false">关闭</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>游走</span>
+            <div id="setting-wander-enabled" class="segmented-control" aria-label="自动游走">
+              <button type="button" data-wander-enabled="false">关闭</button>
+              <button type="button" data-wander-enabled="true">开启</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
             <span>勿扰</span>
             <div id="setting-dnd-mode" class="segmented-control" aria-label="勿扰模式">
               <button type="button" data-dnd-mode="false">关闭</button>
@@ -153,6 +174,10 @@
             <button type="button" data-window-size="280x400">小</button>
             <button type="button" data-window-size="360x520">中</button>
             <button type="button" data-window-size="460x650">大</button>
+          </div>
+          <div class="config-buttons" aria-label="设置导入导出">
+            <button id="setting-export-config" type="button">复制配置</button>
+            <button id="setting-import-config" type="button">粘贴配置</button>
           </div>
           <button id="setting-hide-pet" class="settings-action" type="button">隐藏桌宠</button>
         </div>

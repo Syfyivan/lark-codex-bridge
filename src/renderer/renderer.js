@@ -37,6 +37,9 @@ const settingPetOpacityValue = document.getElementById('setting-pet-opacity-valu
 const settingHitboxScale = document.getElementById('setting-hitbox-scale')
 const settingHitboxScaleValue = document.getElementById('setting-hitbox-scale-value')
 const settingTriggerMode = document.getElementById('setting-trigger-mode')
+const settingEdgeMode = document.getElementById('setting-edge-mode')
+const settingPettingEnabled = document.getElementById('setting-petting-enabled')
+const settingWanderEnabled = document.getElementById('setting-wander-enabled')
 const settingDndMode = document.getElementById('setting-dnd-mode')
 const settingSoundEnabled = document.getElementById('setting-sound-enabled')
 const settingNotificationsEnabled = document.getElementById('setting-notifications-enabled')
@@ -52,6 +55,8 @@ const settingBubbleAnchor = document.getElementById('setting-bubble-anchor')
 const settingBubbleAnchorValue = document.getElementById('setting-bubble-anchor-value')
 const settingBubbleGap = document.getElementById('setting-bubble-gap')
 const settingBubbleGapValue = document.getElementById('setting-bubble-gap-value')
+const settingExportConfig = document.getElementById('setting-export-config')
+const settingImportConfig = document.getElementById('setting-import-config')
 const settingHidePet = document.getElementById('setting-hide-pet')
 const bubbleHoverTip = document.createElement('div')
 bubbleHoverTip.id = 'bubble-hover-tip'
@@ -91,6 +96,9 @@ const DEFAULT_UI_SETTINGS = {
   petOpacity: 0.82,
   hitboxScale: 0.35,
   triggerMode: 'right',
+  edgeMode: 'half',
+  pettingEnabled: true,
+  wanderEnabled: false,
   dndMode: false,
   soundEnabled: true,
   notificationsEnabled: true,
@@ -108,11 +116,34 @@ let pomodoroSettings = {
   sedentaryMinutes: 45,
 }
 let activeHoverBubbleId = ''
+let wanderTimer = null
 
 function clampNumber(value, min, max, fallback) {
   const n = Number(value)
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, n))
+}
+
+function normalizeUiSettings(source = {}) {
+  return {
+    version: UI_SETTINGS_VERSION,
+    petScale: clampNumber(source.petScale, 0.4, 1.25, DEFAULT_UI_SETTINGS.petScale),
+    petOpacity: clampNumber(source.petOpacity, 0.25, 1, DEFAULT_UI_SETTINGS.petOpacity),
+    hitboxScale: clampNumber(source.hitboxScale, 0.25, 1, DEFAULT_UI_SETTINGS.hitboxScale),
+    triggerMode: source.triggerMode === 'left' ? 'left' : 'right',
+    edgeMode: source.edgeMode === 'inside' ? 'inside' : DEFAULT_UI_SETTINGS.edgeMode,
+    pettingEnabled: source.pettingEnabled !== false,
+    wanderEnabled: source.wanderEnabled === true,
+    dndMode: source.dndMode === true,
+    soundEnabled: source.soundEnabled !== false,
+    notificationsEnabled: source.notificationsEnabled !== false,
+    bubbleCorner: CORNERS.has(source.bubbleCorner) ? source.bubbleCorner : DEFAULT_UI_SETTINGS.bubbleCorner,
+    panelCorner: CORNERS.has(source.panelCorner)
+      ? source.panelCorner
+      : DEFAULT_UI_SETTINGS.panelCorner,
+    bubbleAnchor: clampNumber(source.bubbleAnchor, 35, 80, DEFAULT_UI_SETTINGS.bubbleAnchor),
+    bubbleGap: clampNumber(source.bubbleGap, 0, 48, DEFAULT_UI_SETTINGS.bubbleGap),
+  }
 }
 
 function loadUiSettings() {
@@ -121,22 +152,7 @@ function loadUiSettings() {
     // Older settings used a 100% pet and full transparent model bounds. Reset
     // once so running installs pick up the compact, low-misclick defaults.
     const source = raw.version === UI_SETTINGS_VERSION ? raw : {}
-    return {
-      version: UI_SETTINGS_VERSION,
-      petScale: clampNumber(source.petScale, 0.4, 1.25, DEFAULT_UI_SETTINGS.petScale),
-      petOpacity: clampNumber(source.petOpacity, 0.25, 1, DEFAULT_UI_SETTINGS.petOpacity),
-      hitboxScale: clampNumber(source.hitboxScale, 0.25, 1, DEFAULT_UI_SETTINGS.hitboxScale),
-      triggerMode: source.triggerMode === 'left' ? 'left' : 'right',
-      dndMode: source.dndMode === true,
-      soundEnabled: source.soundEnabled !== false,
-      notificationsEnabled: source.notificationsEnabled !== false,
-      bubbleCorner: CORNERS.has(source.bubbleCorner) ? source.bubbleCorner : DEFAULT_UI_SETTINGS.bubbleCorner,
-      panelCorner: CORNERS.has(source.panelCorner)
-        ? source.panelCorner
-        : DEFAULT_UI_SETTINGS.panelCorner,
-      bubbleAnchor: clampNumber(source.bubbleAnchor, 35, 80, DEFAULT_UI_SETTINGS.bubbleAnchor),
-      bubbleGap: clampNumber(source.bubbleGap, 0, 48, DEFAULT_UI_SETTINGS.bubbleGap),
-    }
+    return normalizeUiSettings(source)
   } catch {
     return { ...DEFAULT_UI_SETTINGS }
   }
@@ -158,6 +174,7 @@ function applyUiSettings() {
   })
   positionBubble()
   positionPanel()
+  configureWander()
   syncSettingControls()
 }
 
@@ -424,6 +441,15 @@ function interactivePetBounds() {
   }
 }
 
+function dragVisibleBounds() {
+  const b = petBounds()
+  if (!b) return null
+  return {
+    ...b,
+    minVisibleRatio: uiSettings.edgeMode === 'half' ? 0.42 : 1,
+  }
+}
+
 function overPet(x, y) {
   const b = interactivePetBounds()
   if (!b) return false
@@ -479,7 +505,7 @@ function setupInteraction() {
 
   window.addEventListener('mousemove', (e) => {
     if (dragging) {
-      window.pet.move(e.screenX - lastX, e.screenY - lastY, petBounds())
+      window.pet.move(e.screenX - lastX, e.screenY - lastY, dragVisibleBounds())
       lastX = e.screenX
       lastY = e.screenY
       return
@@ -510,6 +536,13 @@ function setupInteraction() {
     if (!overInteractiveSurface(e.clientX, e.clientY)) return
     e.preventDefault()
     togglePanel(true)
+  })
+
+  window.addEventListener('dblclick', (e) => {
+    if (!uiSettings.pettingEnabled || panelVisible || !overPet(e.clientX, e.clientY)) return
+    e.preventDefault()
+    backend?.playMotion('Tap')
+    say('摸摸~', 1600)
   })
 
   bubble.addEventListener('click', (e) => {
@@ -570,6 +603,23 @@ function onTap() {
   const lark = tokenStats.lark?.today || 0
   const larkPart = lark > 0 ? `（飞书 ${fmtTokens(lark)}）` : ''
   say(`🐾 ${statusText()} · 今日 ${fmtTokens(tokenStats.today)} tok${larkPart}`, 3000)
+}
+
+function configureWander() {
+  if (wanderTimer) {
+    clearInterval(wanderTimer)
+    wanderTimer = null
+  }
+  if (!uiSettings.wanderEnabled) return
+  wanderTimer = setInterval(() => {
+    if (panelVisible || document.hidden) return
+    const b = petBounds()
+    if (!b) return
+    const dx = (Math.random() < 0.5 ? -1 : 1) * (10 + Math.round(Math.random() * 20))
+    const dy = Math.round((Math.random() - 0.5) * 10)
+    window.pet.move(dx, dy, dragVisibleBounds())
+    backend?.playMotion?.('Idle')
+  }, 18000)
 }
 
 let tokenStats = { today: 0, last7: 0, total: 0, local: {}, lark: {} }
@@ -1054,6 +1104,23 @@ function setupEventPanel() {
     saveUiSettings()
     applyUiSettings()
   })
+  settingEdgeMode?.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-edge-mode]')
+    if (!button) return
+    uiSettings.edgeMode = button.dataset.edgeMode === 'inside' ? 'inside' : 'half'
+    saveUiSettings()
+    applyUiSettings()
+  })
+  settingPettingEnabled?.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-petting-enabled]')
+    if (!button) return
+    setBooleanSetting('pettingEnabled', button.dataset.pettingEnabled === 'true')
+  })
+  settingWanderEnabled?.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-wander-enabled]')
+    if (!button) return
+    setBooleanSetting('wanderEnabled', button.dataset.wanderEnabled === 'true')
+  })
   settingDndMode?.addEventListener('click', (e) => {
     const button = e.target.closest?.('[data-dnd-mode]')
     if (!button) return
@@ -1094,6 +1161,8 @@ function setupEventPanel() {
     saveUiSettings()
     applyUiSettings()
   })
+  settingExportConfig?.addEventListener('click', exportConfigToClipboard)
+  settingImportConfig?.addEventListener('click', importConfigFromClipboard)
   settingHidePet?.addEventListener('click', () => window.pet.setHidden?.(true))
   eventPanel?.addEventListener('click', (e) => {
     const tabButton = e.target.closest?.('[data-tab]')
@@ -1116,6 +1185,35 @@ function setupEventPanel() {
     if (bridgeItem) openBridgeTasksWindow()
   })
   syncEventPanel()
+}
+
+async function exportConfigToClipboard() {
+  const payload = {
+    version: 1,
+    ui: uiSettings,
+    pomodoro: pomodoroSettings,
+  }
+  await window.pet.copyText?.(JSON.stringify(payload, null, 2))
+  say('配置已复制', 1800)
+}
+
+async function importConfigFromClipboard() {
+  try {
+    const result = await window.pet.readText?.()
+    const payload = JSON.parse(result?.text || '{}')
+    if (!payload || typeof payload !== 'object') throw new Error('配置格式不对')
+    if (payload.ui && typeof payload.ui === 'object') {
+      uiSettings = normalizeUiSettings({ ...uiSettings, ...payload.ui })
+      saveUiSettings()
+    }
+    if (payload.pomodoro && typeof payload.pomodoro === 'object') {
+      updatePomodoroSettings(payload.pomodoro)
+    }
+    applyUiSettings()
+    say('配置已导入', 1800)
+  } catch (error) {
+    say(`导入失败：${error?.message || error}`, 3200)
+  }
 }
 
 function setActivePanelTab(tab) {
@@ -1297,6 +1395,21 @@ function syncSettingControls() {
   if (settingTriggerMode) {
     settingTriggerMode.querySelectorAll('[data-trigger-mode]').forEach((button) => {
       button.classList.toggle('active', button.dataset.triggerMode === uiSettings.triggerMode)
+    })
+  }
+  if (settingEdgeMode) {
+    settingEdgeMode.querySelectorAll('[data-edge-mode]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.edgeMode === uiSettings.edgeMode)
+    })
+  }
+  if (settingPettingEnabled) {
+    settingPettingEnabled.querySelectorAll('[data-petting-enabled]').forEach((button) => {
+      button.classList.toggle('active', (button.dataset.pettingEnabled === 'true') === uiSettings.pettingEnabled)
+    })
+  }
+  if (settingWanderEnabled) {
+    settingWanderEnabled.querySelectorAll('[data-wander-enabled]').forEach((button) => {
+      button.classList.toggle('active', (button.dataset.wanderEnabled === 'true') === uiSettings.wanderEnabled)
     })
   }
   if (settingDndMode) {

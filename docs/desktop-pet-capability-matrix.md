@@ -22,11 +22,11 @@ This document is the product backlog for making Kodama match common open-source 
 | --- | --- | --- | --- |
 | Transparent always-on-top desktop companion | Shimeji, VPet, Clawd, BongoCat | Done | Keep improving macOS fullscreen with NSPanel if needed |
 | Click-through / small hitbox | Clawd, many Electron pets | Done | Keep hitbox configurable |
-| Drag, position memory, size settings | Clawd, VPet, OpenPets | Done | Add snap-to-edge / mini dock mode later |
+| Drag, position memory, size settings | Clawd, VPet, OpenPets | Done | Half-edge dock mode exists; refine multi-monitor behavior later |
 | Idle / thinking / working / done / failed states | Clawd, VPet | Done | Add more state-specific animations as assets improve |
-| User interaction: click, right-click, petting, lifting | VPet, Shimeji | Partial | Add petting/lifting as optional interactions, not disruptive defaults |
-| Screen behavior: walking, climbing, multi-monitor | Shimeji, VPet, Shijima-Qt | Partial | Add wander/snap modes after window edge handling is stable |
-| Mod/theme system | VPet Workshop, Shimeji image sets, OpenPets plugins, Clawd themes | Partial | Local accessory pack exists; add import/export UI and renderer theme manifest |
+| User interaction: click, right-click, petting, lifting | VPet, Shimeji | Partial | Double-click petting exists; lifting/holding still later |
+| Screen behavior: walking, climbing, multi-monitor | Shimeji, VPet, Shijima-Qt | Partial | Optional light wander + half-edge dock exist; climbing/multi-monitor later |
+| Mod/theme system | VPet Workshop, Shimeji image sets, OpenPets plugins, Clawd themes | Partial | Local accessory pack and settings import/export exist; renderer theme manifest still later |
 | Items / foods / outfits / accessories | VPet, virtual-pet projects | Partial | Accessories + local placement pack exist; add inventory/food items later |
 | Growth / stats / leveling | AgentPet, VPet-like pets | Done | Add visible stats tab and optional leaderboard only after privacy review |
 | Focus timer / reminders / hydration | OpenPets, productivity pets | Done | Durations are configurable; add hydration presets later |
@@ -66,8 +66,8 @@ Kodama should not merely copy traditional pets. The durable product shape is:
 
 - Theme pack manifest: name, renderer backend, idle/working/done/failed assets, optional audio cues.
 - Asset import/export for local-only themes. Local accessory overrides already exist.
-- Petting/lifting/wander modes behind settings.
-- Edge mini mode: dock half-visible at screen edge instead of disappearing.
+- Petting and light wander modes are behind settings. Lifting/holding remains later.
+- Edge mini mode exists as half-visible docking; refine multi-monitor and corner behavior later.
 - Presets for focus/break/reminder durations beyond the current manual controls.
 
 ### P2 parity with Agent pets

@@ -418,12 +418,15 @@ body {
 .panel-tabs button {
   min-width: 0;
   height: 26px;
+  overflow: hidden;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #53647a;
   cursor: pointer;
-  font: 12px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+  font: 11px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-tabs button.active {

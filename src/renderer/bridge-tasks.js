@@ -225,6 +225,10 @@ function renderTextBlock(title, value, className = '') {
   ].join('')
 }
 
+function selectedTask() {
+  return state.tasks.find(item => item.id === state.selectedId) || null
+}
+
 function renderTimeline(task) {
   const events = Array.isArray(task.events) ? task.events : []
   if (!events.length) {
@@ -261,7 +265,7 @@ function renderEventExtras(event) {
 }
 
 function renderTaskDetail() {
-  const task = state.tasks.find(item => item.id === state.selectedId)
+  const task = selectedTask()
   if (!task) {
     taskDetail.className = 'task-detail empty'
     taskDetail.innerHTML = '<div class="empty-state">选择一个任务查看详情</div>'
@@ -269,6 +273,7 @@ function renderTaskDetail() {
   }
   taskDetail.className = `task-detail status-${statusClass(task.status)}`
   const canOpenChat = Boolean(task.chatId)
+  const canShareConversation = Boolean(task.contextKey || task.chatId)
   taskDetail.innerHTML = [
     '<header class="detail-head">',
     '<div>',
@@ -277,6 +282,8 @@ function renderTaskDetail() {
     '</div>',
     '<div class="detail-actions">',
     canOpenChat ? '<button type="button" data-action="open-chat">打开飞书会话</button>' : '',
+    '<button type="button" data-action="share-task">分享本任务</button>',
+    canShareConversation ? '<button type="button" data-action="share-conversation">分享本会话</button>' : '',
     '<button type="button" data-action="copy-id">复制 ID</button>',
     '</div>',
     '</header>',
@@ -327,27 +334,34 @@ async function refreshTasks() {
 }
 
 async function shareViewer() {
-  shareButton.disabled = true
-  const oldText = shareButton.textContent
-  shareButton.textContent = '分享中...'
+  await shareBridgeTasks({}, shareButton, '分享全部任务')
+}
+
+async function shareBridgeTasks(scope = {}, button = null, label = '分享') {
+  const targetButton = button || document.activeElement
+  const canSetText = targetButton && 'textContent' in targetButton
+  const oldText = canSetText ? targetButton.textContent : ''
+  if (targetButton) targetButton.disabled = true
+  if (canSetText) targetButton.textContent = '分享中...'
   try {
     const limit = Math.min(200, Math.max(1, Number(limitInput.value || 100)))
-    const result = await window.pet.shareBridgeTasks?.({ ...bridgeRequest, limit })
+    const result = await window.pet.shareBridgeTasks?.({ ...bridgeRequest, limit, ...scope })
     if (!result?.ok) {
       updateStatus(`分享失败：${result?.error || 'bridge 没返回链接'}`)
       return
     }
-    updateStatus(result.url ? `分享链接已复制：${result.url}` : '分享页已生成')
+    const count = Number.isFinite(Number(result.tasks)) ? ` · ${Number(result.tasks)} 个任务` : ''
+    updateStatus(result.url ? `${label}链接已复制${count}：${result.url}` : `${label}页已生成${count}`)
   } catch (error) {
     updateStatus(`分享失败：${error?.message || error}`)
   } finally {
-    shareButton.disabled = false
-    shareButton.textContent = oldText
+    if (targetButton) targetButton.disabled = false
+    if (canSetText) targetButton.textContent = oldText
   }
 }
 
 async function openSelectedChat() {
-  const task = state.tasks.find(item => item.id === state.selectedId)
+  const task = selectedTask()
   if (!task?.chatId) return
   const result = await window.pet.openTarget?.({
     kind: 'lark',
@@ -359,10 +373,27 @@ async function openSelectedChat() {
 }
 
 async function copySelectedId() {
-  const task = state.tasks.find(item => item.id === state.selectedId)
+  const task = selectedTask()
   if (!task?.id) return
   await window.pet.copyText?.(task.id)
   updateStatus(`已复制任务 ID：${task.id}`)
+}
+
+async function shareSelectedTask() {
+  const task = selectedTask()
+  if (!task?.id) return
+  await shareBridgeTasks({ taskId: task.id }, null, '本任务')
+}
+
+async function shareSelectedConversation() {
+  const task = selectedTask()
+  if (!task) return
+  const scope = task.contextKey ? { contextKey: task.contextKey } : { chatId: task.chatId || '' }
+  if (!scope.contextKey && !scope.chatId) {
+    updateStatus('这个任务没有会话上下文，无法分享本会话')
+    return
+  }
+  await shareBridgeTasks(scope, null, '本会话')
 }
 
 refreshButton.addEventListener('click', refreshTasks)
@@ -387,6 +418,8 @@ taskList.addEventListener('click', (event) => {
 taskDetail.addEventListener('click', (event) => {
   const action = event.target.closest?.('[data-action]')?.dataset.action
   if (action === 'open-chat') openSelectedChat()
+  if (action === 'share-task') shareSelectedTask()
+  if (action === 'share-conversation') shareSelectedConversation()
   if (action === 'copy-id') copySelectedId()
 })
 

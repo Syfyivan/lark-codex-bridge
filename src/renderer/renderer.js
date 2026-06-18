@@ -1661,7 +1661,7 @@ async function openBridgeTasksWindow() {
 }
 
 async function shareBridgeTaskViewer() {
-  say('正在生成 Bridge 任务分享页...', 2200)
+  say('正在生成 Bridge 全部任务分享页...', 2200)
   try {
     const result = await window.pet.shareBridgeTasks?.({
       bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',

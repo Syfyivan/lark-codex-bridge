@@ -839,12 +839,35 @@ function normalizeBridgeTaskLimit(value) {
   return clampInt(value, 1, 200, 50)
 }
 
+function normalizeBridgeTaskScope(request = {}) {
+  const source = request || {}
+  const scope = {}
+  const taskId = String(source.taskId || source.task_id || '').trim()
+  const contextKey = String(source.contextKey || source.context_key || '').trim()
+  const chatId = String(source.chatId || source.chat_id || '').trim()
+  const messageId = String(source.messageId || source.message_id || '').trim()
+  if (taskId) scope.task_id = taskId
+  if (contextKey) scope.context_key = contextKey
+  if (chatId) scope.chat_id = chatId
+  if (messageId) scope.message_id = messageId
+  return scope
+}
+
+function bridgeTaskQueryPath(limit, scope = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  Object.entries(scope).forEach(([key, value]) => {
+    if (value) params.set(key, value)
+  })
+  return `/task-viewer/tasks.json?${params.toString()}`
+}
+
 ipcMain.handle('pet:bridge-tasks', async (_e, request) => {
   try {
     const baseUrl = normalizeBridgeBaseUrl(request?.bridgeUrl)
     const token = String(request?.token || '').trim() || bridgeTokenFromDisk()
     const limit = normalizeBridgeTaskLimit(request?.limit)
-    const result = await requestBridgeJson(baseUrl, `/task-viewer/tasks.json?limit=${limit}`, {
+    const scope = normalizeBridgeTaskScope(request)
+    const result = await requestBridgeJson(baseUrl, bridgeTaskQueryPath(limit, scope), {
       token,
       timeoutMs: 15000,
     })
@@ -855,6 +878,7 @@ ipcMain.handle('pet:bridge-tasks', async (_e, request) => {
       bridgeUrl: baseUrl,
       updatedAt: new Date().toISOString(),
       tasks,
+      scope: result.scope || scope,
     }
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
@@ -866,7 +890,8 @@ ipcMain.handle('pet:share-bridge-tasks', async (_e, request) => {
     const baseUrl = normalizeBridgeBaseUrl(request?.bridgeUrl)
     const token = String(request?.token || '').trim() || bridgeTokenFromDisk()
     const limit = normalizeBridgeTaskLimit(request?.limit)
-    const result = await postBridgeJson(baseUrl, '/v1/bridge/task-viewer/share', { limit }, token)
+    const scope = normalizeBridgeTaskScope(request)
+    const result = await postBridgeJson(baseUrl, '/v1/bridge/task-viewer/share', { limit, ...scope }, token)
     if (!result?.ok) return result || { ok: false, error: 'bridge task viewer share failed' }
     const url = result.url || result.share?.url || result.doc?.url || ''
     if (url) clipboard.writeText(url)

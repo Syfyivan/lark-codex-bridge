@@ -31,6 +31,9 @@
         <button id="event-panel-close" type="button" title="关闭">×</button>
       </header>
       <div id="panel-status" class="panel-status"></div>
+      <div class="panel-actions">
+        <button id="bridge-tasks-open" type="button" title="打开 Bridge 完整任务详情页">Bridge 任务详情</button>
+      </div>
       <div class="panel-metrics">
         <button type="button" data-tab="waiting"><span id="metric-waiting">0</span><small>待交互</small></button>
         <button type="button" data-tab="done"><span id="metric-done">0</span><small>已完成</small></button>
@@ -41,6 +44,7 @@
         <button type="button" data-tab="waiting" aria-label="待交互" title="待交互">待办</button>
         <button type="button" data-tab="done" aria-label="已完成" title="已完成">完成</button>
         <button type="button" data-tab="sessions" aria-label="会话" title="会话">会话</button>
+        <button type="button" data-tab="bridge" aria-label="Bridge 任务" title="Bridge 任务">Bridge</button>
         <button type="button" data-tab="recent" aria-label="最近事件" title="最近事件">最近</button>
       </nav>
       <div class="panel-section tab-panel" data-tab-panel="settings">
@@ -164,6 +168,16 @@
       <div class="panel-section tab-panel" data-tab-panel="sessions">
         <h2>会话</h2>
         <div id="session-events" class="event-list empty">暂无可跳转会话</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="bridge">
+        <h2>Bridge 任务</h2>
+        <div class="bridge-panel-tools">
+          <button id="bridge-tasks-refresh" type="button">刷新</button>
+          <button id="bridge-tasks-share" type="button">分享任务页</button>
+          <button id="bridge-tasks-window" type="button">完整详情</button>
+        </div>
+        <div id="bridge-tasks-summary" class="bridge-tasks-summary">未加载</div>
+        <div id="bridge-tasks-list" class="event-list empty">暂无</div>
       </div>
       <div class="panel-section tab-panel" data-tab-panel="recent">
         <h2>最近事件</h2>

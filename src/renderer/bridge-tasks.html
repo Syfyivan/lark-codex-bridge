@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+      content="default-src 'self' 'unsafe-inline' data: blob: file:; img-src 'self' data: blob: file:;" />
+    <title>Kodama Bridge Tasks</title>
+    <link rel="stylesheet" href="./bridge-tasks.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>Bridge 任务详情</h1>
+        <p id="bridge-task-status">正在连接本机 Bridge...</p>
+      </div>
+      <div class="toolbar">
+        <label>
+          <span>数量</span>
+          <input id="task-limit" type="number" min="1" max="200" step="1" value="100" />
+        </label>
+        <button id="refresh-tasks" type="button">刷新</button>
+        <button id="share-viewer" type="button">分享任务页</button>
+      </div>
+    </header>
+
+    <section class="summary-grid" aria-label="任务统计">
+      <button type="button" data-filter="all"><strong id="count-all">0</strong><span>全部</span></button>
+      <button type="button" data-filter="running"><strong id="count-running">0</strong><span>运行中</span></button>
+      <button type="button" data-filter="waiting"><strong id="count-waiting">0</strong><span>待交互</span></button>
+      <button type="button" data-filter="done"><strong id="count-done">0</strong><span>完成</span></button>
+      <button type="button" data-filter="failed"><strong id="count-failed">0</strong><span>失败</span></button>
+    </section>
+
+    <main class="task-layout">
+      <aside class="task-list-panel">
+        <div class="list-head">
+          <strong>任务</strong>
+          <input id="task-search" type="search" placeholder="搜索标题 / 群 / cwd" />
+        </div>
+        <div id="task-list" class="task-list empty">暂无任务</div>
+      </aside>
+
+      <section id="task-detail" class="task-detail empty">
+        <div class="empty-state">选择一个任务查看详情</div>
+      </section>
+    </main>
+
+    <script type="module" src="./bridge-tasks.js"></script>
+  </body>
+</html>

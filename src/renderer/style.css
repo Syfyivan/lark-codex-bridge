@@ -367,6 +367,34 @@ body {
   text-overflow: ellipsis;
 }
 
+.panel-actions {
+  display: flex;
+  gap: 6px;
+  margin: -2px 0 8px;
+}
+
+.panel-actions button,
+.bridge-panel-tools button {
+  min-width: 0;
+  height: 26px;
+  border: 1px solid rgba(111, 125, 145, 0.2);
+  border-radius: 7px;
+  background: #fff;
+  color: #39516f;
+  cursor: pointer;
+  font: 11px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+}
+
+.panel-actions button {
+  flex: 1;
+}
+
+.panel-actions button:hover,
+.bridge-panel-tools button:hover {
+  background: #eef5ff;
+  color: #23549a;
+}
+
 .panel-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -407,7 +435,7 @@ body {
 
 .panel-tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 4px;
   margin: 0 0 9px;
   padding: 3px;
@@ -463,6 +491,40 @@ body {
 
 .event-list.sessions {
   max-height: 132px;
+}
+
+.bridge-panel-tools {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 7px;
+}
+
+.bridge-tasks-summary {
+  margin-bottom: 6px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: #f3f6f9;
+  color: #617085;
+  font-size: 11px;
+}
+
+.bridge-task-mini {
+  display: grid;
+  gap: 2px;
+}
+
+.bridge-task-mini strong,
+.bridge-task-mini span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bridge-task-mini span {
+  color: #68778b;
+  font-size: 11px;
 }
 
 .event-list.empty {

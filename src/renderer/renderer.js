@@ -21,6 +21,12 @@ const configEvents = document.getElementById('config-events')
 const panelTabs = document.getElementById('panel-tabs')
 const panelHeader = document.querySelector('.panel-header')
 const panelClose = document.getElementById('event-panel-close')
+const bridgeTasksOpen = document.getElementById('bridge-tasks-open')
+const bridgeTasksRefresh = document.getElementById('bridge-tasks-refresh')
+const bridgeTasksShare = document.getElementById('bridge-tasks-share')
+const bridgeTasksWindow = document.getElementById('bridge-tasks-window')
+const bridgeTasksSummary = document.getElementById('bridge-tasks-summary')
+const bridgeTasksList = document.getElementById('bridge-tasks-list')
 const metricWaiting = document.getElementById('metric-waiting')
 const metricDone = document.getElementById('metric-done')
 const metricTotal = document.getElementById('metric-total')
@@ -69,7 +75,14 @@ const bubbleLog = []
 const sessionPreviewCache = new Map()
 const MAX_EVENT_LOG = 40
 const MAX_BUBBLES = 4
-const PANEL_TABS = new Set(['settings', 'waiting', 'done', 'sessions', 'recent', 'config'])
+const PANEL_TABS = new Set(['settings', 'waiting', 'done', 'sessions', 'bridge', 'recent', 'config'])
+let bridgeTasksState = {
+  loading: false,
+  loaded: false,
+  error: '',
+  tasks: [],
+  updatedAt: '',
+}
 const UI_SETTINGS_VERSION = 3
 const CORNERS = new Set(['auto', 'near', 'top-left', 'top-right', 'bottom-left', 'bottom-right'])
 const DEFAULT_UI_SETTINGS = {
@@ -1003,6 +1016,10 @@ init()
 
 function setupEventPanel() {
   panelClose?.addEventListener('click', () => togglePanel(false))
+  bridgeTasksOpen?.addEventListener('click', () => openBridgeTasksWindow())
+  bridgeTasksRefresh?.addEventListener('click', () => refreshBridgeTasks({ force: true }))
+  bridgeTasksShare?.addEventListener('click', () => shareBridgeTaskViewer())
+  bridgeTasksWindow?.addEventListener('click', () => openBridgeTasksWindow())
   settingPetScale?.addEventListener('input', () => {
     uiSettings.petScale = clampNumber(Number(settingPetScale.value) / 100, 0.4, 1.25, DEFAULT_UI_SETTINGS.petScale)
     saveUiSettings()
@@ -1091,20 +1108,28 @@ function setupEventPanel() {
       return
     }
     const item = e.target.closest?.('[data-event-id]')
-    if (!item) return
-    openEventById(item.dataset.eventId)
+    if (item) {
+      openEventById(item.dataset.eventId)
+      return
+    }
+    const bridgeItem = e.target.closest?.('[data-bridge-task-id]')
+    if (bridgeItem) openBridgeTasksWindow()
   })
   syncEventPanel()
 }
 
 function setActivePanelTab(tab) {
   activePanelTab = PANEL_TABS.has(tab) ? tab : 'settings'
+  eventPanel?.setAttribute('data-active-tab', activePanelTab)
   eventPanel?.querySelectorAll('[data-tab]').forEach((button) => {
     button.classList.toggle('active', button.dataset.tab === activePanelTab)
   })
   eventPanel?.querySelectorAll('[data-tab-panel]').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.tabPanel === activePanelTab)
   })
+  if (activePanelTab === 'bridge' && !bridgeTasksState.loaded && !bridgeTasksState.loading) {
+    refreshBridgeTasks()
+  }
   positionPanel()
 }
 
@@ -1416,6 +1441,135 @@ function renderConfig() {
   ].map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')
 }
 
+function bridgeTaskStatusLabel(status) {
+  return {
+    running: '运行中',
+    waiting: '待交互',
+    done: '完成',
+    failed: '失败',
+    canceled: '取消',
+  }[status] || status || '未知'
+}
+
+function bridgeTaskMeta(task) {
+  const parts = [
+    bridgeTaskStatusLabel(task.status),
+    task.backend || '',
+    task.runtime || '',
+    task.tokens ? `${task.tokens} tok` : '',
+    task.eventCount ? `${task.eventCount} 事件` : '',
+  ].filter(Boolean)
+  return parts.join(' · ')
+}
+
+function bridgeTaskTime(task) {
+  return fmtTime(task.updatedAt || task.finishedAt || task.startedAt)
+}
+
+function renderBridgeTasks() {
+  if (!bridgeTasksSummary || !bridgeTasksList) return
+  if (bridgeTasksState.loading) {
+    bridgeTasksSummary.textContent = '正在读取 Bridge 任务...'
+  } else if (bridgeTasksState.error) {
+    bridgeTasksSummary.textContent = `读取失败：${bridgeTasksState.error}`
+  } else {
+    const tasks = bridgeTasksState.tasks || []
+    const running = tasks.filter(task => task.status === 'running').length
+    const waiting = tasks.filter(task => task.status === 'waiting').length
+    const done = tasks.filter(task => task.status === 'done').length
+    const failed = tasks.filter(task => task.status === 'failed').length
+    const updated = bridgeTasksState.updatedAt ? fmtTime(bridgeTasksState.updatedAt) : ''
+    bridgeTasksSummary.textContent = `共 ${tasks.length} 个任务 · 运行 ${running} · 待交互 ${waiting} · 完成 ${done} · 失败 ${failed}${updated ? ` · ${updated}` : ''}`
+  }
+
+  const tasks = (bridgeTasksState.tasks || []).slice(0, 5)
+  if (!tasks.length) {
+    bridgeTasksList.className = 'event-list empty'
+    bridgeTasksList.textContent = bridgeTasksState.loaded ? '暂无 Bridge 任务' : '尚未加载'
+    return
+  }
+  bridgeTasksList.className = 'event-list'
+  bridgeTasksList.innerHTML = tasks.map(task => [
+    `<article class="event-item${task.status === 'failed' ? ' waiting' : task.status === 'done' ? ' done' : ''}" data-bridge-task-id="${escapeHtml(task.id || '')}">`,
+    '<div class="event-meta">',
+    `<span>${escapeHtml(task.source || 'bridge')} · ${escapeHtml(bridgeTaskStatusLabel(task.status))}</span>`,
+    `<time>${escapeHtml(bridgeTaskTime(task))}</time>`,
+    '</div>',
+    '<div class="bridge-task-mini">',
+    `<strong>${escapeHtml(shortText(task.title || task.prompt || task.id, 56))}</strong>`,
+    `<span>${escapeHtml(bridgeTaskMeta(task))}</span>`,
+    '</div>',
+    '</article>',
+  ].join('')).join('')
+}
+
+async function refreshBridgeTasks({ force = false } = {}) {
+  if (!force && bridgeTasksState.loading) return
+  bridgeTasksState = { ...bridgeTasksState, loading: true, error: '' }
+  renderBridgeTasks()
+  try {
+    const result = await window.pet.bridgeTasks?.({
+      bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',
+      token: activeAgentConfig.token || '',
+      limit: 50,
+    })
+    if (!result?.ok) {
+      bridgeTasksState = {
+        loading: false,
+        loaded: true,
+        error: result?.error || 'Bridge 任务页不可用',
+        tasks: [],
+        updatedAt: new Date().toISOString(),
+      }
+    } else {
+      bridgeTasksState = {
+        loading: false,
+        loaded: true,
+        error: '',
+        tasks: Array.isArray(result.tasks) ? result.tasks : [],
+        updatedAt: result.updatedAt || new Date().toISOString(),
+      }
+    }
+  } catch (error) {
+    bridgeTasksState = {
+      loading: false,
+      loaded: true,
+      error: error?.message || String(error),
+      tasks: [],
+      updatedAt: new Date().toISOString(),
+    }
+  }
+  renderBridgeTasks()
+}
+
+async function openBridgeTasksWindow() {
+  const result = await window.pet.openBridgeTasksWindow?.()
+  if (!result?.ok) say(`打开任务详情失败：${result?.error || '未知错误'}`, 2600)
+}
+
+async function shareBridgeTaskViewer() {
+  say('正在生成 Bridge 任务分享页...', 2200)
+  try {
+    const result = await window.pet.shareBridgeTasks?.({
+      bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',
+      token: activeAgentConfig.token || '',
+      limit: 100,
+    })
+    if (!result?.ok) {
+      say(`分享失败：${result?.error || 'bridge 没返回链接'}`, 4200)
+      return
+    }
+    say('Bridge 任务分享链接已复制', 0, {
+      source: 'local',
+      type: 'task_done',
+      text: result.url || 'Bridge 任务分享链接已复制',
+      url: result.url || '',
+    })
+  } catch (error) {
+    say(`分享失败：${error?.message || error}`, 4200)
+  }
+}
+
 function syncEventPanel() {
   const waiting = eventLog.filter(isWaiting)
   const done = eventLog.filter(isDone)
@@ -1431,6 +1585,7 @@ function syncEventPanel() {
   renderSessionList(sessionEvents, openableEvents().slice(0, 8))
   renderEventList(recentEvents, eventLog.slice(0, 8))
   renderConfig()
+  renderBridgeTasks()
   syncSettingControls()
   setActivePanelTab(activePanelTab)
   positionPanel()

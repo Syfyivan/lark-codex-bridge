@@ -12,6 +12,7 @@
     "hide": "node scripts/kodama-control.mjs hide",
     "toggle": "node scripts/kodama-control.mjs toggle",
     "panel": "node scripts/kodama-control.mjs panel",
+    "bridge-tasks": "node scripts/kodama-control.mjs bridge-tasks",
     "healthz": "node scripts/kodama-control.mjs healthz",
     "tokens": "node scripts/kodama-control.mjs tokens",
     "token:test": "node scripts/kodama-control.mjs token-test 1234",

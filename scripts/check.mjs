@@ -15,6 +15,7 @@ const CJS = [
 ]
 const ESM = [
   'src/renderer/renderer.js',
+  'src/renderer/bridge-tasks.js',
   'src/renderer/agent-sync.js',
   'src/renderer/accessories.js',
   'src/renderer/reactions.js',

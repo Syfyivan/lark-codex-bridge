@@ -42,7 +42,8 @@ This document is the product backlog for making Kodama match common open-source 
 | Remote SSH / remote agent relay | Clawd | Not started | Possible via bridge relay; needs security design |
 | Long-term memory / emotion / RPG | Agentic Desktop Pet | Partial | Growth exists; add emotion/memory only as optional local feature |
 | Feishu bot desktop mirror | Kodama-specific | Advantage | Keep as the main differentiator |
-| Session share / Goofy internal link | Kodama-specific | Advantage | Keep hardening jump/share UX |
+| Bridge task detail / task viewer | Kodama-specific | Advantage | Done in Kodama: local Electron detail page with task list, prompt/final/error/timeline, Feishu jump, Goofy share |
+| Session share / Goofy internal link | Kodama-specific | Advantage | Done for local session bubbles and Bridge task viewer; keep hardening jump/share UX |
 
 ## Positioning
 
@@ -78,8 +79,8 @@ Kodama should not merely copy traditional pets. The durable product shape is:
 
 ### P3 beyond parity
 
-- Feishu bot + local agent correlation: group related Feishu and local sessions into one timeline.
-- Shareable internal session pages with redaction presets.
+- Feishu bot + local agent correlation: group related Feishu and local sessions into one timeline. Bridge task detail is done; correlation across local/Feishu tasks is next.
+- Shareable internal session pages with redaction presets. Bridge task viewer sharing and local session bubble sharing exist; redaction presets are next.
 - Memory/emotion layer: local-only summary memory, mood derived from user-visible workload, not private chat leakage.
 - Privacy-first leaderboard or streaks only if user explicitly opts in.
 

@@ -8,6 +8,7 @@ const { createPomodoro } = require('./pomodoro')
 const { mapHookToEvent } = require('./hook-events')
 
 let win
+let taskWin
 let tray
 let pomodoro = null
 let sedentaryTimer = null
@@ -68,6 +69,51 @@ function createWindow() {
 
   // Uncomment while debugging:
   // win.webContents.openDevTools({ mode: 'detach' })
+}
+
+function createBridgeTasksWindow() {
+  function showBridgeTasksWindow() {
+    if (!taskWin || taskWin.isDestroyed()) return
+    try {
+      app.focus({ steal: true })
+      taskWin.show()
+      taskWin.focus()
+      if (typeof taskWin.moveTop === 'function') taskWin.moveTop()
+      taskWin.setAlwaysOnTop(true, 'floating')
+      setTimeout(() => {
+        if (taskWin && !taskWin.isDestroyed()) taskWin.setAlwaysOnTop(false)
+      }, 1200).unref?.()
+    } catch (err) {
+      console.error(`[kodama] show bridge tasks window failed: ${err.message}`)
+    }
+  }
+
+  if (taskWin && !taskWin.isDestroyed()) {
+    showBridgeTasksWindow()
+    return taskWin
+  }
+
+  taskWin = new BrowserWindow({
+    width: 1080,
+    height: 760,
+    minWidth: 820,
+    minHeight: 560,
+    title: 'Kodama Bridge Tasks',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+  taskWin.loadFile(path.join(__dirname, '../renderer/bridge-tasks.html'))
+  taskWin.once('ready-to-show', showBridgeTasksWindow)
+  taskWin.webContents.once('did-finish-load', showBridgeTasksWindow)
+  setTimeout(showBridgeTasksWindow, 800).unref?.()
+  taskWin.on('closed', () => {
+    taskWin = null
+  })
+  return taskWin
 }
 
 // Float above everything — including other apps' fullscreen spaces — on all desktops.
@@ -726,16 +772,17 @@ function normalizeBridgeBaseUrl(value) {
   return `${parsed.protocol}//${parsed.host}`
 }
 
-async function postBridgeJson(baseUrl, pathName, body, token) {
+async function requestBridgeJson(baseUrl, pathName, { method = 'GET', body = null, token = '', timeoutMs = 30000 } = {}) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 180000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const headers = { 'Content-Type': 'application/json' }
+    const headers = {}
     if (token) headers.Authorization = `Bearer ${token}`
+    if (body != null) headers['Content-Type'] = 'application/json'
     const res = await fetch(`${baseUrl}${pathName}`, {
-      method: 'POST',
+      method,
       headers,
-      body: JSON.stringify(body),
+      body: body == null ? undefined : JSON.stringify(body),
       signal: controller.signal,
     })
     const text = await res.text()
@@ -747,9 +794,21 @@ async function postBridgeJson(baseUrl, pathName, body, token) {
     }
     if (!res.ok) return { ok: false, status: res.status, error: json.error || `HTTP ${res.status}`, raw: json }
     return json
+  } catch (err) {
+    if (err?.name === 'AbortError') return { ok: false, error: 'bridge request timed out' }
+    return { ok: false, error: err?.message || String(err) }
   } finally {
     clearTimeout(timer)
   }
+}
+
+async function postBridgeJson(baseUrl, pathName, body, token) {
+  return requestBridgeJson(baseUrl, pathName, {
+    method: 'POST',
+    body,
+    token,
+    timeoutMs: 180000,
+  })
 }
 
 ipcMain.handle('pet:share-session', async (_e, request) => {
@@ -771,6 +830,57 @@ ipcMain.handle('pet:share-session', async (_e, request) => {
   } catch (err) {
     return { ok: false, error: err?.message || String(err) }
   }
+})
+
+function normalizeBridgeTaskLimit(value) {
+  return clampInt(value, 1, 200, 50)
+}
+
+ipcMain.handle('pet:bridge-tasks', async (_e, request) => {
+  try {
+    const baseUrl = normalizeBridgeBaseUrl(request?.bridgeUrl)
+    const token = String(request?.token || '').trim() || bridgeTokenFromDisk()
+    const limit = normalizeBridgeTaskLimit(request?.limit)
+    const result = await requestBridgeJson(baseUrl, `/task-viewer/tasks.json?limit=${limit}`, {
+      token,
+      timeoutMs: 15000,
+    })
+    if (!result?.ok) return result || { ok: false, error: 'bridge task viewer request failed' }
+    const tasks = Array.isArray(result.tasks) ? result.tasks : []
+    return {
+      ok: true,
+      bridgeUrl: baseUrl,
+      updatedAt: new Date().toISOString(),
+      tasks,
+    }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('pet:share-bridge-tasks', async (_e, request) => {
+  try {
+    const baseUrl = normalizeBridgeBaseUrl(request?.bridgeUrl)
+    const token = String(request?.token || '').trim() || bridgeTokenFromDisk()
+    const limit = normalizeBridgeTaskLimit(request?.limit)
+    const result = await postBridgeJson(baseUrl, '/v1/bridge/task-viewer/share', { limit }, token)
+    if (!result?.ok) return result || { ok: false, error: 'bridge task viewer share failed' }
+    const url = result.url || result.share?.url || result.doc?.url || ''
+    if (url) clipboard.writeText(url)
+    return { ...result, url, copied: Boolean(url) }
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) }
+  }
+})
+
+ipcMain.handle('pet:open-bridge-tasks-window', () => {
+  createBridgeTasksWindow()
+  return { ok: true }
+})
+
+ipcMain.handle('pet:copy-text', (_e, text) => {
+  clipboard.writeText(String(text || ''))
+  return { ok: true }
 })
 
 // Growth state (level/exp/food) persisted in userData. (P4)
@@ -1074,6 +1184,8 @@ function controlPet(action) {
     setPetHidden(!petHidden)
   } else if (action === 'panel') {
     showPetAndMaybeTogglePanel(true)
+  } else if (action === 'bridge-tasks') {
+    createBridgeTasksWindow()
   } else {
     return { ok: false, error: 'unknown-control-action' }
   }
@@ -1110,7 +1222,7 @@ function startLocalAgentServer() {
       writeJson(res, 200, { ok: true, ...getCachedTokenStats() })
       return
     }
-    const controlMatch = url.pathname.match(/^\/pet\/(show|hide|toggle|panel)$/)
+    const controlMatch = url.pathname.match(/^\/pet\/(show|hide|toggle|panel|bridge-tasks)$/)
     if (controlMatch && (req.method === 'GET' || req.method === 'POST')) {
       writeJson(res, 200, controlPet(controlMatch[1]))
       return
@@ -1246,6 +1358,7 @@ function refreshTray() {
     click: () => setPetHidden(!petHidden),
   })
   items.push({ label: '事件 / 配置面板  ⌘⌥P', click: () => showPetAndMaybeTogglePanel(true) })
+  items.push({ label: 'Bridge 任务详情', click: () => createBridgeTasksWindow() })
   items.push({
     label: petUiMenuState.dndMode ? '退出勿扰模式' : '进入勿扰模式',
     click: () => sendToPet('pet:set-dnd-mode', !petUiMenuState.dndMode),

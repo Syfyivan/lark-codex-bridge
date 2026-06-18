@@ -43,13 +43,13 @@
 - **P2**：动作表配置驱动 + 来源标签(💬飞书/💻本地) + 气泡优先级；**可插拔渲染后端**（公开 Live2D / 私人 GIF）；`pnpm run setup` 离线下载渲染栈+模型；模型动作组自适应
 - **P3**：本地 hook 接收口（Content-Type 校验 + 64KB 上限 + 可选 `KODAMA_HOOK_TOKEN`），并识别测试/构建/Git 细粒度事件
 - **P4**：养成核心（喂食/经验/升级/持久化）、本地 token 统计/喂食、可配置番茄钟+久坐、**跨源 token 归账**、配饰/换装（slot 图层 + 等级解锁 + 托盘佩戴 + 本地 pack 覆盖）
-- **收尾**：系统通知（弹窗+声音）、本地 Codex notify（链式转发）、全屏置顶重申、托盘调大小、右键事件/配置面板、面板 tabs + 指标跳转、面板标题栏拖动、拖动边界保护、常驻事件气泡卡片、气泡点击跳转/多会话列表、图案大小/透明度/命中范围/触发方式/贴近宠物或角落避让设置、勿扰/声音/系统通知开关、隐藏恢复兜底（`⌘⌥K`、`⌘⌥P`、`pnpm run show/panel`、`/pet/show`）、开机自启、electron-builder 打包脚本、bridge `PET_AUTOLAUNCH`
+- **收尾**：系统通知（弹窗+声音）、本地 Codex notify（链式转发）、全屏置顶重申、托盘调大小、右键事件/配置面板、Bridge 完整任务详情页（任务列表/prompt/最终回复/错误/cwd/token/公开进度时间线/飞书跳转/Goofy 分享）、面板 tabs + 指标跳转、面板标题栏拖动、拖动边界保护、常驻事件气泡卡片、气泡点击跳转/多会话列表、图案大小/透明度/命中范围/触发方式/贴近宠物或角落避让设置、勿扰/声音/系统通知开关、隐藏恢复兜底（`⌘⌥K`、`⌘⌥P`、`pnpm run show/panel/bridge-tasks`、`/pet/show`）、开机自启、electron-builder 打包脚本、bridge `PET_AUTOLAUNCH`
 
 ## 5. 关键文件地图
 
 **kodama/src/main/**
-- `index.js` — 窗口(透明/置顶/穿透/`reassertTopmost`/调大小/拖动边界保护/隐藏恢复)、托盘(番茄钟控制+token+「大小」+开机自启)、本地 hook/control 接收口(7766, `/healthz`、`/pet/show|hide|toggle|panel`、`/pet/token-stats`、`/pet/lark-token-test`；`mapHookToEvent` 同时认 CC 的 `hook_event_name` 和 Codex 的 `type`)、番茄钟接线、token IPC + lark 账本、growth 状态 IPC、窗口尺寸和位置持久化
-- `preload.js` — 暴露 `setIgnoreMouse/move/onAgentEvent/getState/saveState/tokenStats/addLarkTokens/onNotify/getPomodoroSettings/updatePomodoroSettings`
+- `index.js` — 窗口(透明/置顶/穿透/`reassertTopmost`/调大小/拖动边界保护/隐藏恢复)、Bridge 任务详情独立窗口、托盘(番茄钟控制+token+「大小」+开机自启)、本地 hook/control 接收口(7766, `/healthz`、`/pet/show|hide|toggle|panel|bridge-tasks`、`/pet/token-stats`、`/pet/lark-token-test`；`mapHookToEvent` 同时认 CC 的 `hook_event_name` 和 Codex 的 `type`)、番茄钟接线、token IPC + lark 账本、growth 状态 IPC、窗口尺寸和位置持久化
+- `preload.js` — 暴露 `setIgnoreMouse/move/onAgentEvent/getState/saveState/tokenStats/addLarkTokens/onNotify/getPomodoroSettings/updatePomodoroSettings`，以及 Bridge 任务读取/分享/详情窗口 IPC
 - `pomodoro.js` — 番茄钟状态机（纯逻辑 + `tick()` 驱动，可测，支持 `configure()` 热更新）
 - `token-usage.js` — 读 `~/.claude/projects` + `~/.codex/sessions` JSONL，`usageByDay`/`summarizeByDay`/`summarize`（接受 root/now 参数便于测试）
 
@@ -65,14 +65,15 @@
 - `config/pet-config.js` — **动作表**（事件→状态/动作/气泡/notify/priority），加反应改这里
 - `config/render.local.example.js` — 复制为 `render.local.js` 启用私人 GIF 后端
 - `config/agent.local.example.js` — 复制为 `agent.local.js` 改 bridge 地址/token
-- `index.html` / `style.css`
+- `index.html` / `style.css` — 桌宠透明窗、气泡、事件/配置面板、Bridge tab 入口
+- `bridge-tasks.html` / `bridge-tasks.js` / `bridge-tasks.css` — Bridge 完整任务详情页：主进程代取 `/task-viewer/tasks.json`，renderer 渲染任务列表、筛选、搜索、详情、时间线、飞书跳转、Goofy 分享
 
 **kodama/docs/**
 - `desktop-pet-capability-matrix.md` — 开源桌宠能力对标、Kodama 当前状态和后续 backlog；做功能规划或写博客先看这里
 
 **kodama/scripts/**
 - `setup-assets.mjs`（`pnpm run setup [wanko|rice|mark|haru]`）下载渲染栈+模型到 gitignored `vendor/`、`models/`
-- `check.mjs`（`pnpm run check` 全量语法）、`codex-notify.sh`（Codex notify 链式转发）、`kodama-control.mjs`（`pnpm run show/hide/toggle/panel/healthz/tokens/token:test`，隐藏后恢复和 token 验收兜底）
+- `check.mjs`（`pnpm run check` 全量语法）、`codex-notify.sh`（Codex notify 链式转发）、`kodama-control.mjs`（`pnpm run show/hide/toggle/panel/bridge-tasks/healthz/tokens/token:test`，隐藏后恢复、Bridge 详情和 token 验收兜底）
 
 **lark-codex-bridge/**（连接胶水）
 - `src/pet-event-bus.mjs` — 无依赖事件总线（环形缓冲+SSE 订阅+replay）
@@ -100,6 +101,7 @@ pnpm run pack         # electron-builder 目录包
 pnpm run dist:mac     # macOS DMG（当前未签名）
 pnpm run tokens       # 本地+飞书 token 账本
 pnpm run token:test   # 注入一笔 Feishu token 测 Kodama 侧进账
+pnpm run bridge-tasks # 打开 Bridge 完整任务详情页
 ```
 
 **测试清单**（务必先重启 Kodama + 重启 Claude Code）：
@@ -107,9 +109,10 @@ pnpm run token:test   # 注入一笔 Feishu token 测 Kodama 侧进账
 2. PermissionRequest / AskUserQuestion → 气泡 + 事件面板「待交互」
 3. 飞书 @ 机器人 → 「💬 飞书…」+ 托盘「飞书 token」进账；若要先测 Kodama 侧，用 `pnpm run token:test` 后看 `pnpm run tokens`
 4. 右键桌宠、菜单栏 Kodama 或 `⌘⌥P` →「事件 / 配置面板」能看到最近事件、待交互、会话列表、Bridge/Hook 状态；隐藏后 `⌘⌥K` 或 `pnpm run show` 能恢复
-5. 全屏 App 之上能否看到桌宠
-6. 面板里调「图案大小 / 透明度 / 点击范围 / 触发方式 / 气泡位置 / 面板位置 / 气泡高度 / 气泡间距」；托盘「大小」调窗口；点桌宠看 `Lv·🍖·⭐·今日 tok`
-7. 番茄钟（托盘 🍅）和右键面板的番茄钟/久坐时长配置
+5. 菜单栏 Kodama / 右键面板 / `pnpm run bridge-tasks` → Bridge 任务详情页能加载任务，点任务能看到 prompt、最终回复、错误、token、cwd、公开进度 timeline；有 chatId 的任务可打开飞书会话；「分享任务页」能复制 Goofy 链接
+6. 全屏 App 之上能否看到桌宠
+7. 面板里调「图案大小 / 透明度 / 点击范围 / 触发方式 / 气泡位置 / 面板位置 / 气泡高度 / 气泡间距」；托盘「大小」调窗口；点桌宠看 `Lv·🍖·⭐·今日 tok`
+8. 番茄钟（托盘 🍅）和右键面板的番茄钟/久坐时长配置
 
 ## 8. 待办 TODO（优先级从上到下）
 
@@ -122,6 +125,7 @@ pnpm run token:test   # 注入一笔 Feishu token 测 Kodama 侧进账
 - [x] 配饰位置调优/主题包化基础：`accessories.local.js` 可覆盖坐标或加本机私有配饰；后续可做 import/export UI
 - [x] 私人水豚 GIF 后端：用户把 GIF 放进 gitignored `src/renderer/pets/capybara/` + 复制 `render.local.js`
 - [x] 番茄钟/久坐时长配置化：右键面板实时配置，主进程持久化
+- [x] Bridge 完整任务详情页：Kodama 主进程代带 Authorization 读取 bridge task viewer JSON；桌宠面板、菜单栏、CLI、本地 HTTP 均可打开；支持搜索/筛选/时间线/飞书跳转/Goofy 分享
 - [ ] 宠物行为扩展：抚摸/抱起/游走/贴边半露模式，需默认不打扰
 
 **打包 / 公开发布（自用 → 给大家）**

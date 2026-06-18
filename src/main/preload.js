@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('pet', {
   openTarget: (target) => ipcRenderer.invoke('pet:open-target', target),
   sessionPreview: (request) => ipcRenderer.invoke('pet:session-preview', request),
   shareSession: (request) => ipcRenderer.invoke('pet:share-session', request),
+  bridgeTasks: (request) => ipcRenderer.invoke('pet:bridge-tasks', request),
+  shareBridgeTasks: (request) => ipcRenderer.invoke('pet:share-bridge-tasks', request),
+  openBridgeTasksWindow: () => ipcRenderer.invoke('pet:open-bridge-tasks-window'),
+  copyText: (text) => ipcRenderer.invoke('pet:copy-text', text),
   // local Claude Code / Codex hook events forwarded from the main process
   onAgentEvent: (cb) => ipcRenderer.on('agent-event', (_e, event) => cb(event)),
   // growth state (P4)

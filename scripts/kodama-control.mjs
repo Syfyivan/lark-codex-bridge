@@ -10,7 +10,7 @@ const port = 7766
 const host = '127.0.0.1'
 const action = process.argv[2] || 'show'
 const tokenTestAmount = Number(process.argv[3] || 1234)
-const allowed = new Set(['show', 'hide', 'toggle', 'panel', 'healthz', 'tokens', 'token-test'])
+const allowed = new Set(['show', 'hide', 'toggle', 'panel', 'bridge-tasks', 'healthz', 'tokens', 'token-test'])
 
 function request(path, method = 'POST', body = null) {
   return new Promise((resolveRequest, reject) => {
@@ -102,13 +102,13 @@ async function main() {
     console.log(JSON.stringify(result))
     return
   } catch (err) {
-    if (!['show', 'panel', 'tokens', 'token-test'].includes(action)) throw err
+    if (!['show', 'panel', 'bridge-tasks', 'tokens', 'token-test'].includes(action)) throw err
   }
 
   await launchDetached()
   await waitForServer()
-  const result = action === 'panel'
-    ? await request('/pet/panel')
+  const result = action === 'panel' || action === 'bridge-tasks'
+    ? await request(`/pet/${action}`)
     : action === 'tokens'
       ? await request('/pet/token-stats', 'GET')
       : action === 'token-test'

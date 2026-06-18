@@ -35,6 +35,63 @@ function statusLabel(status) {
   }[status] || status || '未知';
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    const text = String(value ?? '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+export function normalizeTaskViewerScope(input = {}) {
+  const source = input instanceof URLSearchParams
+    ? Object.fromEntries(input.entries())
+    : input || {};
+  const scope = {
+    taskId: firstText(source.task_id, source.taskId, source.id),
+    contextKey: firstText(source.context_key, source.contextKey),
+    chatId: firstText(source.chat_id, source.chatId),
+    messageId: firstText(source.message_id, source.messageId),
+  };
+  return Object.fromEntries(Object.entries(scope).filter(([, value]) => value));
+}
+
+export function hasTaskViewerScope(scope = {}) {
+  const normalized = normalizeTaskViewerScope(scope);
+  return Boolean(
+    normalized.taskId ||
+    normalized.contextKey ||
+    normalized.chatId ||
+    normalized.messageId
+  );
+}
+
+export function filterTaskViewerTasks(tasks = [], scope = {}) {
+  const normalized = normalizeTaskViewerScope(scope);
+  if (!hasTaskViewerScope(normalized)) return tasks;
+  return tasks.filter(task => {
+    if (normalized.taskId && task.id !== normalized.taskId) return false;
+    if (normalized.contextKey && task.contextKey !== normalized.contextKey) return false;
+    if (normalized.chatId && task.chatId !== normalized.chatId) return false;
+    if (normalized.messageId && task.messageId !== normalized.messageId) return false;
+    return true;
+  });
+}
+
+export function taskViewerScopeLabel(scope = {}) {
+  const normalized = normalizeTaskViewerScope(scope);
+  if (normalized.taskId) return `任务 ${normalized.taskId}`;
+  if (normalized.contextKey) return `会话上下文 ${normalized.contextKey}`;
+  if (normalized.chatId) return `飞书会话 ${normalized.chatId}`;
+  if (normalized.messageId) return `飞书消息 ${normalized.messageId}`;
+  return '最近任务';
+}
+
+export function taskViewerTitleForScope(scope = {}, baseTitle = 'Bridge Task Session Viewer') {
+  if (!hasTaskViewerScope(scope)) return baseTitle;
+  return `${baseTitle} - ${taskViewerScopeLabel(scope)}`;
+}
+
 function eventLabel(type) {
   return {
     task_started: '开始',

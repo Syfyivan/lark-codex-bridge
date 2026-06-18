@@ -4,7 +4,12 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { createTaskRecorder, defaultTaskViewerStoreDir } from '../src/task-recorder.mjs';
-import { writeTaskViewerSite } from '../src/task-viewer.mjs';
+import {
+  filterTaskViewerTasks,
+  normalizeTaskViewerScope,
+  taskViewerTitleForScope,
+  writeTaskViewerSite,
+} from '../src/task-viewer.mjs';
 
 function envFlag(name, defaultValue = false) {
   const value = process.env[name];
@@ -53,12 +58,19 @@ async function main() {
     process.env.TASK_VIEWER_GOOFY_PREVIEW_DIR ||
       join(homedir(), '.lark-codex-bridge', 'goofy-task-viewer-preview'),
   );
-  const title = process.env.TASK_VIEWER_TITLE || 'Bridge Task Session Viewer';
+  const scope = normalizeTaskViewerScope({
+    taskId: process.env.TASK_VIEWER_TASK_ID,
+    contextKey: process.env.TASK_VIEWER_CONTEXT_KEY,
+    chatId: process.env.TASK_VIEWER_CHAT_ID,
+    messageId: process.env.TASK_VIEWER_MESSAGE_ID,
+  });
+  const title = process.env.TASK_VIEWER_TITLE || taskViewerTitleForScope(scope);
   const limit = Math.max(1, Number(process.env.TASK_VIEWER_SHARE_LIMIT || process.env.TASK_VIEWER_MAX_TASKS || 200));
-  const recorder = createTaskRecorder({ storeDir, maxTasks: limit });
-  const tasks = recorder.exportTasks({ limit });
+  const recorder = createTaskRecorder({ storeDir, maxTasks: Math.max(limit, 200) });
+  const tasks = filterTaskViewerTasks(recorder.exportTasks({ limit: Math.max(limit, 200) }), scope)
+    .slice(0, limit);
   const indexFile = writeTaskViewerSite({ tasks, outDir, title });
-  const result = { ok: true, outDir, indexFile, tasks: tasks.length };
+  const result = { ok: true, outDir, indexFile, tasks: tasks.length, scope, title };
 
   if (deploy) {
     const alias = String(process.env.TASK_VIEWER_GOOFY_ALIAS || 'bridge-task-viewer-syf').trim();

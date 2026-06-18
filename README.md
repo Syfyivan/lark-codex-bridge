@@ -591,7 +591,7 @@ curl -H "Authorization: Bearer $(cat ~/.lark-codex-bridge-http-token)" \
   http://127.0.0.1:8787/task-viewer
 ```
 
-Share a static visual viewer to Goofy Preview:
+Share the latest bridge tasks as a static visual viewer to Goofy Preview:
 
 ```bash
 TOKEN="$(cat ~/.lark-codex-bridge-http-token)"
@@ -601,10 +601,30 @@ curl -sS -X POST http://127.0.0.1:8787/v1/bridge/task-viewer/share \
   -d '{"limit":100}'
 ```
 
+Share a narrower slice by passing one of the task scope fields:
+
+```bash
+# One concrete backend run.
+curl -sS -X POST http://127.0.0.1:8787/v1/bridge/task-viewer/share \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"task_id":"task-mqg93w4o-64264aba"}'
+
+# A whole bridge conversation context, such as one Feishu group/thread queue.
+curl -sS -X POST http://127.0.0.1:8787/v1/bridge/task-viewer/share \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"context_key":"chat:oc_28bf87c00afbfb2e4b9448d95d2f62e5","limit":100}'
+```
+
+The same filters work on the local JSON/HTML viewer as `task_id`,
+`context_key`, `chat_id`, or `message_id` query parameters.
+
 You can also deploy from the checkout without hitting the running bridge:
 
 ```bash
 TASK_VIEWER_GOOFY_ALIAS=bridge-task-viewer-syf \
+TASK_VIEWER_CONTEXT_KEY=chat:oc_28bf87c00afbfb2e4b9448d95d2f62e5 \
   npm run task-viewer:share -- --deploy
 ```
 

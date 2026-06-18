@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { createTaskRecorder } from '../src/task-recorder.mjs';
-import { renderTaskViewerHtml, writeTaskViewerSite } from '../src/task-viewer.mjs';
+import {
+  filterTaskViewerTasks,
+  normalizeTaskViewerScope,
+  renderTaskViewerHtml,
+  taskViewerTitleForScope,
+  writeTaskViewerSite,
+} from '../src/task-viewer.mjs';
 
 test('task recorder persists safe bridge task timelines', () => {
   const dir = mkdtempSync(join(tmpdir(), 'task-viewer-'));
@@ -63,6 +69,32 @@ test('task viewer renders a static visual timeline', () => {
   assert.match(html, /Bridge Task Session Viewer/);
   assert.match(html, /看一下 bridge 进度/);
   assert.match(html, /运行命令：rg task/);
+});
+
+test('task viewer filters exported tasks by task or conversation scope', () => {
+  const tasks = [
+    { id: 'task_one', chatId: 'oc_a', contextKey: 'chat:oc_a', messageId: 'om_a1' },
+    { id: 'task_two', chatId: 'oc_a', contextKey: 'chat:oc_a', messageId: 'om_a2' },
+    { id: 'task_three', chatId: 'oc_b', contextKey: 'chat:oc_b', messageId: 'om_b1' },
+  ];
+
+  assert.deepEqual(normalizeTaskViewerScope({ task_id: 'task_one' }), { taskId: 'task_one' });
+  assert.deepEqual(
+    filterTaskViewerTasks(tasks, { task_id: 'task_one' }).map(task => task.id),
+    ['task_one'],
+  );
+  assert.deepEqual(
+    filterTaskViewerTasks(tasks, { context_key: 'chat:oc_a' }).map(task => task.id),
+    ['task_one', 'task_two'],
+  );
+  assert.deepEqual(
+    filterTaskViewerTasks(tasks, { chatId: 'oc_b' }).map(task => task.id),
+    ['task_three'],
+  );
+  assert.equal(
+    taskViewerTitleForScope({ chat_id: 'oc_a' }),
+    'Bridge Task Session Viewer - 飞书会话 oc_a',
+  );
 });
 
 test('writeTaskViewerSite writes static index and json payload', () => {

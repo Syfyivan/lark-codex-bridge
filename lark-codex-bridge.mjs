@@ -102,7 +102,13 @@ import {
   createTaskRecorder,
   defaultTaskViewerStoreDir,
 } from './src/task-recorder.mjs';
-import { renderTaskViewerHtml, writeTaskViewerSite } from './src/task-viewer.mjs';
+import {
+  filterTaskViewerTasks,
+  normalizeTaskViewerScope,
+  renderTaskViewerHtml,
+  taskViewerTitleForScope,
+  writeTaskViewerSite,
+} from './src/task-viewer.mjs';
 import {
   classifyDirectExecution,
   isReviewAutomationOnlySensitive,
@@ -2415,33 +2421,42 @@ async function deploySessionShareGoofyPreview(currentShareFile) {
   return extractGoofyPreviewBaseUrl(stdout);
 }
 
-function taskViewerTasks(limit = config.taskViewerMaxTasks) {
+function taskViewerTasks(limit = config.taskViewerMaxTasks, scope = {}) {
   if (!taskRecorder) return [];
-  return taskRecorder.exportTasks({ limit });
+  const normalizedScope = normalizeTaskViewerScope(scope);
+  const readLimit = Object.keys(normalizedScope).length
+    ? config.taskViewerMaxTasks
+    : limit;
+  return filterTaskViewerTasks(taskRecorder.exportTasks({ limit: readLimit }), normalizedScope)
+    .slice(0, Math.max(1, Number(limit || config.taskViewerMaxTasks)));
 }
 
-function taskViewerHtml(limit = config.taskViewerMaxTasks) {
+function taskViewerHtml(limit = config.taskViewerMaxTasks, scope = {}) {
+  const normalizedScope = normalizeTaskViewerScope(scope);
   return renderTaskViewerHtml({
-    title: 'Bridge Task Session Viewer',
+    title: taskViewerTitleForScope(normalizedScope),
     generatedAt: new Date().toISOString(),
-    tasks: taskViewerTasks(limit),
+    tasks: taskViewerTasks(limit, normalizedScope),
   });
 }
 
-function prepareTaskViewerGoofyPreviewSource(limit = config.taskViewerMaxTasks) {
-  const tasks = taskViewerTasks(limit);
+function prepareTaskViewerGoofyPreviewSource(limit = config.taskViewerMaxTasks, scope = {}) {
+  const normalizedScope = normalizeTaskViewerScope(scope);
+  const tasks = taskViewerTasks(limit, normalizedScope);
+  const title = taskViewerTitleForScope(normalizedScope);
   writeTaskViewerSite({
     tasks,
     outDir: config.taskViewerGoofyPreviewDir,
-    title: 'Bridge Task Session Viewer',
+    title,
   });
-  return { sourceDir: config.taskViewerGoofyPreviewDir, tasks };
+  return { sourceDir: config.taskViewerGoofyPreviewDir, tasks, scope: normalizedScope, title };
 }
 
-async function deployTaskViewerGoofyPreview(limit = config.taskViewerMaxTasks) {
+async function deployTaskViewerGoofyPreview(limit = config.taskViewerMaxTasks, scope = {}) {
   const alias = String(config.taskViewerGoofyAlias || '').trim();
   if (!alias) throw new Error('TASK_VIEWER_GOOFY_ALIAS is required');
-  const { sourceDir, tasks } = prepareTaskViewerGoofyPreviewSource(limit);
+  const { sourceDir, tasks, scope: normalizedScope, title } =
+    prepareTaskViewerGoofyPreviewSource(limit, scope);
   const { stdout } = await runProcess(config.bytedCliBin, [
     '--json',
     'goofy',
@@ -2459,7 +2474,13 @@ async function deployTaskViewerGoofyPreview(limit = config.taskViewerMaxTasks) {
     timeoutMs: config.taskViewerGoofyTimeoutMs,
     cwd: config.codexCwd,
   });
-  return { url: extractGoofyPreviewBaseUrl(stdout), tasks: tasks.length, sourceDir };
+  return {
+    url: extractGoofyPreviewBaseUrl(stdout),
+    tasks: tasks.length,
+    sourceDir,
+    scope: normalizedScope,
+    title,
+  };
 }
 
 function makeWebShareId(sessionId) {
@@ -6600,7 +6621,8 @@ async function handleHttpRequest(request, response) {
       return;
     }
     const limit = Math.max(1, Number(url.searchParams.get('limit') || config.taskViewerMaxTasks));
-    textResponse(response, 200, taskViewerHtml(limit), 'text/html; charset=utf-8');
+    const scope = normalizeTaskViewerScope(url.searchParams);
+    textResponse(response, 200, taskViewerHtml(limit, scope), 'text/html; charset=utf-8');
     return;
   }
 
@@ -6614,7 +6636,8 @@ async function handleHttpRequest(request, response) {
       return;
     }
     const limit = Math.max(1, Number(url.searchParams.get('limit') || config.taskViewerMaxTasks));
-    jsonResponse(response, 200, { ok: true, tasks: taskViewerTasks(limit) });
+    const scope = normalizeTaskViewerScope(url.searchParams);
+    jsonResponse(response, 200, { ok: true, tasks: taskViewerTasks(limit, scope), scope });
     return;
   }
 
@@ -6665,7 +6688,12 @@ async function handleHttpRequest(request, response) {
         return;
       }
       const limit = Math.max(1, Number(body.limit || body.max_tasks || config.taskViewerMaxTasks));
-      const result = await deployTaskViewerGoofyPreview(limit);
+      const scope = normalizeTaskViewerScope(body);
+      const result = await deployTaskViewerGoofyPreview(limit, scope);
+      if (Object.keys(scope).length && !result.tasks) {
+        jsonResponse(response, 404, { ok: false, error: 'no matching bridge tasks', scope });
+        return;
+      }
       jsonResponse(response, 200, { ok: true, ...result });
       return;
     }

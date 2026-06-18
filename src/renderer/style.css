@@ -138,6 +138,7 @@ body {
   left: 12px;
   transform: none;
   display: grid;
+  box-sizing: border-box;
   gap: 6px;
   width: min(260px, calc(100vw - 20px));
   color: #243142;
@@ -313,6 +314,7 @@ body {
   position: fixed;
   top: 10px;
   left: 10px;
+  box-sizing: border-box;
   width: min(310px, calc(100vw - 20px));
   max-height: min(56vh, 360px);
   overflow: auto;
@@ -435,7 +437,7 @@ body {
 
 .panel-tabs {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(38px, 1fr));
   gap: 4px;
   margin: 0 0 9px;
   padding: 3px;

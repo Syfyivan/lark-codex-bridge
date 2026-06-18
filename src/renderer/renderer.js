@@ -81,6 +81,9 @@ const sessionPreviewCache = new Map()
 const MAX_EVENT_LOG = 40
 const MAX_BUBBLES = 4
 const PANEL_TABS = new Set(['settings', 'waiting', 'done', 'sessions', 'bridge', 'recent', 'config'])
+const FLOATING_PADDING = 8
+const BUBBLE_WIDTH = 260
+const PANEL_WIDTH = 310
 let bridgeTasksState = {
   loading: false,
   loaded: false,
@@ -117,6 +120,7 @@ let pomodoroSettings = {
 }
 let activeHoverBubbleId = ''
 let wanderTimer = null
+let floatingLayoutFrame = 0
 
 function clampNumber(value, min, max, fallback) {
   const n = Number(value)
@@ -442,6 +446,8 @@ function interactivePetBounds() {
 }
 
 function dragVisibleBounds() {
+  const floating = floatingVisibleBounds()
+  if (floating) return floating
   const b = petBounds()
   if (!b) return null
   return {
@@ -508,6 +514,7 @@ function setupInteraction() {
       window.pet.move(e.screenX - lastX, e.screenY - lastY, dragVisibleBounds())
       lastX = e.screenX
       lastY = e.screenY
+      scheduleFloatingLayout()
       return
     }
     const over = overInteractiveSurface(e.clientX, e.clientY)
@@ -618,6 +625,7 @@ function configureWander() {
     const dx = (Math.random() < 0.5 ? -1 : 1) * (10 + Math.round(Math.random() * 20))
     const dy = Math.round((Math.random() - 0.5) * 10)
     window.pet.move(dx, dy, dragVisibleBounds())
+    scheduleFloatingLayout()
     backend?.playMotion?.('Idle')
   }, 18000)
 }
@@ -658,15 +666,24 @@ function viewportVisibleArea() {
   const screenHeight = Number.isFinite(window.screen?.availHeight) ? window.screen.availHeight : window.screen?.height || window.innerHeight
   const winX = Number.isFinite(window.screenX) ? window.screenX : 0
   const winY = Number.isFinite(window.screenY) ? window.screenY : 0
-  return {
+  const area = {
     left: Math.max(0, screenLeft - winX),
     top: Math.max(0, screenTop - winY),
     right: Math.min(window.innerWidth, screenLeft + screenWidth - winX),
     bottom: Math.min(window.innerHeight, screenTop + screenHeight - winY),
   }
+  if (area.right - area.left < 24 || area.bottom - area.top < 24) {
+    return {
+      left: 0,
+      top: 0,
+      right: window.innerWidth,
+      bottom: window.innerHeight,
+    }
+  }
+  return area
 }
 
-function clampElementToVisibleArea(left, top, width, height, padding = 8) {
+function clampElementToVisibleArea(left, top, width, height, padding = FLOATING_PADDING) {
   const area = viewportVisibleArea()
   const minLeft = area.left + padding
   const maxLeft = area.right - width - padding
@@ -678,10 +695,81 @@ function clampElementToVisibleArea(left, top, width, height, padding = 8) {
   }
 }
 
+function prepareFloatingElement(el, preferredWidth, fallbackHeight, padding = FLOATING_PADDING) {
+  const area = viewportVisibleArea()
+  const availableWidth = Math.max(44, Math.floor(area.right - area.left - padding * 2))
+  const availableHeight = Math.max(44, Math.floor(area.bottom - area.top - padding * 2))
+  const width = Math.min(preferredWidth, availableWidth)
+  if (el) {
+    el.style.width = `${width}px`
+    el.style.maxWidth = `${availableWidth}px`
+  }
+  const rect = visibleRectFor(el, width, fallbackHeight)
+  const height = Math.min(rect.height, availableHeight)
+  setElementMaxHeight(el, availableHeight)
+  return { area, padding, width, height, availableHeight }
+}
+
 function setElementMaxHeight(el, maxHeight) {
   if (!el) return
   const height = Math.max(44, Math.floor(maxHeight))
   el.style.maxHeight = `${height}px`
+}
+
+function rectIntersection(a, b) {
+  if (!a || !b) return null
+  const left = Math.max(a.left ?? a.x, b.left ?? b.x)
+  const top = Math.max(a.top ?? a.y, b.top ?? b.y)
+  const right = Math.min(a.right ?? (a.x + a.width), b.right ?? (b.x + b.width))
+  const bottom = Math.min(a.bottom ?? (a.y + a.height), b.bottom ?? (b.y + b.height))
+  if (right <= left || bottom <= top) return null
+  return { left, top, right, bottom, width: right - left, height: bottom - top }
+}
+
+function rectArea(rect) {
+  return rect ? Math.max(0, rect.width) * Math.max(0, rect.height) : 0
+}
+
+function elementDragBounds(el) {
+  if (!el || el.classList.contains('hidden')) return null
+  const rect = el.getBoundingClientRect()
+  if (!rect.width || !rect.height) return null
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  }
+}
+
+function floatingVisibleBounds() {
+  const rects = [
+    panelVisible ? elementDragBounds(eventPanel) : null,
+    elementDragBounds(bubble),
+  ].filter(Boolean)
+  if (!rects.length) return null
+  const left = Math.min(...rects.map(rect => rect.left))
+  const top = Math.min(...rects.map(rect => rect.top))
+  const right = Math.max(...rects.map(rect => rect.right))
+  const bottom = Math.max(...rects.map(rect => rect.bottom))
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
+    minVisibleRatio: 1,
+  }
+}
+
+function scheduleFloatingLayout() {
+  if (floatingLayoutFrame) return
+  floatingLayoutFrame = requestAnimationFrame(() => {
+    floatingLayoutFrame = 0
+    positionBubble()
+    positionPanel()
+  })
 }
 
 function chooseCorner(width, height) {
@@ -714,10 +802,8 @@ function setElementCorner(el, corner, fallbackWidth, fallbackHeight) {
     positionNearPet(el, fallbackWidth, fallbackHeight)
     return
   }
-  const { width, height } = visibleRectFor(el, fallbackWidth, fallbackHeight)
-  const area = viewportVisibleArea()
+  const { width, height, area, padding } = prepareFloatingElement(el, fallbackWidth, fallbackHeight, 10)
   const chosen = corner === 'auto' ? chooseCorner(width, height).id : corner
-  const padding = 10
   const maxHeight = Math.max(44, area.bottom - area.top - padding * 2)
   const displayHeight = Math.min(height, maxHeight)
   const top = chosen.includes('top') ? area.top + padding : area.bottom - displayHeight - padding
@@ -731,100 +817,59 @@ function setElementCorner(el, corner, fallbackWidth, fallbackHeight) {
 
 function positionNearPet(el, fallbackWidth, fallbackHeight) {
   const pet = petBounds()
-  const { width, height } = visibleRectFor(el, fallbackWidth, fallbackHeight)
-  const padding = 8
+  const { width, height, area, padding } = prepareFloatingElement(el, fallbackWidth, fallbackHeight)
   if (!pet) {
     setElementCorner(el, 'top-right', fallbackWidth, fallbackHeight)
     return
   }
-  const area = viewportVisibleArea()
-  const gap = Math.max(14, uiSettings.bubbleGap)
-  const minLeft = area.left + padding
-  const maxRight = area.right - padding
-  const minTop = area.top + padding
-  const maxBottom = area.bottom - padding
-  const petCenterX = pet.x + pet.width / 2
-  const petCenterY = pet.y + pet.height / 2
-  const zones = [
-    {
-      place: 'above',
-      left: minLeft,
-      top: minTop,
-      right: maxRight,
-      bottom: Math.max(minTop, pet.y - gap),
-      preferredLeft: petCenterX - width / 2,
-      preferredTop: pet.y - gap - height,
-      orientation: 'vertical',
-      bias: 400,
-    },
-    {
-      place: 'below',
-      left: minLeft,
-      top: Math.min(maxBottom, pet.y + pet.height + gap),
-      right: maxRight,
-      bottom: maxBottom,
-      preferredLeft: petCenterX - width / 2,
-      preferredTop: pet.y + pet.height + gap,
-      orientation: 'vertical',
-      bias: 350,
-    },
-    {
-      place: 'right',
-      left: Math.min(maxRight, pet.x + pet.width + gap),
-      top: minTop,
-      right: maxRight,
-      bottom: maxBottom,
-      preferredLeft: pet.x + pet.width + gap,
-      preferredTop: petCenterY - height / 2,
-      orientation: 'side',
-      bias: 180,
-    },
-    {
-      place: 'left',
-      left: minLeft,
-      top: minTop,
-      right: Math.max(minLeft, pet.x - gap),
-      bottom: maxBottom,
-      preferredLeft: pet.x - gap - width,
-      preferredTop: petCenterY - height / 2,
-      orientation: 'side',
-      bias: 180,
-    },
-  ].map(zone => ({
-    ...zone,
-    width: zone.right - zone.left,
-    height: zone.bottom - zone.top,
-  })).filter(zone => zone.width >= width && zone.height > 0)
+  const gap = Math.max(8, uiSettings.bubbleGap)
+  const petRect = { left: pet.x, top: pet.y, right: pet.x + pet.width, bottom: pet.y + pet.height, width: pet.width, height: pet.height }
+  const visiblePet = rectIntersection(petRect, area)
+  const anchorX = clampPoint(pet.x + pet.width / 2, area.left + padding, area.right - padding)
+  const anchorY = clampPoint(
+    pet.y + pet.height * (uiSettings.bubbleAnchor / 100),
+    area.top + padding,
+    area.bottom - padding,
+  )
+  const candidates = [
+    { id: 'top-left', left: anchorX - width, top: pet.y - gap - height, side: 'left', vertical: 'top' },
+    { id: 'top-right', left: anchorX, top: pet.y - gap - height, side: 'right', vertical: 'top' },
+    { id: 'bottom-left', left: anchorX - width, top: pet.y + pet.height + gap, side: 'left', vertical: 'bottom' },
+    { id: 'bottom-right', left: anchorX, top: pet.y + pet.height + gap, side: 'right', vertical: 'bottom' },
+    { id: 'left-top', left: pet.x - gap - width, top: anchorY - height, side: 'left', vertical: 'top' },
+    { id: 'left-bottom', left: pet.x - gap - width, top: anchorY, side: 'left', vertical: 'bottom' },
+    { id: 'right-top', left: pet.x + pet.width + gap, top: anchorY - height, side: 'right', vertical: 'top' },
+    { id: 'right-bottom', left: pet.x + pet.width + gap, top: anchorY, side: 'right', vertical: 'bottom' },
+  ]
 
-  const minUsefulHeight = Math.min(Math.max(fallbackHeight, 44), height)
-  const verticalZones = zones.filter(zone => zone.orientation === 'vertical')
-  const sideZones = zones.filter(zone => zone.orientation === 'side')
-  const usefulVerticalZones = verticalZones.filter(zone => zone.height >= minUsefulHeight)
-  const usefulSideZones = sideZones.filter(zone => zone.height >= minUsefulHeight)
-  const pool = usefulVerticalZones.length
-    ? usefulVerticalZones
-    : usefulSideZones.length
-      ? usefulSideZones
-      : verticalZones.length
-        ? verticalZones
-        : sideZones
-  const chosen = pool
-    .map(zone => ({
-      ...zone,
-      score: (zone.height >= height ? 100000 : 0) + Math.min(zone.height, height) * 8 + zone.bias,
-    }))
-    .sort((a, b) => b.score - a.score)[0]
+  const petOffRight = pet.x + pet.width > area.right - padding
+  const petOffLeft = pet.x < area.left + padding
+  const petOffBottom = pet.y + pet.height > area.bottom - padding
+  const petOffTop = pet.y < area.top + padding
+  const scored = candidates.map((candidate) => {
+    const overflow =
+      Math.max(0, area.left + padding - candidate.left) +
+      Math.max(0, candidate.left + width + padding - area.right) +
+      Math.max(0, area.top + padding - candidate.top) +
+      Math.max(0, candidate.top + height + padding - area.bottom)
+    const next = clampElementToVisibleArea(candidate.left, candidate.top, width, height, padding)
+    const placed = { left: next.left, top: next.top, right: next.left + width, bottom: next.top + height, width, height }
+    const overlap = rectArea(rectIntersection(placed, visiblePet))
+    const edgeBonus =
+      (petOffRight && candidate.side === 'left' ? 5000 : 0) +
+      (petOffLeft && candidate.side === 'right' ? 5000 : 0) +
+      (petOffBottom && candidate.vertical === 'top' ? 1600 : 0) +
+      (petOffTop && candidate.vertical === 'bottom' ? 1600 : 0)
+    const distance = (next.left - candidate.left) ** 2 + (next.top - candidate.top) ** 2
+    return {
+      ...candidate,
+      ...next,
+      score: edgeBonus - overflow * 100 - overlap * 5 - distance * 0.02,
+    }
+  }).sort((a, b) => b.score - a.score)
 
-  if (!chosen) {
-    setElementCorner(el, 'bottom-right', fallbackWidth, fallbackHeight)
-    return
-  }
-
-  const displayHeight = Math.min(height, chosen.height)
-  const left = clampPoint(chosen.preferredLeft, chosen.left, Math.max(chosen.left, chosen.right - width))
-  const top = clampPoint(chosen.preferredTop, chosen.top, Math.max(chosen.top, chosen.bottom - displayHeight))
-  const next = clampElementToVisibleArea(left, top, width, displayHeight, padding)
-  setElementMaxHeight(el, chosen.height)
+  const chosen = scored[0] || clampElementToVisibleArea(area.right - width - padding, area.bottom - height - padding, width, height, padding)
+  const next = clampElementToVisibleArea(chosen.left, chosen.top, width, height, padding)
   el.style.transform = 'none'
   el.style.left = `${next.left}px`
   el.style.top = `${next.top}px`
@@ -832,15 +877,15 @@ function positionNearPet(el, fallbackWidth, fallbackHeight) {
 
 function positionBubble() {
   if (uiSettings.bubbleCorner !== 'near') {
-    setElementCorner(bubble, uiSettings.bubbleCorner, 240, 54)
+    setElementCorner(bubble, uiSettings.bubbleCorner, BUBBLE_WIDTH, 54)
     return
   }
-  positionNearPet(bubble, 260, 80)
+  positionNearPet(bubble, BUBBLE_WIDTH, 80)
 }
 
 function positionPanel() {
   if (!eventPanel || eventPanel.classList.contains('hidden')) return
-  setElementCorner(eventPanel, uiSettings.panelCorner, 300, 260)
+  setElementCorner(eventPanel, uiSettings.panelCorner, PANEL_WIDTH, 260)
 }
 
 function bubbleKind(event) {

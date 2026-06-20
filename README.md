@@ -721,6 +721,14 @@ DELEGATE_USER_NAMES=Alice
 DELEGATE_APPROVER_OPEN_ID=ou_xxx
 DELEGATE_POLL_ENABLED=0
 DELEGATE_WATCH_CHAT_IDS=oc_xxx
+DELEGATE_GLOBAL_SEARCH_POLL_ENABLED=0
+DELEGATE_GLOBAL_SEARCH_POLL_INTERVAL_MS=60000
+DELEGATE_GLOBAL_SEARCH_WINDOW_MS=300000
+DELEGATE_GLOBAL_SEARCH_PAGE_SIZE=20
+DELEGATE_GLOBAL_SEARCH_KEYWORDS=review,code review,cr,代码review,代码 review,评审,MR,merge_request,BITS,IDL,帮忙,麻烦,看下,排查,处理,确认
+DELEGATE_GLOBAL_SEARCH_SENDER_TYPES=app
+DELEGATE_GLOBAL_SEARCH_ALLOWED_CHAT_IDS=
+DELEGATE_GLOBAL_SEARCH_DENIED_CHAT_IDS=
 DELEGATE_ALLOW_BOT_SENDERS=1
 DELEGATE_REPLY_IN_THREAD=1
 DELEGATE_AUTO_REPLY_ENABLED=0
@@ -749,6 +757,24 @@ approved replies are sent inside the original-message thread/topic instead of
 as a normal main-stream group reply. `DELEGATE_ALLOW_BOT_SENDERS=1` allows
 app/bot-authored messages to trigger the delegated workflow when they explicitly
 mention the delegated user.
+
+`DELEGATE_WATCH_CHAT_IDS` is the low-latency fallback for specific high-value
+groups where people often mention the delegated user instead of the bridge bot.
+`DELEGATE_GLOBAL_SEARCH_POLL_ENABLED=1` adds a broader compensation path: it
+periodically searches recent messages that mention the authenticated user and
+then runs the same delegated-draft / sensitive-approval gates. Keep the search
+window small, prefer `DELEGATE_GLOBAL_SEARCH_SENDER_TYPES=app` for upstream
+automation relays, keep `DELEGATE_GLOBAL_SEARCH_KEYWORDS` focused on real
+delegation intents, and use `DELEGATE_GLOBAL_SEARCH_ALLOWED_CHAT_IDS` or
+`DELEGATE_GLOBAL_SEARCH_DENIED_CHAT_IDS` when the global search surface needs to
+be narrowed. This is a fallback only; direct `@bot` mentions are the preferred
+event-driven path.
+
+Watch-list polling and global-search polling share a message-level processing
+reservation, so the same mention cannot start duplicate drafts while Codex is
+still generating the first approval. If a configured watch chat returns Lark's
+"not in chat" access error, the bridge disables that chat for the current
+process and will retry it after the next restart.
 
 Keep `DELEGATE_AUTO_REPLY_ENABLED=0` unless the delegated user has explicitly
 chosen to let the bridge send on their behalf. In the default state, the bridge

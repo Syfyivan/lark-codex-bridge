@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
+import { connect } from 'node:net';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -368,6 +369,7 @@ const config = {
   botOpenId: env.BOT_OPEN_ID || '',
   botAppId: env.BOT_APP_ID || env.LARK_APP_ID || '',
   botMentionNames: splitCsv(env.BOT_MENTION_NAMES),
+  botDisplayName: env.BOT_DISPLAY_NAME || splitCsv(env.BOT_MENTION_NAMES)[0] || '机器人',
   mentionLookupTimeoutMs: Number(env.MENTION_LOOKUP_TIMEOUT_MS || 8000),
   loopAllowSenderIds: splitCsv(env.LOOP_ALLOW_SENDER_IDS),
   loopIgnoreSenderIds: splitCsv(env.LOOP_IGNORE_SENDER_IDS),
@@ -408,6 +410,7 @@ const config = {
   botSendInviteByAppId: envFlag('BOT_SEND_INVITE_BY_APP_ID', false),
   botSendTargetOpenIds: parseAliasOpenIdMap(env.BOT_SEND_TARGET_OPEN_IDS || ''),
   botSendTargetAppIds: parseAliasAppIdMap(env.BOT_SEND_TARGET_APP_IDS || ''),
+  botSendDenyTargetIds: splitCsv(env.BOT_SEND_DENY_TARGET_IDS || ''),
   botSendAllowPlainTextMention: envFlag('BOT_SEND_ALLOW_PLAINTEXT_MENTION', false),
   sessionShareEnabled: envFlag('SESSION_SHARE_ENABLED', true),
   sessionShareCommands: splitCsv(
@@ -463,6 +466,27 @@ const config = {
   delegatePollIntervalMs: Math.max(5000, Number(env.DELEGATE_POLL_INTERVAL_MS || 15000)),
   delegatePollPageSize: Math.max(5, Number(env.DELEGATE_POLL_PAGE_SIZE || 20)),
   delegatePollMaxAgeMs: Math.max(60 * 1000, Number(env.DELEGATE_POLL_MAX_AGE_MS || 60 * 60 * 1000)),
+  delegateGlobalSearchPollEnabled: envFlag('DELEGATE_GLOBAL_SEARCH_POLL_ENABLED', false),
+  delegateGlobalSearchPollIntervalMs: Math.max(
+    30_000,
+    Number(env.DELEGATE_GLOBAL_SEARCH_POLL_INTERVAL_MS || 60_000),
+  ),
+  delegateGlobalSearchWindowMs: Math.max(
+    60_000,
+    Number(env.DELEGATE_GLOBAL_SEARCH_WINDOW_MS || 5 * 60 * 1000),
+  ),
+  delegateGlobalSearchPageSize: Math.min(
+    50,
+    Math.max(5, Number(env.DELEGATE_GLOBAL_SEARCH_PAGE_SIZE || 20)),
+  ),
+  delegateGlobalSearchKeywords: splitCsv(
+    env.DELEGATE_GLOBAL_SEARCH_KEYWORDS ||
+      'review,code review,cr,代码review,代码 review,评审,MR,merge_request,BITS,IDL,帮忙,麻烦,看下,排查,处理,确认',
+  ),
+  delegateGlobalSearchSenderTypes: splitCsv(env.DELEGATE_GLOBAL_SEARCH_SENDER_TYPES || 'app')
+    .map(item => item.toLowerCase()),
+  delegateGlobalSearchAllowedChatIds: splitCsv(env.DELEGATE_GLOBAL_SEARCH_ALLOWED_CHAT_IDS || ''),
+  delegateGlobalSearchDeniedChatIds: splitCsv(env.DELEGATE_GLOBAL_SEARCH_DENIED_CHAT_IDS || ''),
   delegateMinTextLength: Math.max(0, Number(env.DELEGATE_MIN_TEXT_LENGTH || 1)),
   delegateAllowBotSenders: envFlag('DELEGATE_ALLOW_BOT_SENDERS', true),
   delegateReplyInThread: envFlag('DELEGATE_REPLY_IN_THREAD', true),
@@ -577,6 +601,8 @@ const config = {
 
 const seenMessages = new Set();
 const bridgeStartedAtMs = Date.now();
+const messageProcessingReservationTtlMs = 30 * 60 * 1000;
+const delegatePollDisabledChatIds = new Set();
 
 const petBus = config.petSyncEnabled
   ? createPetEventBus({ maxBuffer: config.petSyncMaxEventBufferSize })
@@ -666,13 +692,13 @@ function failBridgeTaskRun(taskId, patch = {}) {
   }
 }
 
-function createBridgeTaskProgressSink(taskId) {
+function createBridgeTaskProgressSink(taskId, petContext = {}) {
   if (!taskId && !petBus) return null;
   return {
     add(item) {
       const text = safeTaskText(item, 500);
       if (!text) return;
-      emitPet('task_progress', { text });
+      emitPet('task_progress', { ...petContext, text });
       recordBridgeTaskEvent(taskId, 'task_progress', { text });
     },
     async finish() {},
@@ -1148,6 +1174,16 @@ function parseBridgeTraceAttrs(rawAttrs) {
   return attrs;
 }
 
+function decodeTraceValue(value) {
+  const text = String(value || '');
+  if (!text) return '';
+  try {
+    return Buffer.from(text, 'base64url').toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
 function extractBridgeTrace(text) {
   const match = bridgeTracePattern().exec(text || '');
   if (!match) return null;
@@ -1161,6 +1197,8 @@ function extractBridgeTrace(text) {
     ttlMs: Math.max(0, Number(attrs.ttl || attrs.ttl_ms || 0)),
     hardMaxTurns: Math.max(0, Number(attrs.max || attrs.hard_max_turns || 0)),
     legacyMaxTurns: Math.max(0, Number(legacyMaxRaw || attrs.max_turns || 0)),
+    returnOpenId: attrs.return_open_id || attrs.reply_open_id || decodeTraceValue(attrs.r || attrs.return_b64 || attrs.return_open_id_b64) || '',
+    returnName: attrs.return_name || attrs.reply_name || decodeTraceValue(attrs.rn || attrs.return_name_b64) || '',
   };
 }
 
@@ -1184,6 +1222,33 @@ function appendBridgeTrace(text, trace) {
   return `${String(text || '').trim()}\n\n${formatBridgeTrace(trace)}`.trim();
 }
 
+function relayDecisionPattern() {
+  return /\[bridge_relay\b([^\]]*)\]/u;
+}
+
+function extractRelayDecision(text) {
+  const source = String(text || '');
+  const match = relayDecisionPattern().exec(source);
+  if (!match) {
+    return { status: 'done', text: source.trim(), explicit: false };
+  }
+  const attrs = parseBridgeTraceAttrs(match[1] || '');
+  const rawStatus = String(attrs.status || attrs.state || '').toLowerCase();
+  const status = rawStatus === 'continue' ? 'continue' : 'done';
+  return {
+    status,
+    text: source.replace(relayDecisionPattern(), '').trim(),
+    explicit: true,
+  };
+}
+
+function traceCanContinue(trace) {
+  if (!trace) return false;
+  const nextTurn = Math.max(0, Number(trace.turn || 0)) + 1;
+  const hardMaxTurns = Math.max(0, Number(trace.hardMaxTurns || config.loopHardMaxTurns || 0));
+  return hardMaxTurns <= 0 || nextTurn < hardMaxTurns;
+}
+
 function nextTrace(parentTrace = null) {
   const now = Date.now();
   if (!parentTrace) {
@@ -1193,6 +1258,8 @@ function nextTrace(parentTrace = null) {
       startedAt: now,
       ttlMs: config.loopTraceTtlMs,
       hardMaxTurns: config.loopHardMaxTurns,
+      returnOpenId: config.botOpenId,
+      returnName: config.botDisplayName,
     };
   }
   return {
@@ -1201,6 +1268,8 @@ function nextTrace(parentTrace = null) {
     startedAt: Number(parentTrace.startedAt || now),
     ttlMs: Number(parentTrace.ttlMs || config.loopTraceTtlMs),
     hardMaxTurns: Math.max(0, Number(parentTrace.hardMaxTurns || config.loopHardMaxTurns || 0)),
+    returnOpenId: config.botOpenId,
+    returnName: config.botDisplayName,
   };
 }
 
@@ -1345,9 +1414,25 @@ function normalizeBotSendTarget(command) {
       `无法为机器人目标「${target}」构造真实 @：Lark 真实 mention 需要目标 open_id（ou_xxx）。`,
       appIdHint,
       '群成员列表接口会过滤机器人，不能靠 chat.members.get 按名称枚举机器人。',
-      '请直接传 ou_xxx，或配置 BOT_SEND_TARGET_OPEN_IDS，例如：BOT_SEND_TARGET_OPEN_IDS=\'知微=ou_xxx\'。BOT_SEND_TARGET_APP_IDS 只用于记录/邀请线索。',
+      '请直接传 ou_xxx，或配置 BOT_SEND_TARGET_OPEN_IDS。BOT_SEND_TARGET_APP_IDS 只用于记录/邀请线索。',
     ].filter(Boolean).join(' '),
   );
+}
+
+function assertBotSendTargetAllowed(command) {
+  if (!config.botSendDenyTargetIds.length) return;
+  const values = [
+    command.targetOpenId,
+    command.targetAppId,
+    command.targetName,
+    command.targetName ? `@${command.targetName}` : '',
+  ]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  const denied = values.find(value => config.botSendDenyTargetIds.includes(value));
+  if (denied) {
+    throw new Error(`目标机器人「${command.targetName || denied}」已被本地桥禁止由菌子代发，请直接让目标机器人自己处理或由用户本人发起。`);
+  }
 }
 
 function buildBotSendText(command, trace) {
@@ -1365,6 +1450,65 @@ function buildBotSendText(command, trace) {
   }
 
   return appendBridgeTrace(`${head}${body}`, trace);
+}
+
+function buildPostContent({ mentionOpenId = '', mentionName = '', text = '' }) {
+  const lines = String(text || '').split('\n');
+  const content = [];
+  const firstLine = [];
+  if (mentionOpenId) {
+    firstLine.push({
+      tag: 'at',
+      user_id: mentionOpenId,
+      user_name: mentionName || mentionOpenId,
+    });
+    if (lines[0]) firstLine.push({ tag: 'text', text: ` ${lines[0]}` });
+  } else if (lines[0]) {
+    firstLine.push({ tag: 'text', text: lines[0] });
+  }
+  if (firstLine.length) content.push(firstLine);
+  for (const line of lines.slice(1)) {
+    content.push([{ tag: 'text', text: line || ' ' }]);
+  }
+  return { zh_cn: { content: content.length ? content : [[{ tag: 'text', text: ' ' }]] } };
+}
+
+function relayReturnTargetForEvent(event, trace) {
+  if (trace?.returnOpenId) {
+    return {
+      openId: trace.returnOpenId,
+      name: trace.returnName || trace.returnOpenId,
+    };
+  }
+
+  const senderId = extractSenderId(event);
+  if (senderId?.startsWith('ou_')) return { openId: senderId, name: senderId };
+  if (!senderId?.startsWith('cli_')) return { openId: '', name: '' };
+
+  for (const [alias, appId] of config.botSendTargetAppIds.entries()) {
+    if (appId !== senderId) continue;
+    const openId = config.botSendTargetOpenIds.get(alias);
+    if (openId) return { openId, name: alias };
+  }
+  return { openId: '', name: '' };
+}
+
+function relayReplyPayload(answer, trace, event) {
+  const decision = extractRelayDecision(answer);
+  const text = decision.text || '已处理。';
+  const target = relayReturnTargetForEvent(event, trace);
+  const shouldContinue = Boolean(
+    trace
+      && decision.status === 'continue'
+      && target.openId
+      && traceCanContinue(trace),
+  );
+  return {
+    text: appendBridgeTrace(text, nextTrace(trace)),
+    shouldContinue,
+    targetOpenId: shouldContinue ? target.openId : '',
+    targetName: shouldContinue ? target.name : '',
+  };
 }
 
 async function maybeInviteBotByAppId(command) {
@@ -1389,6 +1533,7 @@ async function sendBotMessage(command) {
   }
 
   command = normalizeBotSendTarget(command);
+  assertBotSendTargetAllowed(command);
   const trace = nextTrace({
     id: randomUUID(),
     turn: 0,
@@ -1398,18 +1543,37 @@ async function sendBotMessage(command) {
   });
   await maybeInviteBotByAppId(command);
   const text = buildBotSendText(command, trace);
-  const stdout = await runCli([
-    'im',
-    '+messages-send',
-    '--as',
-    'bot',
-    '--chat-id',
-    command.chatId,
-    '--content',
-    JSON.stringify({ text }),
-    '--idempotency-key',
-    `bridge-bot-${trace.id}`,
-  ]);
+  const stdout = command.targetOpenId
+    ? await runCli([
+        'im',
+        '+messages-send',
+        '--as',
+        'bot',
+        '--chat-id',
+        command.chatId,
+        '--msg-type',
+        'post',
+        '--content',
+        JSON.stringify(buildPostContent({
+          mentionOpenId: command.targetOpenId,
+          mentionName: command.targetName || command.targetOpenId,
+          text: text.replace(/^<at user_id="[^"]+">[^<]*<\/at>\s*/u, ''),
+        })),
+        '--idempotency-key',
+        `bridge-bot-${trace.id}`,
+      ])
+    : await runCli([
+        'im',
+        '+messages-send',
+        '--as',
+        'bot',
+        '--chat-id',
+        command.chatId,
+        '--content',
+        JSON.stringify({ text }),
+        '--idempotency-key',
+        `bridge-bot-${trace.id}`,
+      ]);
 
   const sent = tryJsonLoose(stdout) || {};
   const messageId = sent?.data?.message_id || sent?.message_id || '';
@@ -4386,11 +4550,75 @@ function updateApproval(id, patch) {
   return store[id];
 }
 
+function isFreshMessageProcessingReservation(record, now = Date.now()) {
+  if (record?.kind !== 'message_processing' || record.status !== 'running') return false;
+  const createdAt = Date.parse(record.createdAt || '');
+  return Number.isFinite(createdAt) && now - createdAt <= messageProcessingReservationTtlMs;
+}
+
+function approvalRecordBlocksMessage(record, messageId, now = Date.now()) {
+  if (!messageId || record?.originalMessageId !== messageId) return false;
+  if (record.kind === 'message_processing') {
+    return isFreshMessageProcessingReservation(record, now);
+  }
+  return true;
+}
+
 function approvalExistsForMessage(messageId) {
   if (!messageId) return false;
-  return Object.values(loadApprovalStore()).some(
-    approval => approval?.originalMessageId === messageId,
+  const now = Date.now();
+  return Object.values(loadApprovalStore()).some(approval =>
+    approvalRecordBlocksMessage(approval, messageId, now),
   );
+}
+
+function reserveMessageProcessing(event, source = 'delegate') {
+  const messageId = extractMessageId(event);
+  if (!messageId) return '';
+  const store = loadApprovalStore();
+  const now = Date.now();
+  const alreadyReserved = Object.values(store).some(record =>
+    approvalRecordBlocksMessage(record, messageId, now),
+  );
+  if (alreadyReserved) return '';
+
+  const id = `msg-${shortApprovalId()}`;
+  store[id] = {
+    id,
+    kind: 'message_processing',
+    status: 'running',
+    createdAt: new Date(now).toISOString(),
+    source,
+    chatId: extractChatId(event),
+    chatType: extractChatType(event),
+    originalMessageId: messageId,
+    requesterOpenId: extractSenderId(event),
+    requesterSenderType: extractSenderType(event),
+    requesterName: extractSenderName(event),
+  };
+  saveApprovalStore(store);
+  return id;
+}
+
+function clearMessageProcessingReservation(id) {
+  if (!id) return;
+  const store = loadApprovalStore();
+  if (store[id]?.kind !== 'message_processing') return;
+  delete store[id];
+  saveApprovalStore(store);
+}
+
+function failMessageProcessingReservation(id, error) {
+  if (!id) return;
+  const store = loadApprovalStore();
+  if (store[id]?.kind !== 'message_processing') return;
+  store[id] = {
+    ...store[id],
+    status: 'failed',
+    failedAt: new Date().toISOString(),
+    error: String(error?.stack || error?.message || error || ''),
+  };
+  saveApprovalStore(store);
 }
 
 function loadReviewFollowupStore() {
@@ -4681,10 +4909,8 @@ function reviewerMentionText(event) {
 function shouldHandleReviewFollowupReply(replyEvent, replyText) {
   const senderId = extractSenderId(replyEvent);
   if (!senderId || isBridgeSelfSenderId(senderId)) return false;
-  if (config.reviewFollowupReviewerSenderIds.length) {
-    return config.reviewFollowupReviewerSenderIds.includes(senderId);
-  }
-  if (!isKnownBotSender(replyEvent)) return false;
+  if (!config.reviewFollowupReviewerSenderIds.length) return false;
+  if (!config.reviewFollowupReviewerSenderIds.includes(senderId)) return false;
   return String(replyText || '').trim().length > 0;
 }
 
@@ -5323,6 +5549,54 @@ async function createDelegateReviewAutomation(event, rawText) {
   }
 }
 
+async function handleDelegateMention(event, rawText, options = {}) {
+  const {
+    source = 'delegate event',
+    allowDirectReviewAutomation = true,
+  } = options;
+  const messageId = extractMessageId(event);
+  const reservationId = reserveMessageProcessing(event, source);
+  if (!reservationId) {
+    if (messageId) {
+      console.error(`[bridge] ${source} skipped duplicate delegate message ${messageId}`);
+    }
+    return false;
+  }
+
+  try {
+    try {
+      await reactToLarkMessage(event, rawText);
+    } catch (error) {
+      console.error(`[bridge] failed to add reaction: ${error.stack || error.message}`);
+    }
+
+    if (shouldHandleDelegateReviewAutomation(rawText)) {
+      const reviewClassification = classifyDirectExecution(rawText, { reviewAutomation: true });
+      if (
+        !allowDirectReviewAutomation ||
+        !isReviewAutomationOnlySensitive(reviewClassification) ||
+        !canExecuteReviewAutomationDirectly(event, rawText)
+      ) {
+        await createSensitiveOperationApproval(
+          event,
+          rawText,
+          reviewClassification,
+        );
+      } else {
+        await createDelegateReviewAutomation(event, rawText);
+      }
+    } else {
+      await createDelegateDraft(event, rawText);
+    }
+
+    clearMessageProcessingReservation(reservationId);
+    return true;
+  } catch (error) {
+    failMessageProcessingReservation(reservationId, error);
+    throw error;
+  }
+}
+
 function parseApprovalCommand(rawText) {
   const text = stripBridgeTraceText(stripBotMentionText(rawText)).trim();
   const match = /^(同意发送|确认发送|发送|同意执行|确认执行|执行|approve|\/approve|取消发送|拒绝发送|取消执行|拒绝执行|cancel|\/cancel)\s+([A-Za-z0-9_-]+)\s*$/i.exec(
@@ -5393,6 +5667,16 @@ function buildDirectCodexPrompt(event, rawText, options = {}) {
   const approvalNotice = options.approvedBy
     ? `\n安全审批：这个非只读请求已经由 ${options.approvedBy} 通过 bridge 卡片确认，可以按原请求执行。`
     : '';
+  const relayPromptContext = trace
+    ? [
+        '机器人联调 relay 协议：',
+        `- 当前 relay id=${trace.id}，turn=${trace.turn}${trace.hardMaxTurns ? `，hard_max_turns=${trace.hardMaxTurns}` : ''}。`,
+        '- 你需要根据语义判断本轮是否还需要对方机器人继续处理。',
+        '- 如果语义已经结束、你已经给出最终结论、确认收到、或不需要对方继续，回复正文末尾加隐藏标记：[bridge_relay status=done]',
+        '- 如果确实需要对方机器人继续补充、回答、执行或确认，回复正文末尾加隐藏标记：[bridge_relay status=continue]',
+        '- 不要手写 @ 对方机器人；bridge 会在 status=continue 时自动构造真实 @。硬轮数上限只作为失控兜底，不要为了凑轮数继续。',
+      ].join('\n')
+    : '';
   const eventContext = [
     '飞书事件上下文：',
     `chat_id=${extractChatId(event) || 'unknown'}`,
@@ -5404,10 +5688,12 @@ function buildDirectCodexPrompt(event, rawText, options = {}) {
     '',
     '当前处理模式：直接 @机器人 / 私聊机器人，bridge 会把你的最终回答原样发回飞书。',
     '回复格式要求：直接写给提问者；不要套用“建议操作 / 待发送回复 / 操作计划 / 草稿”等代理审批包装。',
+    '身份边界：不要替知微或其它机器人正式发言；如果用户要“让知微说/回复/处理”，只能给宋一凡可复制的草稿或说明应由目标机器人自己响应，不要把面向目标机器人的话术作为最终回复发出。',
     profilePromptContext,
     memoryPromptContext,
     nonOwnerQueryNotice,
     approvalNotice,
+    relayPromptContext,
   ]
     .filter(Boolean)
     .join('\n');
@@ -5448,14 +5734,20 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     cwd: executionOptions.cwd || config.codexCwd,
     sandbox: executionOptions.sandbox || config.codexSandbox,
   });
+  const petContext = {
+    contextKey,
+    chatId: extractChatId(event),
+    messageId: extractMessageId(event),
+  };
   const cardProgress = options.progress === false
+    || trace
     ? null
     : await createProgressReporter(event, prompt || stripBridgeTraceText(rawText));
   const progress = combineProgressReporters(
     cardProgress,
-    createBridgeTaskProgressSink(taskRun?.id),
+    createBridgeTaskProgressSink(taskRun?.id, petContext),
   );
-  emitPet('task_started', { contextKey, text: prompt || stripBridgeTraceText(rawText) });
+  emitPet('task_started', { ...petContext, text: prompt || stripBridgeTraceText(rawText) });
   const usageRef = {};
   try {
     const reply = await buildReply(codexPrompt, {
@@ -5467,25 +5759,35 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       usageRef,
     });
     const finalReply = normalizeDirectBotReply(reply);
-    if (progress) await progress.finish(finalReply);
-    emitPet('task_done', { contextKey, text: finalReply, tokens: usageRef.tokens || 0 });
-    recordBridgeTaskEvent(taskRun?.id, 'task_done', { text: finalReply, tokens: usageRef.tokens || 0 });
-    finishBridgeTaskRun(taskRun?.id, { finalText: finalReply, tokens: usageRef.tokens || 0 });
-    recordThreadMemoryIfEnabled(event, rawText, finalReply, executionOptions);
-    recordMemoryCandidatesIfEnabled(event, rawText, finalReply);
+    const relayPayload = trace ? relayReplyPayload(finalReply, trace, event) : null;
+    const visibleReply = relayPayload?.text ? stripBridgeTraceText(relayPayload.text) : finalReply;
+    if (progress) await progress.finish(visibleReply);
+    emitPet('task_done', { ...petContext, text: visibleReply, tokens: usageRef.tokens || 0 });
+    recordBridgeTaskEvent(taskRun?.id, 'task_done', { text: visibleReply, tokens: usageRef.tokens || 0 });
+    finishBridgeTaskRun(taskRun?.id, { finalText: visibleReply, tokens: usageRef.tokens || 0 });
+    recordThreadMemoryIfEnabled(event, rawText, visibleReply, executionOptions);
+    recordMemoryCandidatesIfEnabled(event, rawText, visibleReply);
     if (config.progressCardFinalReply || !progress) {
-      await replyToLark(
-        event,
-        trace ? appendBridgeTrace(finalReply, nextTrace(trace)) : finalReply,
-        options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {},
-      );
+      if (relayPayload) {
+        await replyRelayToLark(
+          event,
+          relayPayload,
+          options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {},
+        );
+      } else {
+        await replyToLark(
+          event,
+          finalReply,
+          options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {},
+        );
+      }
     }
     return { ok: true };
   } catch (error) {
     if (abortController.signal.aborted || error?.name === 'AbortError') {
       console.error(`[bridge] direct task stopped in ${contextKey}: ${error.message || error}`);
       if (progress) await progress.fail('任务已停止。');
-      emitPet('task_failed', { contextKey, text: '任务已停止', reason: 'stopped' });
+      emitPet('task_failed', { ...petContext, text: '任务已停止', reason: 'stopped' });
       recordBridgeTaskEvent(taskRun?.id, 'task_cancelled', { text: '任务已停止', reason: 'stopped' });
       failBridgeTaskRun(taskRun?.id, { status: 'cancelled', errorText: '任务已停止' });
       await replyToLark(
@@ -5497,7 +5799,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     }
     console.error(`[bridge] ${error.stack || error.message}`);
     if (progress) await progress.fail(error.message || error);
-    emitPet('task_failed', { contextKey, text: String(error?.message || error), reason: 'error' });
+    emitPet('task_failed', { ...petContext, text: String(error?.message || error), reason: 'error' });
     recordBridgeTaskEvent(taskRun?.id, 'task_failed', { text: String(error?.message || error), reason: 'error' });
     failBridgeTaskRun(taskRun?.id, { errorText: String(error?.message || error) });
     await replyToLark(
@@ -6070,10 +6372,59 @@ function listedMessageToEvent(chatId, message) {
   };
 }
 
+function pollSearchIso(ms) {
+  const date = new Date(ms);
+  const pad = value => String(value).padStart(2, '0');
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const absOffset = Math.abs(offsetMinutes);
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+    `${sign}${pad(Math.floor(absOffset / 60))}:${pad(absOffset % 60)}`,
+  ].join('');
+}
+
+function messageSenderType(message) {
+  return String(message?.sender?.sender_type || message?.sender_type || '').toLowerCase();
+}
+
+function textContainsAnyKeyword(text, keywords = []) {
+  const source = String(text || '').toLowerCase();
+  return keywords.some(keyword => {
+    const needle = String(keyword || '').trim();
+    return needle && source.includes(needle.toLowerCase());
+  });
+}
+
+function globalSearchAllowsMessage(message) {
+  const chatId = message?.chat_id || message?.chatId || '';
+  if (!chatId) return false;
+  if (
+    config.delegateGlobalSearchAllowedChatIds.length &&
+    !config.delegateGlobalSearchAllowedChatIds.includes(chatId)
+  ) {
+    return false;
+  }
+  if (config.delegateGlobalSearchDeniedChatIds.includes(chatId)) return false;
+
+  const allowedSenderTypes = config.delegateGlobalSearchSenderTypes;
+  const senderTypeAllowed =
+    !allowedSenderTypes.length ||
+    allowedSenderTypes.includes('all') ||
+    allowedSenderTypes.includes(messageSenderType(message));
+  if (!senderTypeAllowed) return false;
+
+  const keywords = config.delegateGlobalSearchKeywords;
+  if (!keywords.length || keywords.includes('*')) return true;
+  return textContainsAnyKeyword(message?.content || '', keywords);
+}
+
 async function pollReviewFollowupsInChat(chatId, messages, now = Date.now()) {
   if (!config.reviewFollowupEnabled) return;
 
-  for (const message of [...messages].reverse()) {
+  const pollMessages = messages.flatMap(message => [message, ...messageThreadReplies(message)]);
+  for (const message of [...pollMessages].reverse()) {
     const rootMessageId = message?.message_id || '';
     if (!rootMessageId) continue;
 
@@ -6116,6 +6467,59 @@ async function pollReviewFollowupsInChat(chatId, messages, now = Date.now()) {
   }
 }
 
+async function handlePolledMessage(chatId, message, now = Date.now(), options = {}) {
+  const {
+    source = 'delegate poll',
+    recoverDirectBotMessages = true,
+    startupGraceMs = config.delegatePollIntervalMs,
+  } = options;
+  const messageId = message?.message_id || '';
+  if (!messageId || seenMessages.has(messageId) || approvalExistsForMessage(messageId)) return false;
+
+  const event = listedMessageToEvent(chatId, message);
+  const rawText = extractText(event).trim();
+  if (!rawText) return false;
+
+  const createdAt = parseMessageTimeMs(message);
+  if (createdAt && now - createdAt > config.delegatePollMaxAgeMs) return false;
+  if (createdAt && createdAt < bridgeStartedAtMs - startupGraceMs) return false;
+
+  const trace = extractBridgeTrace(rawText);
+  if (recoverDirectBotMessages && trace && await shouldHandleEvent(event, rawText)) {
+    seenMessages.add(messageId);
+    console.error(`[bridge] ${source} matched relay message ${messageId} in ${chatId}`);
+    try {
+      await handleEvent(event);
+    } catch (error) {
+      console.error(`[bridge] ${source} failed for relay message ${messageId}: ${error.stack || error.message}`);
+    }
+    return true;
+  }
+
+  if (await shouldHandleDelegateMention(event, rawText)) {
+    seenMessages.add(messageId);
+    console.error(`[bridge] ${source} matched message ${messageId} in ${chatId}`);
+    return handleDelegateMention(event, rawText, {
+      source,
+      allowDirectReviewAutomation: false,
+    });
+  }
+
+  // Recover direct @bot messages when the websocket subscription drops an event.
+  if (recoverDirectBotMessages && await shouldHandleEvent(event, rawText)) {
+    seenMessages.add(messageId);
+    console.error(`[bridge] ${source} matched direct message ${messageId} in ${chatId}`);
+    try {
+      await handleEvent(event);
+    } catch (error) {
+      console.error(`[bridge] ${source} failed for message ${messageId}: ${error.stack || error.message}`);
+    }
+    return true;
+  }
+
+  return false;
+}
+
 async function pollDelegateMentionsInChat(chatId) {
   const stdout = await runCli(
     [
@@ -6139,64 +6543,91 @@ async function pollDelegateMentionsInChat(chatId) {
 
   await pollReviewFollowupsInChat(chatId, messages, now);
 
-  for (const message of [...messages].reverse()) {
-    const messageId = message?.message_id || '';
-    if (!messageId || seenMessages.has(messageId) || approvalExistsForMessage(messageId)) continue;
-
-    const event = listedMessageToEvent(chatId, message);
-    const rawText = extractText(event).trim();
-    if (!rawText) continue;
-
-    const createdAt = parseMessageTimeMs(message);
-    if (createdAt && now - createdAt > config.delegatePollMaxAgeMs) continue;
-    if (createdAt && createdAt < bridgeStartedAtMs - config.delegatePollIntervalMs) continue;
-
-    if (await shouldHandleDelegateMention(event, rawText)) {
-      seenMessages.add(messageId);
-      console.error(`[bridge] delegate poll matched message ${messageId} in ${chatId}`);
-      try {
-        await reactToLarkMessage(event, rawText);
-        console.error(`[bridge] delegate poll reacted to message ${messageId}`);
-      } catch (error) {
-        console.error(`[bridge] failed to add reaction for polled message: ${error.message}`);
-      }
-      if (shouldHandleDelegateReviewAutomation(rawText)) {
-        await createSensitiveOperationApproval(
-          event,
-          rawText,
-          classifyDirectExecution(rawText, { reviewAutomation: true }),
-        );
-      } else {
-        await createDelegateDraft(event, rawText);
-      }
-      continue;
-    }
-
-    // Recover direct @bot messages when the websocket subscription drops an event.
-    if (await shouldHandleEvent(event, rawText)) {
-      console.error(`[bridge] direct poll matched message ${messageId} in ${chatId}`);
-      try {
-        await handleEvent(event);
-      } catch (error) {
-        console.error(`[bridge] direct poll failed for message ${messageId}: ${error.stack || error.message}`);
-      }
-    }
+  const pollMessages = messages.flatMap(message => [message, ...messageThreadReplies(message)]);
+  for (const message of [...pollMessages].reverse()) {
+    await handlePolledMessage(chatId, message, now, {
+      source: 'delegate poll',
+      recoverDirectBotMessages: true,
+      startupGraceMs: config.delegatePollIntervalMs,
+    });
   }
 }
 
+async function pollDelegateMentionsByGlobalSearch(now = Date.now()) {
+  const start = now - config.delegateGlobalSearchWindowMs;
+  const stdout = await runCli(
+    [
+      'im',
+      '+messages-search',
+      '--as',
+      'user',
+      '--is-at-me',
+      '--start',
+      pollSearchIso(start),
+      '--end',
+      pollSearchIso(now + 30_000),
+      '--page-size',
+      String(config.delegateGlobalSearchPageSize),
+      '--format',
+      'json',
+    ],
+    '',
+    { timeoutMs: Math.min(config.codexTimeoutMs, 60_000) },
+  );
+  const payload = tryJsonLoose(stdout) || {};
+  const messages = payload?.data?.messages || payload?.messages || [];
+  for (const message of [...messages].reverse()) {
+    if (!globalSearchAllowsMessage(message)) continue;
+    await handlePolledMessage(message?.chat_id || '', message, now, {
+      source: 'delegate global search poll',
+      recoverDirectBotMessages: false,
+      startupGraceMs: config.delegateGlobalSearchWindowMs,
+    });
+  }
+}
+
+function isChatAccessError(error) {
+  const text = String(error?.stack || error?.message || error || '');
+  return text.includes('"code": 230002') || text.includes('code: 230002') || /out of the chat/i.test(text);
+}
+
 function startDelegatePolling() {
-  if (!config.delegatePollEnabled || !config.delegateWatchChatIds.length) return null;
+  if (
+    !config.delegatePollEnabled ||
+    (!config.delegateWatchChatIds.length && !config.delegateGlobalSearchPollEnabled)
+  ) {
+    return null;
+  }
 
   let running = false;
+  let lastGlobalSearchPollAt = 0;
   const poll = async () => {
     if (running) return;
     running = true;
+    const now = Date.now();
     try {
       for (const chatId of config.delegateWatchChatIds) {
+        if (delegatePollDisabledChatIds.has(chatId)) continue;
         try {
           await pollDelegateMentionsInChat(chatId);
         } catch (error) {
+          if (isChatAccessError(error)) {
+            delegatePollDisabledChatIds.add(chatId);
+            console.error(`[bridge] delegate poll disabled for ${chatId}: current user/bot is not in the chat; restart after regaining access`);
+            continue;
+          }
           console.error(`[bridge] delegate poll failed for ${chatId}: ${error.stack || error.message}`);
+        }
+      }
+      if (
+        config.delegateGlobalSearchPollEnabled &&
+        now - lastGlobalSearchPollAt >= config.delegateGlobalSearchPollIntervalMs
+      ) {
+        lastGlobalSearchPollAt = now;
+        try {
+          await pollDelegateMentionsByGlobalSearch(now);
+        } catch (error) {
+          console.error(`[bridge] delegate global search poll failed: ${error.stack || error.message}`);
         }
       }
     } catch (error) {
@@ -6210,7 +6641,13 @@ function startDelegatePolling() {
   timer.unref();
   poll();
   console.error(
-    `[bridge] delegate polling enabled, chats=${config.delegateWatchChatIds.join(',')}, interval=${config.delegatePollIntervalMs}ms`,
+    [
+      `[bridge] delegate polling enabled, chats=${config.delegateWatchChatIds.join(',') || '(none)'}`,
+      `interval=${config.delegatePollIntervalMs}ms`,
+      config.delegateGlobalSearchPollEnabled
+        ? `global_search=on/${config.delegateGlobalSearchPollIntervalMs}ms/window=${config.delegateGlobalSearchWindowMs}ms/senders=${config.delegateGlobalSearchSenderTypes.join(',') || 'all'}`
+        : 'global_search=off',
+    ].join(', '),
   );
   return timer;
 }
@@ -7176,7 +7613,7 @@ async function replyToLark(event, text, options = {}) {
       '--idempotency-key',
       options.idempotencyKey || `bridge-${messageId}`,
     ]);
-    emitPet('lark_reply_sent', { text, chatId: extractChatId(event) });
+    emitPet('lark_reply_sent', { text, chatId: extractChatId(event), messageId });
     return;
   }
 
@@ -7195,7 +7632,58 @@ async function replyToLark(event, text, options = {}) {
     '--idempotency-key',
     options.idempotencyKey || `bridge-${randomUUID()}`,
   ]);
-  emitPet('lark_reply_sent', { text, chatId });
+  emitPet('lark_reply_sent', { text, chatId, messageId: extractMessageId(event) });
+}
+
+async function replyRelayToLark(event, payload, options = {}) {
+  if (!payload?.shouldContinue) {
+    await replyToLark(event, payload?.text || '', options);
+    return;
+  }
+
+  const postContent = JSON.stringify(buildPostContent({
+    mentionOpenId: payload.targetOpenId,
+    mentionName: payload.targetName,
+    text: payload.text,
+  }));
+  const messageId = extractMessageId(event);
+  if (messageId) {
+    await runCli([
+      'im',
+      '+messages-reply',
+      '--as',
+      'bot',
+      '--message-id',
+      messageId,
+      '--msg-type',
+      'post',
+      '--content',
+      postContent,
+      ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
+      '--idempotency-key',
+      options.idempotencyKey || `bridge-relay-${messageId}`,
+    ]);
+    emitPet('lark_reply_sent', { text: payload.text, chatId: extractChatId(event), messageId });
+    return;
+  }
+
+  const chatId = extractChatId(event);
+  if (!chatId) throw new Error('event has neither message_id nor chat_id');
+  await runCli([
+    'im',
+    '+messages-send',
+    '--as',
+    'bot',
+    '--chat-id',
+    chatId,
+    '--msg-type',
+    'post',
+    '--content',
+    postContent,
+    '--idempotency-key',
+    options.idempotencyKey || `bridge-relay-${randomUUID()}`,
+  ]);
+  emitPet('lark_reply_sent', { text: payload.text, chatId, messageId: extractMessageId(event) });
 }
 
 function reactionRuleMatches(rule, text) {
@@ -7294,30 +7782,13 @@ async function handleEvent(event) {
     return;
   }
 
-  if (await shouldHandleDelegateMention(event, rawText)) {
+  const relayTrace = extractBridgeTrace(rawText);
+  if (!relayTrace && await shouldHandleDelegateMention(event, rawText)) {
     try {
-      await reactToLarkMessage(event, rawText);
-    } catch (error) {
-      console.error(`[bridge] failed to add reaction: ${error.stack || error.message}`);
-    }
-    try {
-      if (shouldHandleDelegateReviewAutomation(rawText)) {
-        const reviewClassification = classifyDirectExecution(rawText, { reviewAutomation: true });
-        if (
-          !isReviewAutomationOnlySensitive(reviewClassification) ||
-          !canExecuteReviewAutomationDirectly(event, rawText)
-        ) {
-          await createSensitiveOperationApproval(
-            event,
-            rawText,
-            reviewClassification,
-          );
-          return;
-        }
-        await createDelegateReviewAutomation(event, rawText);
-      } else {
-        await createDelegateDraft(event, rawText);
-      }
+      await handleDelegateMention(event, rawText, {
+        source: 'delegate event',
+        allowDirectReviewAutomation: true,
+      });
     } catch (error) {
       console.error(`[bridge] delegate handling failed: ${error.stack || error.message}`);
       if (config.delegateApproverOpenId) {
@@ -7349,6 +7820,7 @@ async function handleEvent(event) {
     text: rawText,
     sender: extractSenderId(event),
     chatId: extractChatId(event),
+    messageId: extractMessageId(event),
   });
 
   const requesterIsOwner = isBridgeOwnerEvent(event);
@@ -7547,11 +8019,29 @@ function startStartupChecks() {
     });
 }
 
+function isLocalPortOpen(port, host = '127.0.0.1', timeoutMs = 250) {
+  return new Promise(resolvePort => {
+    const socket = connect({ port, host });
+    const done = ok => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolvePort(ok);
+    };
+    socket.setTimeout(timeoutMs, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
 // Optionally launch the desktop pet (Kodama) as a separate, detached process.
 // Keeps the pet out of the bridge's dependencies — server deploys just leave
 // PET_AUTOLAUNCH unset and run headless.
-function maybeLaunchPet() {
+async function maybeLaunchPet() {
   if (!config.petAutolaunch) return;
+  if (await isLocalPortOpen(7766)) {
+    console.error('[bridge] desktop pet already listening on 127.0.0.1:7766; skipping pet launch');
+    return;
+  }
   const command = config.petCommand || (config.petCwd ? 'npm start' : '');
   if (!command) {
     console.error('[bridge] PET_AUTOLAUNCH set but no PET_COMMAND/PET_CWD; skipping pet launch');
@@ -7584,7 +8074,7 @@ async function main() {
   );
   startStartupChecks();
   startHttpServer();
-  maybeLaunchPet();
+  await maybeLaunchPet();
   startDelegatePolling();
   if (config.eventEnabled) {
     startEventSubscription();

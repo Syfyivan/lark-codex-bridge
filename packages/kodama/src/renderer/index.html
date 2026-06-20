@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      'unsafe-eval' is required by PixiJS v6 (runtime shader compilation via
+      new Function). To drop it later, switch to the @pixi/unsafe-eval module.
+      connect-src is limited to loopback (bridge SSE + local hook); no public hosts.
+    -->
+    <meta http-equiv="Content-Security-Policy"
+      content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: file:; img-src 'self' data: blob: file:; connect-src 'self' data: blob: file: http://127.0.0.1:* http://localhost:*;" />
+    <title>Kodama</title>
+    <link rel="stylesheet" href="./style.css" />
+
+    <!--
+      Rendering stack served locally (run `pnpm run setup` to download into
+      vendor/). Cubism Core is proprietary and must ship inside the app; the
+      sample model lives under ./models. Load order matters: core -> pixi ->
+      the display plugin (which reads window.PIXI).
+    -->
+    <script src="./vendor/live2dcubismcore.min.js"></script>
+    <script src="./vendor/pixi.min.js"></script>
+    <script src="./vendor/cubism4.min.js"></script>
+  </head>
+  <body>
+    <canvas id="pet-canvas"></canvas>
+    <div id="bubble" class="hidden"></div>
+    <section id="event-panel" class="hidden" aria-live="polite">
+      <header class="panel-header">
+        <strong><span class="drag-handle" title="拖动移动桌宠">⠿</span> 事件 / 配置</strong>
+        <button id="event-panel-close" type="button" title="关闭">×</button>
+      </header>
+      <div id="panel-status" class="panel-status"></div>
+      <div class="panel-actions">
+        <button id="bridge-tasks-open" type="button" title="打开 Bridge 完整任务详情页">Bridge 任务详情</button>
+      </div>
+      <div class="panel-metrics">
+        <button type="button" data-tab="waiting"><span id="metric-waiting">0</span><small>待交互</small></button>
+        <button type="button" data-tab="done"><span id="metric-done">0</span><small>已完成</small></button>
+        <button type="button" data-tab="recent"><span id="metric-total">0</span><small>事件</small></button>
+      </div>
+      <nav id="panel-tabs" class="panel-tabs" aria-label="事件面板">
+        <button type="button" data-tab="settings" aria-label="设置" title="设置">设置</button>
+        <button type="button" data-tab="waiting" aria-label="待交互" title="待交互">待办</button>
+        <button type="button" data-tab="done" aria-label="已完成" title="已完成">完成</button>
+        <button type="button" data-tab="sessions" aria-label="会话" title="会话">会话</button>
+        <button type="button" data-tab="bridge" aria-label="Bridge 任务" title="Bridge 任务">Bridge</button>
+        <button type="button" data-tab="recent" aria-label="最近事件" title="最近事件">最近</button>
+      </nav>
+      <div class="panel-section tab-panel" data-tab-panel="settings">
+        <h2>设置</h2>
+        <div class="settings-list">
+          <label>
+            <span>图案大小</span>
+            <input id="setting-pet-scale" type="range" min="40" max="125" step="5" />
+            <output id="setting-pet-scale-value"></output>
+          </label>
+          <label>
+            <span>透明度</span>
+            <input id="setting-pet-opacity" type="range" min="25" max="100" step="5" />
+            <output id="setting-pet-opacity-value"></output>
+          </label>
+          <label>
+            <span>点击范围</span>
+            <input id="setting-hitbox-scale" type="range" min="25" max="100" step="5" />
+            <output id="setting-hitbox-scale-value"></output>
+          </label>
+          <div class="segmented-setting">
+            <span>触发</span>
+            <div id="setting-trigger-mode" class="segmented-control" aria-label="触发方式">
+              <button type="button" data-trigger-mode="right">右键</button>
+              <button type="button" data-trigger-mode="left">左键</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>贴边</span>
+            <div id="setting-edge-mode" class="segmented-control" aria-label="贴边方式">
+              <button type="button" data-edge-mode="half">半露</button>
+              <button type="button" data-edge-mode="inside">屏内</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>抚摸</span>
+            <div id="setting-petting-enabled" class="segmented-control" aria-label="双击抚摸">
+              <button type="button" data-petting-enabled="true">开启</button>
+              <button type="button" data-petting-enabled="false">关闭</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>游走</span>
+            <div id="setting-wander-enabled" class="segmented-control" aria-label="自动游走">
+              <button type="button" data-wander-enabled="false">关闭</button>
+              <button type="button" data-wander-enabled="true">开启</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>勿扰</span>
+            <div id="setting-dnd-mode" class="segmented-control" aria-label="勿扰模式">
+              <button type="button" data-dnd-mode="false">关闭</button>
+              <button type="button" data-dnd-mode="true">开启</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>声音</span>
+            <div id="setting-sound-enabled" class="segmented-control" aria-label="声音提醒">
+              <button type="button" data-sound-enabled="true">开启</button>
+              <button type="button" data-sound-enabled="false">关闭</button>
+            </div>
+          </div>
+          <div class="segmented-setting">
+            <span>通知</span>
+            <div id="setting-notifications-enabled" class="segmented-control" aria-label="系统通知">
+              <button type="button" data-notifications-enabled="true">开启</button>
+              <button type="button" data-notifications-enabled="false">关闭</button>
+            </div>
+          </div>
+          <div class="number-grid" aria-label="番茄钟时长">
+            <label>
+              <span>专注</span>
+              <input id="setting-focus-minutes" type="number" min="1" max="180" step="1" />
+            </label>
+            <label>
+              <span>短休</span>
+              <input id="setting-short-break-minutes" type="number" min="1" max="60" step="1" />
+            </label>
+            <label>
+              <span>长休</span>
+              <input id="setting-long-break-minutes" type="number" min="1" max="120" step="1" />
+            </label>
+            <label>
+              <span>久坐</span>
+              <input id="setting-sedentary-minutes" type="number" min="0" max="240" step="1" />
+            </label>
+          </div>
+          <label>
+            <span>长休间隔</span>
+            <input id="setting-long-break-every" type="range" min="1" max="12" step="1" />
+            <output id="setting-long-break-every-value"></output>
+          </label>
+          <label>
+            <span>气泡位置</span>
+            <select id="setting-bubble-corner">
+              <option value="near">贴近宠物</option>
+              <option value="auto">自动避让</option>
+              <option value="top-left">左上</option>
+              <option value="top-right">右上</option>
+              <option value="bottom-left">左下</option>
+              <option value="bottom-right">右下</option>
+            </select>
+          </label>
+          <label>
+            <span>面板位置</span>
+            <select id="setting-panel-corner">
+              <option value="near">贴近宠物</option>
+              <option value="auto">自动避让</option>
+              <option value="top-left">左上</option>
+              <option value="top-right">右上</option>
+              <option value="bottom-left">左下</option>
+              <option value="bottom-right">右下</option>
+            </select>
+          </label>
+          <label>
+            <span>气泡高度</span>
+            <input id="setting-bubble-anchor" type="range" min="35" max="80" step="1" />
+            <output id="setting-bubble-anchor-value"></output>
+          </label>
+          <label>
+            <span>气泡间距</span>
+            <input id="setting-bubble-gap" type="range" min="0" max="48" step="2" />
+            <output id="setting-bubble-gap-value"></output>
+          </label>
+          <div class="window-size-buttons" aria-label="窗口大小">
+            <button type="button" data-window-size="200x290">很小</button>
+            <button type="button" data-window-size="280x400">小</button>
+            <button type="button" data-window-size="360x520">中</button>
+            <button type="button" data-window-size="460x650">大</button>
+          </div>
+          <div class="config-buttons" aria-label="设置导入导出">
+            <button id="setting-export-config" type="button">复制配置</button>
+            <button id="setting-import-config" type="button">粘贴配置</button>
+          </div>
+          <button id="setting-hide-pet" class="settings-action" type="button">隐藏桌宠</button>
+        </div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="waiting">
+        <h2>待交互</h2>
+        <div id="waiting-events" class="event-list empty">暂无</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="done">
+        <h2>已完成</h2>
+        <div id="done-events" class="event-list empty">暂无</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="sessions">
+        <h2>会话</h2>
+        <div id="session-events" class="event-list empty">暂无可跳转会话</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="bridge">
+        <h2>Bridge 任务</h2>
+        <div class="bridge-panel-tools">
+          <button id="bridge-tasks-refresh" type="button">刷新</button>
+          <button id="bridge-tasks-share" type="button">分享全部任务</button>
+          <button id="bridge-tasks-window" type="button">完整详情</button>
+        </div>
+        <div id="bridge-tasks-summary" class="bridge-tasks-summary">未加载</div>
+        <div id="bridge-tasks-list" class="event-list empty">暂无</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="recent">
+        <h2>最近事件</h2>
+        <div id="recent-events" class="event-list empty">暂无</div>
+      </div>
+      <div class="panel-section tab-panel" data-tab-panel="config">
+        <h2>配置</h2>
+        <dl id="config-events" class="config-list"></dl>
+      </div>
+    </section>
+    <!-- surface any load/runtime error as a visible bubble instead of a blank window -->
+    <script>
+      window.addEventListener('error', function (e) {
+        var b = document.getElementById('bubble')
+        if (b) {
+          b.textContent = '⚠️ ' + (e.message || 'load error')
+          b.classList.remove('hidden')
+        }
+      })
+    </script>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

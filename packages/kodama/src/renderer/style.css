@@ -1,0 +1,752 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent; /* required for the transparent window */
+}
+
+:root {
+  --pet-scale: 0.72;
+  --pet-opacity: 0.82;
+}
+
+#pet-canvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  opacity: var(--pet-opacity);
+  z-index: 1;
+}
+
+/* GIF backend: a single sprite anchored bottom-center */
+#pet-gif {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%) scale(var(--pet-scale));
+  transform-origin: 50% 100%;
+  max-width: 92%;
+  max-height: 82%;
+  opacity: var(--pet-opacity);
+  pointer-events: none; /* window-level hit-test handles interaction */
+  user-select: none;
+  -webkit-user-drag: none;
+  z-index: 1;
+}
+
+#accessory-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--pet-opacity);
+  z-index: 4;
+}
+
+#accessory-layer.accessory-layer-hidden {
+  opacity: 0 !important;
+}
+
+.accessory {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.22));
+}
+
+.accessory-sprout {
+  background: linear-gradient(90deg, transparent 44%, #2d9b55 44% 56%, transparent 56%);
+}
+
+.accessory-sprout::before,
+.accessory-sprout::after {
+  content: "";
+  position: absolute;
+  top: 16%;
+  width: 48%;
+  height: 46%;
+  background: linear-gradient(135deg, #82e66f, #28a85a);
+  border-radius: 95% 0 95% 0;
+}
+
+.accessory-sprout::before {
+  left: 2%;
+  transform: rotate(-18deg);
+}
+
+.accessory-sprout::after {
+  right: 2%;
+  transform: scaleX(-1) rotate(-18deg);
+}
+
+.accessory-round_glasses .lens {
+  position: absolute;
+  top: 8%;
+  width: 34%;
+  height: 72%;
+  border: 3px solid rgba(24, 31, 42, 0.92);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.accessory-round_glasses .lens-left {
+  left: 5%;
+}
+
+.accessory-round_glasses .lens-right {
+  right: 5%;
+}
+
+.accessory-round_glasses .bridge {
+  position: absolute;
+  left: 40%;
+  top: 44%;
+  width: 20%;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(24, 31, 42, 0.92);
+}
+
+.accessory-agent_badge {
+  display: grid;
+  place-items: center;
+  border: 2px solid rgba(50, 86, 133, 0.65);
+  border-radius: 999px;
+  background: linear-gradient(135deg, #f9fbff, #b8d7ff);
+  color: #1f3a5f;
+  font: 700 10px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+}
+
+.accessory-agent_badge span {
+  transform: translateY(1px);
+}
+
+.accessory-focus_halo {
+  border: 3px solid rgba(255, 217, 97, 0.9);
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(255, 245, 182, 0.14), transparent 60%);
+  box-shadow: 0 0 14px rgba(255, 205, 72, 0.6);
+}
+
+#bubble {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  transform: none;
+  display: grid;
+  box-sizing: border-box;
+  gap: 6px;
+  width: min(260px, calc(100vw - 20px));
+  color: #243142;
+  font: 12px/1.35 -apple-system, "PingFang SC", system-ui, sans-serif;
+  pointer-events: auto;
+  transition: opacity 0.25s ease;
+  max-height: calc(100vh - 20px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  z-index: 10;
+}
+
+#bubble::-webkit-scrollbar {
+  width: 6px;
+}
+
+#bubble::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(104, 119, 139, 0.28);
+}
+
+#bubble.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.bubble-card {
+  padding: 8px 10px;
+  border: 1px solid rgba(104, 119, 139, 0.18);
+  border-left: 4px solid #7387a1;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 24px rgba(24, 36, 52, 0.18);
+  text-align: left;
+}
+
+.bubble-card.clickable {
+  cursor: pointer;
+}
+
+.bubble-stack-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.bubble-stack-tools button {
+  height: 24px;
+  border: 1px solid rgba(104, 119, 139, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #5c6c82;
+  cursor: pointer;
+  font: 11px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+  box-shadow: 0 4px 14px rgba(24, 36, 52, 0.12);
+}
+
+.bubble-card.clickable .bubble-target::after {
+  content: " ↗";
+  font-weight: 700;
+}
+
+.bubble-lark {
+  border-left-color: #1b8f6a;
+  background: rgba(239, 255, 249, 0.97);
+}
+
+.bubble-agent {
+  border-left-color: #5d6ee8;
+  background: rgba(245, 247, 255, 0.97);
+}
+
+.bubble-waiting {
+  border-left-color: #d87422;
+  background: rgba(255, 247, 236, 0.98);
+}
+
+.bubble-done {
+  border-left-color: #26936f;
+}
+
+.bubble-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.bubble-head strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #506176;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bubble-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.bubble-head button {
+  flex: 0 0 auto;
+  height: 22px;
+  border: 1px solid rgba(104, 119, 139, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #5c6c82;
+  cursor: pointer;
+  font: 11px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+}
+
+.bubble-text {
+  color: #243142;
+  word-break: break-word;
+}
+
+.bubble-target {
+  margin-top: 3px;
+  color: #54718f;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#bubble-hover-tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  max-width: 236px;
+  max-height: 132px;
+  overflow: hidden;
+  padding: 7px 9px;
+  border: 1px solid rgba(22, 34, 50, 0.12);
+  border-radius: 8px;
+  background: rgba(35, 47, 64, 0.94);
+  color: #f8fbff;
+  box-shadow: 0 10px 24px rgba(20, 32, 48, 0.24);
+  font: 11px/1.35 -apple-system, "PingFang SC", system-ui, sans-serif;
+  pointer-events: none;
+  z-index: 45;
+}
+
+#bubble-hover-tip.hidden {
+  display: none;
+}
+
+.bubble-hover-title {
+  margin-bottom: 3px;
+  font-weight: 700;
+}
+
+.bubble-hover-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  word-break: break-word;
+}
+
+.bubble-hover-meta,
+.bubble-hover-target {
+  margin-top: 3px;
+  color: rgba(230, 238, 249, 0.78);
+}
+
+#event-panel {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  box-sizing: border-box;
+  width: min(310px, calc(100vw - 20px));
+  max-height: min(56vh, 360px);
+  overflow: auto;
+  padding: 10px;
+  color: #25303d;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(111, 125, 145, 0.2);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(30, 42, 58, 0.2);
+  font: 12px/1.45 -apple-system, "PingFang SC", system-ui, sans-serif;
+  z-index: 30;
+}
+
+#event-panel.hidden {
+  display: none;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  cursor: move;
+}
+
+.panel-header strong {
+  font-size: 13px;
+}
+
+.drag-handle {
+  color: #7a889a;
+  letter-spacing: 0;
+}
+
+#event-panel-close {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: #eef2f6;
+  color: #435166;
+  font: 17px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.panel-status {
+  margin-bottom: 8px;
+  color: #617085;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 6px;
+  margin: -2px 0 8px;
+}
+
+.panel-actions button,
+.bridge-panel-tools button {
+  min-width: 0;
+  height: 26px;
+  border: 1px solid rgba(111, 125, 145, 0.2);
+  border-radius: 7px;
+  background: #fff;
+  color: #39516f;
+  cursor: pointer;
+  font: 11px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+}
+
+.panel-actions button {
+  flex: 1;
+}
+
+.panel-actions button:hover,
+.bridge-panel-tools button:hover {
+  background: #eef5ff;
+  color: #23549a;
+}
+
+.panel-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.panel-metrics button {
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: #f3f6f9;
+  color: #25303d;
+  cursor: pointer;
+  text-align: center;
+  font: inherit;
+}
+
+.panel-metrics span {
+  display: block;
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1.1;
+}
+
+.panel-metrics small {
+  display: block;
+  margin-top: 2px;
+  color: #6d7b8f;
+}
+
+.panel-metrics button.active,
+.panel-metrics button:hover {
+  border-color: rgba(75, 127, 188, 0.26);
+  background: #eef5ff;
+}
+
+.panel-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(38px, 1fr));
+  gap: 4px;
+  margin: 0 0 9px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #eef3f8;
+}
+
+.panel-tabs button {
+  min-width: 0;
+  height: 26px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #53647a;
+  cursor: pointer;
+  font: 11px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-tabs button.active {
+  background: #fff;
+  color: #203148;
+  box-shadow: 0 1px 4px rgba(28, 43, 61, 0.14);
+}
+
+.panel-section {
+  margin-top: 9px;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.panel-section h2 {
+  margin: 0 0 5px;
+  color: #435166;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.event-list {
+  max-height: 96px;
+  overflow: auto;
+  display: grid;
+  gap: 5px;
+}
+
+.event-list.sessions {
+  max-height: 132px;
+}
+
+.bridge-panel-tools {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 7px;
+}
+
+.bridge-tasks-summary {
+  margin-bottom: 6px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: #f3f6f9;
+  color: #617085;
+  font-size: 11px;
+}
+
+.bridge-task-mini {
+  display: grid;
+  gap: 2px;
+}
+
+.bridge-task-mini strong,
+.bridge-task-mini span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bridge-task-mini span {
+  color: #68778b;
+  font-size: 11px;
+}
+
+.event-list.empty {
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: #f7f9fb;
+  color: #8a97a8;
+}
+
+.event-item {
+  padding: 7px 8px;
+  border: 1px solid rgba(111, 125, 145, 0.16);
+  border-left: 3px solid #7aa2d6;
+  border-radius: 7px;
+  background: #fbfcfd;
+  cursor: pointer;
+}
+
+.event-item.waiting {
+  border-left-color: #d77b2d;
+  background: #fff7ed;
+}
+
+.event-item.done {
+  border-left-color: #2f9b7b;
+}
+
+.event-item.source-lark {
+  border-left-color: #1b8f6a;
+}
+
+.event-item.source-local {
+  border-left-color: #5d6ee8;
+}
+
+.event-item.waiting {
+  border-left-color: #d77b2d;
+}
+
+.event-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #68778b;
+  font-size: 11px;
+}
+
+.event-text {
+  margin-top: 2px;
+  color: #263241;
+  word-break: break-word;
+}
+
+.event-target {
+  margin-top: 3px;
+  color: #58708e;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-list {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 7px;
+  background: #f7f9fb;
+}
+
+.settings-list label {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-list label:has(select) {
+  grid-template-columns: 58px minmax(0, 1fr);
+}
+
+.settings-list input[type="range"] {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-list select {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  border: 1px solid rgba(111, 125, 145, 0.22);
+  border-radius: 7px;
+  background: #fff;
+  color: #35445a;
+  font: 12px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+}
+
+.settings-list output {
+  color: #58708e;
+  text-align: right;
+}
+
+.segmented-setting {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(111, 125, 145, 0.18);
+  border-radius: 7px;
+  background: #eef3f8;
+}
+
+.segmented-control button {
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #506176;
+  cursor: pointer;
+  font: 12px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+}
+
+.segmented-control button.active {
+  background: #fff;
+  color: #1f3a5f;
+  box-shadow: 0 1px 4px rgba(28, 43, 61, 0.14);
+}
+
+.number-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.number-grid label {
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 5px;
+  padding: 5px 6px;
+  border: 1px solid rgba(111, 125, 145, 0.16);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.number-grid input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #35445a;
+  font: 12px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+  text-align: right;
+}
+
+.window-size-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.config-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.window-size-buttons button,
+.config-buttons button {
+  height: 28px;
+  border: 1px solid rgba(111, 125, 145, 0.22);
+  border-radius: 7px;
+  background: #fff;
+  color: #35445a;
+  cursor: pointer;
+  font: 12px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+}
+
+.settings-action {
+  height: 30px;
+  border: 1px solid rgba(111, 125, 145, 0.22);
+  border-radius: 7px;
+  background: #fff;
+  color: #35445a;
+  cursor: pointer;
+  font: 12px/1 -apple-system, "PingFang SC", system-ui, sans-serif;
+}
+
+.settings-action:hover,
+.window-size-buttons button:hover,
+.config-buttons button:hover {
+  background: #eef5ff;
+  color: #23549a;
+}
+
+.config-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 8px;
+  margin: 0;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: #f7f9fb;
+}
+
+.config-list dt {
+  color: #68778b;
+}
+
+.config-list dd {
+  margin: 0;
+  min-width: 0;
+  color: #263241;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

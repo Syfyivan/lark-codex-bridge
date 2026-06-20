@@ -1,0 +1,17 @@
+node_modules/
+dist/
+out/
+.DS_Store
+*.log
+
+# Generated/downloaded assets (vendored locally from P1 onward)
+src/renderer/vendor/
+src/renderer/models/
+
+# Private GIF backend: local override + your own (possibly copyrighted) GIFs.
+# Never commit/ship these — public build stays on Live2D.
+src/renderer/config/render.local.js
+src/renderer/config/agent.local.js
+src/renderer/config/accessories.local.js
+src/renderer/pets/*
+!src/renderer/pets/README.md

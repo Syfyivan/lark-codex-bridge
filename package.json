@@ -1,0 +1,23 @@
+{
+  "name": "kodama-suite",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo for the Kodama desktop pet and lark-codex-bridge, linked by a shared pet-event contract.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "check": "pnpm -r check",
+    "test": "pnpm -r test",
+    "bridge": "pnpm --filter @syfyivan/lark-codex-bridge start",
+    "bridge:doctor": "pnpm --filter @syfyivan/lark-codex-bridge doctor",
+    "kodama": "pnpm --filter kodama start"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syfyivan/lark-codex-bridge.git"
+  },
+  "license": "MIT"
+}

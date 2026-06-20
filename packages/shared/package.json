@@ -1,0 +1,19 @@
+{
+  "name": "@syfyivan/pet-contract",
+  "version": "0.1.0",
+  "description": "Shared pet-event contract between lark-codex-bridge and Kodama.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "node --check index.mjs",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

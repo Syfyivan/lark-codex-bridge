@@ -9,11 +9,11 @@
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
-    <string>/Users/YOUR_USER/lark-codex-bridge/lark-codex-bridge.mjs</string>
+    <string>/Users/YOUR_USER/kodama-suite/packages/bridge/lark-codex-bridge.mjs</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/YOUR_USER/lark-codex-bridge</string>
+  <string>/Users/YOUR_USER/kodama-suite/packages/bridge</string>
 
   <key>EnvironmentVariables</key>
   <dict>

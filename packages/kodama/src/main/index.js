@@ -48,6 +48,14 @@ function createWindow() {
     skipTaskbar: true,
     alwaysOnTop: true,
     fullscreenable: false,
+    // macOS: a non-activating NSPanel is what reliably floats over *other apps'*
+    // native fullscreen spaces (not just the desktop). 'panel' adds
+    // NSWindowStyleMaskNonactivatingPanel at runtime and joins all spaces; paired
+    // with app.setActivationPolicy('accessory') in whenReady. A harmless
+    // "NSWindow does not support nonactivating panel styleMask" warning is
+    // expected for frameless windows (electron/electron#35815, wontfix).
+    // https://www.electronjs.org/docs/latest/api/base-window (type: 'panel')
+    ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -1453,6 +1461,10 @@ function registerGlobalShortcuts() {
 
 app.whenReady().then(() => {
   console.error('[kodama] app ready')
+  // macOS: become an accessory (agent) app — no Dock icon, never grabs a Space.
+  // The other half (with the pet window's type:'panel') of reliably floating
+  // over other apps' native fullscreen spaces.
+  if (process.platform === 'darwin') app.setActivationPolicy('accessory')
   startLocalAgentServer()
   createWindow()
   createTray()

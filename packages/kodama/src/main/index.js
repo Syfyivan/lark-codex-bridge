@@ -471,15 +471,39 @@ function appPathFromCommand(command) {
   return match?.[1] || ''
 }
 
+const isAgentCommand = (command) => /(^|\/|\s)(claude|codex)(\s|$)/i.test(String(command || ''))
+
+// Working directory of a pid via lsof (used to locate an agent session whose id
+// isn't on its argv — e.g. Claude Code, where we only know the cwd).
+async function processCwd(pid) {
+  try {
+    const out = await runCommand('lsof', ['-a', '-d', 'cwd', '-Fn', '-p', String(pid)])
+    const line = out.split('\n').find((l) => l.startsWith('n'))
+    return line ? line.slice(1).trim() : ''
+  } catch {
+    return ''
+  }
+}
+
 async function findCliSessionTarget(target) {
   const sessionId = String(target?.sessionId || '').trim()
-  if (!sessionId) return null
+  const cwd = String(target?.cwd || '').trim()
   const rows = parsePs(await runCommand('ps', ['-axo', 'pid,ppid,pgid,tty,args']))
   const byPid = new Map(rows.map(row => [row.pid, row]))
-  const hit = rows.find((row) => (
-    row.command.includes(sessionId)
-    && /(^|\/|\s)(claude|codex)(\s|$)/i.test(row.command)
-  ))
+
+  // 1) Strongest signal: the agent process carries the session id on its argv.
+  let hit = sessionId
+    ? rows.find((row) => row.command.includes(sessionId) && isAgentCommand(row.command))
+    : null
+
+  // 2) Fallback: match a running agent by working directory (Claude Code rarely
+  //    puts the session id on argv, which is why jumps used to miss the tty).
+  if (!hit && cwd) {
+    const agents = rows.filter((row) => isAgentCommand(row.command) && normalizeTty(row.tty))
+    for (const row of agents) {
+      if (await processCwd(row.pid) === cwd) { hit = row; break }
+    }
+  }
   if (!hit) return null
 
   let appPath = ''
@@ -491,6 +515,63 @@ async function findCliSessionTarget(target) {
     cursor = byPid.get(cursor.ppid)
   }
   return { ...hit, appPath }
+}
+
+// ---------- cmux integration ----------
+// cmux ships a socket-control CLI; we use it to focus the exact workspace/pane
+// that hosts a session instead of blindly re-opening the app (which dumped the
+// user into a fresh cmux). Join key between our session and cmux is the tty.
+function cmuxBinPath() {
+  for (const base of ['/Applications', path.join(app.getPath('home'), 'Applications')]) {
+    const p = path.join(base, 'cmux.app', 'Contents', 'Resources', 'bin', 'cmux')
+    if (fs.existsSync(p)) return p
+  }
+  return ''
+}
+
+function bareTty(value) {
+  return String(value || '').replace(/^\/dev\//, '').trim()
+}
+
+// Parse `cmux tree --all` into surfaces with their enclosing window/workspace/pane.
+async function listCmuxSurfaces() {
+  const bin = cmuxBinPath()
+  if (!bin) return []
+  let out = ''
+  try { out = await runCommand(bin, ['tree', '--all']) } catch { return [] }
+  const surfaces = []
+  let win = ''
+  let ws = ''
+  let pane = ''
+  for (const line of out.split('\n')) {
+    const w = line.match(/\bwindow\s+(window:\d+)/)
+    if (w) win = w[1]
+    const k = line.match(/\bworkspace\s+(workspace:\d+)/)
+    if (k) ws = k[1]
+    const p = line.match(/\bpane\s+(pane:\d+)/)
+    if (p) pane = p[1]
+    const s = line.match(/\bsurface\s+(surface:\d+)\b.*?\btty=(\S+)/)
+    if (s) surfaces.push({ window: win, workspace: ws, pane, surface: s[1], tty: bareTty(s[2]) })
+  }
+  return surfaces
+}
+
+async function focusCmuxByTty(tty) {
+  const bare = bareTty(tty)
+  if (!bare) return null
+  const bin = cmuxBinPath()
+  if (!bin) return null
+  const hit = (await listCmuxSurfaces()).find((s) => s.tty === bare)
+  if (!hit) return null
+  try {
+    if (hit.window) await runCommand(bin, ['focus-window', '--window', hit.window]).catch(() => {})
+    if (hit.workspace) await runCommand(bin, ['select-workspace', '--workspace', hit.workspace])
+    if (hit.pane) await runCommand(bin, ['focus-pane', '--pane', hit.pane, '--workspace', hit.workspace]).catch(() => {})
+    return { workspace: hit.workspace, pane: hit.pane, surface: hit.surface, tty: bare }
+  } catch (err) {
+    console.error(`[kodama] cmux focus failed: ${err.message}`)
+    return null
+  }
 }
 
 function normalizeTty(value) {
@@ -545,6 +626,17 @@ async function openAppPath(appPath) {
 async function openTerminalSessionTarget(target) {
   const found = await findCliSessionTarget(target)
   const tty = normalizeTty(target?.tty) || normalizeTty(found?.tty)
+
+  // Prefer cmux: focus the exact workspace/pane by tty rather than re-opening
+  // the app (which is what spawned a stray cmux instead of jumping).
+  if (tty && cmuxBinPath()) {
+    const cmux = await focusCmuxByTty(tty)
+    if (cmux) {
+      await openAppPath(found?.appPath || cmuxBinPath().replace(/\/Contents\/.*$/, ''))
+      return { ok: true, method: 'cmux focus', tty, pid: found?.pid || null, ...cmux }
+    }
+  }
+
   if (tty && await activateTerminalTty(tty)) {
     return { ok: true, method: 'Terminal tty', tty, pid: found?.pid || null }
   }

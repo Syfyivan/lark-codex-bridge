@@ -1457,6 +1457,8 @@ function controlPet(action) {
     showPetAndMaybeTogglePanel(true)
   } else if (action === 'bridge-tasks') {
     createBridgeTasksWindow()
+  } else if (action === 'manage') {
+    openManageWindow()
   } else {
     return { ok: false, error: 'unknown-control-action' }
   }
@@ -1493,7 +1495,7 @@ function startLocalAgentServer() {
       writeJson(res, 200, { ok: true, ...getCachedTokenStats() })
       return
     }
-    const controlMatch = url.pathname.match(/^\/pet\/(show|hide|toggle|panel|bridge-tasks)$/)
+    const controlMatch = url.pathname.match(/^\/pet\/(show|hide|toggle|panel|bridge-tasks|manage)$/)
     if (controlMatch && (req.method === 'GET' || req.method === 'POST')) {
       writeJson(res, 200, controlPet(controlMatch[1]))
       return

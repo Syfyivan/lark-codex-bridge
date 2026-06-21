@@ -1356,6 +1356,12 @@ function setupEventPanel() {
       window.pet.setWindowSize?.({ width, height })
       return
     }
+    const shareSub = e.target.closest?.('[data-share-subagent]')
+    if (shareSub) {
+      e.stopPropagation()
+      shareSubagentTranscript(shareSub.dataset.shareSubagent)
+      return
+    }
     const item = e.target.closest?.('[data-event-id]')
     if (item) {
       openEventById(item.dataset.eventId)
@@ -1544,6 +1550,34 @@ function openEventById(id) {
   if (event?.target) openTarget(event.target)
 }
 
+// Share a single sub-agent's own conversation (its transcript file → session-share).
+async function shareSubagentTranscript(transcript) {
+  const transcriptPath = String(transcript || '').trim()
+  const sessionId = inferSessionIdFromTranscriptPath(transcriptPath)
+  if (!sessionId) {
+    say('这个子 Agent 没有可分享的会话文件', 2600)
+    return
+  }
+  say('正在生成子 Agent 分享链接...', 2200)
+  try {
+    const result = await window.pet.shareSession?.({
+      provider: 'claude',
+      sessionId,
+      transcriptPath,
+      bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',
+      token: activeAgentConfig.token || '',
+    })
+    if (!result?.ok) {
+      say(`子 Agent 分享失败：${result?.error || 'bridge 没返回链接'}`, 4200)
+      return
+    }
+    const url = result.url || result.share?.url
+    say('子 Agent 分享链接已生成，已复制', 0, { source: 'local', type: 'task_done', text: url || '已生成', url })
+  } catch (error) {
+    say(`子 Agent 分享失败：${error?.message || error}`, 4200)
+  }
+}
+
 function openBubbleTarget(event = activeBubbleEvent) {
   const bubbleTarget = targetForEvent(event)
   const sessions = openableEvents()
@@ -1721,7 +1755,9 @@ function renderSessionList(el, list) {
     // clear parent→child hierarchy.
     const children = subs.map((sub) => [
       `<article class="event-item event-subagent" data-event-id="${escapeHtml(event.id || '')}" title="子 Agent 运行在父会话终端内">`,
-      `<div class="event-subagent-name">↳ 子 Agent · ${escapeHtml(sub.name)}</div>`,
+      `<div class="event-subagent-name">↳ 子 Agent · ${escapeHtml(sub.name)}`,
+      sub.transcript ? `<button type="button" class="subagent-share" data-share-subagent="${escapeHtml(sub.transcript)}">分享</button>` : '',
+      '</div>',
       `<div class="event-text">${escapeHtml(eventText(sub.last))}</div>`,
       '</article>',
     ].join('')).join('')

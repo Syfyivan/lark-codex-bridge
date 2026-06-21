@@ -563,7 +563,22 @@ body {
   font-weight: 600;
   color: #5d6ee8;
   margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
+
+.subagent-share {
+  margin-left: auto;
+  border: 1px solid rgba(93, 110, 232, 0.4);
+  background: #fff;
+  color: #5d6ee8;
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.subagent-share:hover { background: #eef0fe; }
 
 .event-item.done {
   border-left-color: #2f9b7b;

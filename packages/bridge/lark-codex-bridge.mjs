@@ -2604,22 +2604,50 @@ function taskViewerHtml(limit = config.taskViewerMaxTasks, scope = {}) {
   });
 }
 
+// A stable, unique id for one task-viewer share (scope key + random suffix).
+function taskViewerShareId(scope = {}) {
+  const base = scope.taskId || scope.contextKey || scope.chatId || 'all';
+  const safe = String(base).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60) || 'all';
+  return `${safe}-${randomUUID().split('-')[0]}`;
+}
+
+// Keep the accumulating share dir bounded so deploys stay fast.
+function pruneTaskViewerShares(rootDir, keep = 100) {
+  try {
+    const sharesDir = join(rootDir, 'task-shares');
+    const dirs = readdirSync(sharesDir, { withFileTypes: true }).filter(e => e.isDirectory());
+    if (dirs.length <= keep) return;
+    const sorted = dirs
+      .map(e => ({ name: e.name, mtime: statSync(join(sharesDir, e.name)).mtimeMs }))
+      .sort((a, b) => a.mtime - b.mtime);
+    for (const old of sorted.slice(0, sorted.length - keep)) {
+      rmSync(join(sharesDir, old.name), { recursive: true, force: true });
+    }
+  } catch { /* best-effort */ }
+}
+
+// Each share is written to its own immutable subpath (task-shares/<shareId>) and
+// accumulated, so links no longer overwrite each other (mirrors session-share).
+// The bare alias root still mirrors the latest share for convenience.
 function prepareTaskViewerGoofyPreviewSource(limit = config.taskViewerMaxTasks, scope = {}) {
   const normalizedScope = normalizeTaskViewerScope(scope);
   const tasks = taskViewerTasks(limit, normalizedScope);
   const title = taskViewerTitleForScope(normalizedScope);
-  writeTaskViewerSite({
-    tasks,
-    outDir: config.taskViewerGoofyPreviewDir,
-    title,
-  });
-  return { sourceDir: config.taskViewerGoofyPreviewDir, tasks, scope: normalizedScope, title };
+  const rootDir = config.taskViewerGoofyPreviewDir;
+  const shareId = taskViewerShareId(normalizedScope);
+  const shareDir = join(rootDir, 'task-shares', shareId);
+  writeTaskViewerSite({ tasks, outDir: shareDir, title }); // per-share, self-contained
+  mkdirSync(rootDir, { recursive: true });
+  writeFileSync(join(rootDir, 'index.html'), readFileSync(join(shareDir, 'index.html'), 'utf8'));
+  writeFileSync(join(rootDir, 'tasks.json'), readFileSync(join(shareDir, 'tasks.json'), 'utf8'));
+  pruneTaskViewerShares(rootDir);
+  return { sourceDir: rootDir, shareId, tasks, scope: normalizedScope, title };
 }
 
 async function deployTaskViewerGoofyPreview(limit = config.taskViewerMaxTasks, scope = {}) {
   const alias = String(config.taskViewerGoofyAlias || '').trim();
   if (!alias) throw new Error('TASK_VIEWER_GOOFY_ALIAS is required');
-  const { sourceDir, tasks, scope: normalizedScope, title } =
+  const { sourceDir, shareId, tasks, scope: normalizedScope, title } =
     prepareTaskViewerGoofyPreviewSource(limit, scope);
   const { stdout } = await runProcess(config.bytedCliBin, [
     '--json',
@@ -2638,8 +2666,11 @@ async function deployTaskViewerGoofyPreview(limit = config.taskViewerMaxTasks, s
     timeoutMs: config.taskViewerGoofyTimeoutMs,
     cwd: config.codexCwd,
   });
+  const baseUrl = extractGoofyPreviewBaseUrl(stdout);
   return {
-    url: extractGoofyPreviewBaseUrl(stdout),
+    url: `${baseUrl}/task-shares/${shareId}`, // per-share immutable link
+    baseUrl,
+    shareId,
     tasks: tasks.length,
     sourceDir,
     scope: normalizedScope,

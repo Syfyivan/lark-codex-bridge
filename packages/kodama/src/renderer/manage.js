@@ -43,7 +43,7 @@ function bindSegments() {
 }
 
 // ---- switches ----
-const SWITCHES = ['pettingEnabled', 'wanderEnabled', 'dndMode', 'soundEnabled', 'notificationsEnabled']
+const SWITCHES = ['pettingEnabled', 'wanderEnabled', 'dndMode', 'soundEnabled', 'notificationsEnabled', 'ttsEnabled']
 function bindSwitches() {
   for (const id of SWITCHES) {
     const el = $(id)

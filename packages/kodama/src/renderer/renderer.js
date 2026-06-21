@@ -111,6 +111,7 @@ const DEFAULT_UI_SETTINGS = {
   bubbleGap: 4,
   petX: null, // pet position inside the full-workarea overlay (null = auto bottom-right)
   petY: null,
+  ttsEnabled: false, // speak important events via macOS `say`
 }
 let uiSettings = loadUiSettings()
 let pomodoroSettings = {
@@ -151,6 +152,7 @@ function normalizeUiSettings(source = {}) {
     bubbleGap: clampNumber(source.bubbleGap, 0, 48, DEFAULT_UI_SETTINGS.bubbleGap),
     petX: Number.isFinite(source.petX) ? source.petX : null,
     petY: Number.isFinite(source.petY) ? source.petY : null,
+    ttsEnabled: source.ttsEnabled === true,
   }
 }
 
@@ -330,6 +332,7 @@ async function init() {
           sound: uiSettings.soundEnabled,
           notifications: uiSettings.notificationsEnabled,
         })
+        speakEvent(event) // optional macOS TTS for important events
       }
       feedGrowth(event.type) // P4: events feed the pet
       // Cross-source token ledger: bridge (source 'lark') events may carry tokens.
@@ -1548,6 +1551,23 @@ async function shareBubbleSession(id) {
 function openEventById(id) {
   const event = eventLog.find(item => item.id === String(id))
   if (event?.target) openTarget(event.target)
+}
+
+// Optional spoken notification for important events (macOS `say`, off by default).
+const TTS_LINES = {
+  task_done: '任务完成',
+  agent_done: '子任务完成',
+  task_failed: '任务失败',
+  task_waiting: '需要你确认',
+  pomodoro_completed: '番茄钟完成',
+  lark_message_received: '飞书有新消息',
+}
+function speakEvent(event) {
+  if (!uiSettings.ttsEnabled || !event) return
+  const line = TTS_LINES[event.type]
+  if (!line) return
+  const src = event.source === 'lark' ? '飞书' : '本地'
+  window.pet.speak?.(`${src}，${line}`)
 }
 
 // Share a single sub-agent's own conversation (its transcript file → session-share).

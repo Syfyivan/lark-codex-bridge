@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('pet', {
   setWindowSize: (size) => ipcRenderer.send('pet:set-window-size', size),
   onSetScale: (cb) => ipcRenderer.on('pet:set-scale', (_e, scale) => cb(scale)),
   setHidden: (hidden) => ipcRenderer.send('pet:set-hidden', hidden),
+  speak: (text) => ipcRenderer.send('pet:speak', text),
   openTarget: (target) => ipcRenderer.invoke('pet:open-target', target),
   sessionPreview: (request) => ipcRenderer.invoke('pet:session-preview', request),
   shareSession: (request) => ipcRenderer.invoke('pet:share-session', request),

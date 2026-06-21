@@ -7,6 +7,10 @@ const tokenUsage = require('./token-usage')
 const { createPomodoro } = require('./pomodoro')
 const { mapHookToEvent } = require('./hook-events')
 
+// Local hook receiver port — declared early; referenced by top-level consts
+// (e.g. KODAMA_HOOK_CURL) that would otherwise hit the temporal dead zone.
+const LOCAL_AGENT_PORT = 7766
+
 let win
 let taskWin
 let manageWin
@@ -420,6 +424,18 @@ ipcMain.on('pet:patch-ui-settings', (_e, patch) => {
 ipcMain.handle('pet:open-manage-window', () => {
   openManageWindow()
   return { ok: true }
+})
+
+let sayProc = null
+ipcMain.on('pet:speak', (_e, text) => {
+  if (process.platform !== 'darwin') return // uses macOS built-in `say`
+  const line = String(text || '').trim().slice(0, 80)
+  if (!line) return
+  try {
+    if (sayProc && !sayProc.killed) sayProc.kill() // interrupt the previous line
+    sayProc = spawn('say', [line], { stdio: 'ignore' }) // array args = no shell injection
+    sayProc.on('error', () => {})
+  } catch { /* TTS is best-effort */ }
 })
 
 ipcMain.on('pet:set-hidden', (_e, hidden) => {
@@ -1402,7 +1418,6 @@ ipcMain.handle('pet:token-stats', () => {
 // Local receiver for Claude Code / Codex hooks. They POST lifecycle events here;
 // we map them to pet events (source:'local') and forward to the renderer, so
 // local sessions and the Feishu bot share one pet.
-const LOCAL_AGENT_PORT = 7766
 const HOOK_TOKEN = process.env.KODAMA_HOOK_TOKEN || '' // optional shared secret
 const MAX_BODY_BYTES = 64 * 1024
 

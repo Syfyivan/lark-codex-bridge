@@ -414,8 +414,14 @@ async function initLive2D() {
     const margin = 24
     const autoX = window.innerWidth - pw - margin
     const autoY = window.innerHeight - ph - margin
-    const px = clampPoint(Number.isFinite(uiSettings.petX) ? uiSettings.petX : autoX, 0, Math.max(0, window.innerWidth - pw))
-    const py = clampPoint(Number.isFinite(uiSettings.petY) ? uiSettings.petY : autoY, 0, Math.max(0, window.innerHeight - ph))
+    // Honor edge mode. Live2D models carry a lot of transparent padding, so
+    // clamping fully-inside leaves a big visible gap. 'half' lets the pet hang
+    // partway off-screen so its visible body can truly hug/reach the edge.
+    const minVisible = uiSettings.edgeMode === 'half' ? 0.42 : 1
+    const overflowX = pw * (1 - minVisible)
+    const overflowY = ph * (1 - minVisible)
+    const px = clampPoint(Number.isFinite(uiSettings.petX) ? uiSettings.petX : autoX, -overflowX, window.innerWidth - pw + overflowX)
+    const py = clampPoint(Number.isFinite(uiSettings.petY) ? uiSettings.petY : autoY, -overflowY, window.innerHeight - ph + overflowY)
     model.x = px
     model.y = py
     uiSettings.petX = px

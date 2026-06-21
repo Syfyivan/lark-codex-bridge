@@ -439,6 +439,7 @@ ipcMain.on('pet:speak', (_e, text) => {
 })
 
 ipcMain.on('pet:pet-action', () => sendToPet('pet:do-pet')) // 管理窗口「摸摸」→ 桌宠
+ipcMain.on('pet:feed-pet', () => sendToPet('pet:do-feed')) // 管理窗口「投喂」→ 桌宠
 
 ipcMain.on('pet:set-hidden', (_e, hidden) => {
   setPetHidden(hidden)

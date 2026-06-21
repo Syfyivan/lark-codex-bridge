@@ -129,6 +129,7 @@ async function init() {
   bindSwitches()
   bindPomodoro()
   $('petAction')?.addEventListener('click', () => { window.pet.petAction?.(); setStatus('摸了摸桌宠~') })
+  $('feedPet')?.addEventListener('click', () => { window.pet.feedPet?.(); setStatus('投喂了桌宠~'); setTimeout(refreshStats, 600) })
 
   // ui-settings come from the pet renderer via the main cache; it may not be set
   // the instant we open, so retry briefly.

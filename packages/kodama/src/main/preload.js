@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('pet', {
   speak: (text) => ipcRenderer.send('pet:speak', text),
   petAction: () => ipcRenderer.send('pet:pet-action'), // 管理窗口触发「摸摸」
   onDoPet: (cb) => ipcRenderer.on('pet:do-pet', () => cb()),
+  feedPet: () => ipcRenderer.send('pet:feed-pet'), // 管理窗口触发「投喂」
+  onDoFeed: (cb) => ipcRenderer.on('pet:do-feed', () => cb()),
   openTarget: (target) => ipcRenderer.invoke('pet:open-target', target),
   sessionPreview: (request) => ipcRenderer.invoke('pet:session-preview', request),
   shareSession: (request) => ipcRenderer.invoke('pet:share-session', request),

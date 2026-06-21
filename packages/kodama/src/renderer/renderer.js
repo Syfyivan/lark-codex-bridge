@@ -4,7 +4,7 @@ import { reactToEvent } from './reactions.js'
 import { PET_CONFIG } from './config/pet-config.js'
 import { initAccessoryLayer } from './accessories.js'
 import { ACCESSORIES, ACCESSORY_SLOTS } from './config/accessories.js'
-import { initGrowth, feed as feedGrowth, feedTokens, statusText, getState as getGrowthState, equipAccessory, configureAccessories } from './growth.js'
+import { initGrowth, feed as feedGrowth, feedManually, growthScale, feedTokens, statusText, getState as getGrowthState, equipAccessory, configureAccessories } from './growth.js'
 
 // Live2D model is chosen by `pnpm run setup <name>` (writes ./models/current-model.js).
 const FALLBACK_MODEL_URL = './models/wanko/Wanko.model3.json'
@@ -305,6 +305,12 @@ async function init() {
       backend?.playMotion('Tap')
       say('摸摸~ 🐾', 1600)
     })
+    // 管理窗口的「投喂」按钮:食物→经验,升级可能变大 → 重排
+    window.pet.onDoFeed?.(() => {
+      feedManually()
+      syncAccessories()
+      backend?.applySettings?.()
+    })
     // Settings changed from the management window arrive as a patch.
     window.pet.onApplyUiPatch?.((patch) => {
       if (!patch || typeof patch !== 'object') return
@@ -423,7 +429,8 @@ async function initLive2D() {
     const PET_BOX_W = 280
     const PET_BOX_H = 400
     const baseScale = Math.min(PET_BOX_W / originalWidth, PET_BOX_H / originalHeight)
-    const scale = baseScale * uiSettings.petScale
+    // 等级越高桌宠越大(幼崽→成年),再乘用户的大小偏好。
+    const scale = baseScale * uiSettings.petScale * growthScale()
     model.alpha = uiSettings.petOpacity
     model.scale.set(scale)
     const pw = model.width

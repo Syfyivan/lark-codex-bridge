@@ -141,6 +141,28 @@ export function feed(type) {
   applyGains(g.food, g.exp)
 }
 
+// 主动投喂:消耗食物换经验(食物自动从使用累积,投喂是把它"花"成成长)。
+const FEED_COST = 200 // 每次投喂消耗的食物(不足则全投)
+const FEED_EXP_RATE = 0.5 // 食物→经验的转化率
+export function feedManually() {
+  const cost = Math.min(state.food, FEED_COST)
+  if (cost <= 0) {
+    hooks.say?.('还没有食物呢，跑跑任务攒点 🍖', 2600)
+    return { ok: false, reason: 'no-food' }
+  }
+  state.food -= cost
+  const expGain = Math.max(1, Math.round(cost * FEED_EXP_RATE))
+  hooks.playMotion?.('Tap')
+  hooks.say?.(`投喂 -${cost}🍖 → +${expGain}⭐ 😋`, 2600)
+  applyGains(0, expGain) // 加经验 + 处理升级 + 持久化
+  return { ok: true, cost, expGain, level: state.level }
+}
+
+// 等级影响显示大小:幼崽小 → 成年大,温和封顶(31 级到顶 1.0,不打扰已满级桌宠)。
+export function growthScale() {
+  return Math.min(1, 0.7 + (state.level - 1) * 0.01)
+}
+
 // Feed the pet from cumulative token usage. First call only sets a baseline
 // (so pre-existing usage doesn't dump a huge level-up); afterwards each refresh
 // feeds the delta of newly-used tokens.

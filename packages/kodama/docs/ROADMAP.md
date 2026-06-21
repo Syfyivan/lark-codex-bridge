@@ -19,12 +19,12 @@
 - [ ] 决定推送代码 / 合并发布博客。
 
 ## P1 — 还能做的功能
-- [ ] **自动注册 agent hooks**(参考 [clawd-on-desk]):现在要手动改 `~/.claude/settings.json` 指 7766。做成启动自动检测+幂等注入 Claude Code/Codex hook、可卸载(注意:用户 settings.json 已有 VibeBuddy/Flux Island 等 hook,需合并不能覆盖)。
-- [ ] **更广 agent 覆盖**(参考 [clawd-on-desk] 支持十几家):识别 Cursor / Gemini CLI / Copilot CLI / opencode 的 hook/会话,统一进事件流 + 跳转。
-- [ ] **更细粒度事件**:正在跑测试 / 测试失败 / git 操作 / 构建失败(现仅 started/progress/done/failed/waiting)。
-- [ ] **GIF 后端覆盖层定位适配**(当前仅 Live2D 适配 petX/petY)。
-- [ ] **task-viewer 单任务渲染更"干净"**:目前是任务时间线样式;可做成单会话对话回放视图。
-- [ ] **多显示器 / 全屏切换回归**:覆盖层在外接屏、Space 切换下的位置与穿透验证。
+- [x] **一键注册 Claude Code Hook**(参考 [clawd-on-desk]):托盘按钮,安全合并(备份+只追加+幂等)进 `~/.claude/settings.json`,补齐缺失的失败/细粒度事件;不覆盖已有 hook。`4ae8c56`
+- [x] **更细粒度事件**:测试/构建/Git 的 正在跑/完成/失败(commandEvent 已实现,去噪后纳入注册)。`4cbf9b5`
+- [ ] **更广 agent 覆盖**(参考 [clawd-on-desk] 支持十几家):识别 Cursor / Gemini CLI / Copilot CLI / opencode 的 hook/会话 —— *需各家 hook 规格,暂缺、待补*。
+- [ ] **GIF 后端覆盖层定位适配**(当前仅 Live2D 适配 petX/petY)——低优先(默认用 Live2D)。
+- [ ] **task-viewer 单任务渲染更"干净"**:目前是任务时间线样式;可做成单会话对话回放视图(bridge+Goofy,需联网验证)。
+- [ ] **多显示器 / 全屏切换回归**:覆盖层在外接屏、Space 切换下的位置与穿透验证(需你的硬件)。
 
 ## P2 — 增强 / 差异化(参考开源)
 - [ ] **上下文感知**(参考 [Live2DPet]):截屏 / 活动窗口感知,桌宠按你在干嘛说更贴切的话(纯本地、可关、隐私优先)。

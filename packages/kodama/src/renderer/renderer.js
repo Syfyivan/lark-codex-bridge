@@ -870,8 +870,21 @@ function positionNearPet(el, fallbackWidth, fallbackHeight) {
     setElementCorner(el, 'top-right', fallbackWidth, fallbackHeight)
     return
   }
-  const gap = Math.max(8, uiSettings.bubbleGap)
-  const petRect = { left: pet.x, top: pet.y, right: pet.x + pet.width, bottom: pet.y + pet.height, width: pet.width, height: pet.height }
+  // Live2D bounds carry a lot of transparent padding, so snuggling against the
+  // raw bounds leaves a big visible gap. Anchor the bubble to a centered visible
+  // core instead, and keep the gap well under half the pet width.
+  const CORE = 0.58
+  const coreW = pet.width * CORE
+  const coreH = pet.height * CORE
+  const gap = Math.min(Math.max(6, uiSettings.bubbleGap), coreW * 0.5)
+  const petRect = {
+    left: pet.x + (pet.width - coreW) / 2,
+    top: pet.y + (pet.height - coreH) / 2,
+    right: pet.x + (pet.width + coreW) / 2,
+    bottom: pet.y + (pet.height + coreH) / 2,
+    width: coreW,
+    height: coreH,
+  }
   const visiblePet = rectIntersection(petRect, area)
   const anchorX = clampPoint(pet.x + pet.width / 2, area.left + padding, area.right - padding)
   const anchorY = clampPoint(

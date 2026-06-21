@@ -237,6 +237,25 @@ function setLoginItemEnabled(enabled) {
 const WINDOW_STATE_VERSION = 3
 const DEFAULT_WINDOW = { width: 280, height: 400 }
 const windowStateFile = () => path.join(app.getPath('userData'), 'kodama-window.json')
+
+// sessionId -> tty, captured while a session is alive so we can still jump to its
+// cmux tab after the agent process exits (the tab/tty persist).
+const sessionTtyFile = () => path.join(app.getPath('userData'), 'kodama-session-tty.json')
+let sessionTtyCache = new Map()
+let sessionTtySaveTimer = null
+function loadSessionTtyCache() {
+  try {
+    const obj = JSON.parse(fs.readFileSync(sessionTtyFile(), 'utf8'))
+    if (obj && typeof obj === 'object') sessionTtyCache = new Map(Object.entries(obj))
+  } catch { /* first run / corrupt — start empty */ }
+}
+function saveSessionTtyCache() {
+  if (sessionTtySaveTimer) return
+  sessionTtySaveTimer = setTimeout(() => {
+    sessionTtySaveTimer = null
+    try { fs.writeFileSync(sessionTtyFile(), JSON.stringify(Object.fromEntries(sessionTtyCache))) } catch { /* ignore */ }
+  }, 1000)
+}
 function clampWindowState(state, workArea) {
   const margin = 8
   const width = Math.min(state.width, Math.max(180, workArea.width - margin * 2))
@@ -623,6 +642,21 @@ async function focusCmuxByTty(tty) {
   }
 }
 
+// While a session is alive, remember its tty so we can still jump after it ends.
+async function cacheSessionTty(sessionId) {
+  const id = String(sessionId || '').trim()
+  if (!id) return
+  try {
+    const rows = parsePs(await runCommand('ps', ['-axo', 'pid,ppid,pgid,tty,args']))
+    const hit = rows.find((row) => row.command.includes(id) && isAgentCommand(row.command) && normalizeTty(row.tty))
+    const tty = hit ? normalizeTty(hit.tty) : ''
+    if (tty && sessionTtyCache.get(id) !== tty) {
+      sessionTtyCache.set(id, tty)
+      saveSessionTtyCache()
+    }
+  } catch { /* best-effort */ }
+}
+
 function normalizeTty(value) {
   const tty = String(value || '').trim()
   if (!tty || tty === '??') return ''
@@ -674,7 +708,9 @@ async function openAppPath(appPath) {
 
 async function openTerminalSessionTarget(target) {
   const found = await findCliSessionTarget(target)
-  const tty = normalizeTty(target?.tty) || normalizeTty(found?.tty)
+  let tty = normalizeTty(target?.tty) || normalizeTty(found?.tty)
+  // Completed session: process gone, recover the tty cached while it was alive.
+  if (!tty && target?.sessionId) tty = normalizeTty(sessionTtyCache.get(String(target.sessionId).trim()))
 
   // Prefer cmux: focus the exact workspace/pane by tty rather than re-opening
   // the app (which is what spawned a stray cmux instead of jumping).
@@ -1459,6 +1495,8 @@ function startLocalAgentServer() {
         return
       }
       if (event) {
+        const sid = event.sessionId || event.session_id
+        if (sid) cacheSessionTty(sid) // remember tty while the session is alive
         emitRendererAgentEvent(event)
       }
       writeJson(res, 200, { ok: true })
@@ -1603,6 +1641,7 @@ function registerGlobalShortcuts() {
 
 app.whenReady().then(() => {
   console.error('[kodama] app ready')
+  loadSessionTtyCache()
   // macOS: become an accessory (agent) app — no Dock icon, never grabs a Space.
   // The other half (with the pet window's type:'panel') of reliably floating
   // over other apps' native fullscreen spaces.

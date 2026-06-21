@@ -172,13 +172,14 @@ function mapHookToEvent(data) {
       }
       const command = commandEvent(data)
       if (command) return command
-      return withLocalContext({ type: 'task_progress', source: 'local', text: name ? `正在用工具：${name}` : '正在调用工具' }, data)
+      // Only surface notable commands (test/build/git). Generic per-tool calls
+      // would flood the pet, so they produce no event.
+      return null
     }
     case 'PostToolUse': {
-      const name = toolName(data)
       const command = commandEvent(data, { done: true, failed: data.error || data.success === false })
       if (command) return command
-      return withLocalContext({ type: 'task_progress', source: 'local', text: name ? `工具完成：${name}` : '工具调用完成' }, data)
+      return null
     }
     case 'SubagentStart':
       return withAgent({ type: 'task_progress', source: 'local', text: agentName(data) ? `子 Agent ${agentName(data)} 开始工作` : '子 Agent 开始工作' }, data)

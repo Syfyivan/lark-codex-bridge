@@ -346,7 +346,9 @@ function setPetScale(scale) {
 // manually from the tray — never written silently.
 const KODAMA_HOOK_CURL =
   `curl -s -m 1 --noproxy 127.0.0.1 -X POST http://127.0.0.1:${LOCAL_AGENT_PORT} -H 'Content-Type: application/json' -d "$(cat)"`
-const KODAMA_HOOK_EVENTS = ['Stop', 'StopFailure', 'Notification', 'SubagentStart', 'SubagentStop', 'PostToolUseFailure']
+// PreToolUse/PostToolUse only emit for notable commands (test/build/git) now,
+// so wiring them gives fine-grained progress without per-tool-call noise.
+const KODAMA_HOOK_EVENTS = ['Stop', 'StopFailure', 'Notification', 'SubagentStart', 'SubagentStop', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure']
 
 function registerClaudeHook({ dryRun = false } = {}) {
   const file = path.join(app.getPath('home'), '.claude', 'settings.json')

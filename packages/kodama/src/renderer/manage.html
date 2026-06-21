@@ -38,6 +38,8 @@
     .switch.on::after { transform: translateX(18px); }
     .num { display: grid; grid-template-columns: 1fr 72px; align-items: center; gap: 10px; padding: 5px 0; }
     .num input { width: 72px; padding: 4px 6px; border: 1px solid rgba(111,125,145,.3); border-radius: 6px; font: inherit; }
+    .btn { border: 1px solid #5d6ee8; background: #5d6ee8; color: #fff; border-radius: 8px; padding: 5px 14px; font: inherit; cursor: pointer; }
+    .btn:hover { background: #4d5ed8; }
     .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     .stat { background: #f6f8fb; border-radius: 8px; padding: 8px 10px; }
     .stat b { display: block; font-size: 16px; }
@@ -78,6 +80,12 @@
     <div class="num"><span>长休</span><input id="longBreakMinutes" type="number" min="1" max="120" /></div>
     <div class="num"><span>长休间隔（轮）</span><input id="longBreakEvery" type="number" min="1" max="12" /></div>
     <div class="num"><span>久坐提醒（0=关）</span><input id="sedentaryMinutes" type="number" min="0" max="240" /></div>
+  </section>
+
+  <section class="card">
+    <h2>互动 / 成长</h2>
+    <div class="toggle"><span>摸摸桌宠（动作 + 气泡）</span><button id="petAction" class="btn">摸摸 🐾</button></div>
+    <p class="muted">喂食与升级是<b>自动</b>的：每次 agent 事件按表加食物/经验，token 用量也会喂食（约 2000 tok = 1 食物），经验满即升级——所以下面是只读统计。按等级解锁的<b>配饰</b>在菜单栏托盘「配饰」里佩戴。</p>
   </section>
 
   <section class="card">

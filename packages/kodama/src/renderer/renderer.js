@@ -300,6 +300,11 @@ async function init() {
       saveUiSettings()
       applyUiSettings()
     })
+    // 管理窗口的「摸摸」按钮
+    window.pet.onDoPet?.(() => {
+      backend?.playMotion('Tap')
+      say('摸摸~ 🐾', 1600)
+    })
     // Settings changed from the management window arrive as a patch.
     window.pet.onApplyUiPatch?.((patch) => {
       if (!patch || typeof patch !== 'object') return

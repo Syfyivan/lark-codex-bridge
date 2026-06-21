@@ -128,6 +128,7 @@ async function init() {
   bindSegments()
   bindSwitches()
   bindPomodoro()
+  $('petAction')?.addEventListener('click', () => { window.pet.petAction?.(); setStatus('摸了摸桌宠~') })
 
   // ui-settings come from the pet renderer via the main cache; it may not be set
   // the instant we open, so retry briefly.

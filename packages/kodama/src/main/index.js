@@ -438,6 +438,8 @@ ipcMain.on('pet:speak', (_e, text) => {
   } catch { /* TTS is best-effort */ }
 })
 
+ipcMain.on('pet:pet-action', () => sendToPet('pet:do-pet')) // 管理窗口「摸摸」→ 桌宠
+
 ipcMain.on('pet:set-hidden', (_e, hidden) => {
   setPetHidden(hidden)
 })

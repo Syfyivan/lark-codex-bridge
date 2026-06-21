@@ -599,10 +599,10 @@ function setupInteraction() {
 
   window.addEventListener('mousedown', (e) => {
     if (panelVisible || e.button !== 0 || overElement(bubble, e.clientX, e.clientY)) return
-    const explicitDrag = e.altKey || e.metaKey
-    if (uiSettings.triggerMode !== 'left' && !explicitDrag) return
     if (!overPet(e.clientX, e.clientY)) return
-    startDrag(e, { tap: uiSettings.triggerMode === 'left' && !explicitDrag })
+    // 左键直接按在桌宠身上即可拖动(抓住就拖,符合直觉);静止点击不会移动它,
+    // 左键触发模式下静止点击=摸摸。右键仍打开面板。
+    startDrag(e, { tap: uiSettings.triggerMode === 'left' })
   })
 
   window.addEventListener('mouseup', () => {

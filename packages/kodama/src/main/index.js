@@ -340,6 +340,43 @@ function setPetScale(scale) {
   sendToPet('pet:set-scale', scale)
 }
 
+// One-click registration of the Kodama hook into the user's global Claude Code
+// settings.json. SAFE: backs up first, only APPENDS the 7766 curl to events that
+// don't already have it (never touches existing hooks), idempotent. Triggered
+// manually from the tray — never written silently.
+const KODAMA_HOOK_CURL =
+  `curl -s -m 1 --noproxy 127.0.0.1 -X POST http://127.0.0.1:${LOCAL_AGENT_PORT} -H 'Content-Type: application/json' -d "$(cat)"`
+const KODAMA_HOOK_EVENTS = ['Stop', 'StopFailure', 'Notification', 'SubagentStart', 'SubagentStop', 'PostToolUseFailure']
+
+function registerClaudeHook({ dryRun = false } = {}) {
+  const file = path.join(app.getPath('home'), '.claude', 'settings.json')
+  let json
+  try {
+    json = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch (err) {
+    return { ok: false, error: `读取 settings.json 失败: ${err.message}` }
+  }
+  json.hooks = json.hooks || {}
+  const added = []
+  const next = { ...json, hooks: { ...json.hooks } }
+  for (const ev of KODAMA_HOOK_EVENTS) {
+    const list = Array.isArray(next.hooks[ev]) ? next.hooks[ev].slice() : []
+    if (JSON.stringify(list).includes(`:${LOCAL_AGENT_PORT}`)) continue // already wired
+    list.push({ hooks: [{ type: 'command', command: KODAMA_HOOK_CURL }] })
+    next.hooks[ev] = list
+    added.push(ev)
+  }
+  if (dryRun) return { ok: true, added, dryRun: true }
+  if (!added.length) return { ok: true, added: [], message: '所有相关事件已连到 Kodama' }
+  try {
+    fs.copyFileSync(file, `${file}.bak-kodama-${Date.now()}`)
+    fs.writeFileSync(file, JSON.stringify(next, null, 2))
+  } catch (err) {
+    return { ok: false, error: `写入失败: ${err.message}` }
+  }
+  return { ok: true, added }
+}
+
 // Keep the overlay covering the current primary work area across display changes.
 function fitWindowToWorkArea() {
   if (!win || win.isDestroyed()) return
@@ -1578,6 +1615,19 @@ function refreshTray() {
   })
   items.push({ label: '事件 / 配置面板  ⌘⌥P', click: () => showPetAndMaybeTogglePanel(true) })
   items.push({ label: '管理 / 设置中心…', click: () => openManageWindow() })
+  items.push({
+    label: '注册 Claude Code Hook → Kodama',
+    click: () => {
+      const result = registerClaudeHook()
+      const body = !result.ok
+        ? `失败：${result.error}`
+        : result.added.length
+          ? `已补齐事件：${result.added.join(', ')}\n重启 Claude Code 后生效`
+          : (result.message || '已是最新，无需改动')
+      try { new Notification({ title: 'Kodama · Claude Code Hook', body }).show() } catch { /* ignore */ }
+      console.error(`[kodama] register hook: ${JSON.stringify(result)}`)
+    },
+  })
   items.push({ label: 'Bridge 任务详情', click: () => createBridgeTasksWindow() })
   items.push({
     label: petUiMenuState.dndMode ? '退出勿扰模式' : '进入勿扰模式',

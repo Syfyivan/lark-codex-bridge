@@ -109,6 +109,8 @@ const DEFAULT_UI_SETTINGS = {
   panelCorner: 'near',
   bubbleAnchor: 58,
   bubbleGap: 4,
+  petX: null, // pet position inside the full-workarea overlay (null = auto bottom-right)
+  petY: null,
 }
 let uiSettings = loadUiSettings()
 let pomodoroSettings = {
@@ -147,6 +149,8 @@ function normalizeUiSettings(source = {}) {
       : DEFAULT_UI_SETTINGS.panelCorner,
     bubbleAnchor: clampNumber(source.bubbleAnchor, 35, 80, DEFAULT_UI_SETTINGS.bubbleAnchor),
     bubbleGap: clampNumber(source.bubbleGap, 0, 48, DEFAULT_UI_SETTINGS.bubbleGap),
+    petX: Number.isFinite(source.petX) ? source.petX : null,
+    petY: Number.isFinite(source.petY) ? source.petY : null,
   }
 }
 
@@ -164,6 +168,15 @@ function loadUiSettings() {
 
 function saveUiSettings() {
   localStorage.setItem('kodama-ui-settings', JSON.stringify(uiSettings))
+}
+
+let savePetPosTimer = 0
+function scheduleSavePetPos() {
+  if (savePetPosTimer) return
+  savePetPosTimer = setTimeout(() => {
+    savePetPosTimer = 0
+    saveUiSettings()
+  }, 400)
 }
 
 function applyUiSettings() {
@@ -276,6 +289,13 @@ async function init() {
     await loadAccessoryPack()
     configureAccessories({ accessories: activeAccessories, slots: activeAccessorySlots })
     setupInteraction()
+    // Tray "size" presets push a pet scale into the renderer (the overlay window
+    // itself is fixed to the work area now).
+    window.pet.onSetScale?.((scale) => {
+      uiSettings.petScale = clampNumber(scale, 0.4, 1.25, uiSettings.petScale)
+      saveUiSettings()
+      applyUiSettings()
+    })
     accessoryLayer = initAccessoryLayer(() => backend?.getBounds?.(), { accessories: activeAccessories })
     applyUiSettings()
     loadPomodoroSettings()
@@ -381,11 +401,25 @@ async function initLive2D() {
 
   function layout() {
     const { originalWidth, originalHeight } = model.internalModel
-    const scale = Math.min(window.innerWidth / originalWidth, window.innerHeight / originalHeight) * uiSettings.petScale
+    // The window now spans the whole work area, so scale against a nominal pet
+    // box (not the window) and place the model at the persisted petX/petY.
+    const PET_BOX_W = 280
+    const PET_BOX_H = 400
+    const baseScale = Math.min(PET_BOX_W / originalWidth, PET_BOX_H / originalHeight)
+    const scale = baseScale * uiSettings.petScale
     model.alpha = uiSettings.petOpacity
     model.scale.set(scale)
-    model.x = (window.innerWidth - model.width) / 2
-    model.y = window.innerHeight - model.height
+    const pw = model.width
+    const ph = model.height
+    const margin = 24
+    const autoX = window.innerWidth - pw - margin
+    const autoY = window.innerHeight - ph - margin
+    const px = clampPoint(Number.isFinite(uiSettings.petX) ? uiSettings.petX : autoX, 0, Math.max(0, window.innerWidth - pw))
+    const py = clampPoint(Number.isFinite(uiSettings.petY) ? uiSettings.petY : autoY, 0, Math.max(0, window.innerHeight - ph))
+    model.x = px
+    model.y = py
+    uiSettings.petX = px
+    uiSettings.petY = py
     positionBubble()
     positionPanel()
   }
@@ -511,10 +545,16 @@ function setupInteraction() {
 
   window.addEventListener('mousemove', (e) => {
     if (dragging) {
-      window.pet.move(e.screenX - lastX, e.screenY - lastY, dragVisibleBounds())
+      // Move the pet *within* the full-workarea overlay; layout() re-clamps so
+      // it can hug any edge, and repositions the bubble adaptively.
+      const baseX = Number.isFinite(uiSettings.petX) ? uiSettings.petX : 0
+      const baseY = Number.isFinite(uiSettings.petY) ? uiSettings.petY : 0
+      uiSettings.petX = baseX + (e.screenX - lastX)
+      uiSettings.petY = baseY + (e.screenY - lastY)
       lastX = e.screenX
       lastY = e.screenY
-      scheduleFloatingLayout()
+      backend?.applySettings?.()
+      scheduleSavePetPos()
       return
     }
     const over = overInteractiveSurface(e.clientX, e.clientY)
@@ -536,6 +576,7 @@ function setupInteraction() {
   })
 
   window.addEventListener('mouseup', () => {
+    if (dragging) saveUiSettings()
     dragging = false
   })
 

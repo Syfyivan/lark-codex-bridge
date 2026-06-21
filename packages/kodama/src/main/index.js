@@ -34,13 +34,17 @@ function sendToPet(channel, payload) {
 
 function createWindow() {
   const { workArea } = screen.getPrimaryDisplay()
-  const { width, height, x, y } = loadWindowState(workArea)
 
   win = new BrowserWindow({
-    width,
-    height,
-    x,
-    y,
+    // Full-workarea transparent overlay. The pet is positioned *inside* this
+    // window (renderer petX/petY) so it can hug any screen edge and bubbles
+    // never clip at a tiny window's border. Click-through by default (set right
+    // below) keeps the rest of the desktop fully usable.
+    x: workArea.x,
+    y: workArea.y,
+    width: workArea.width,
+    height: workArea.height,
+    movable: false,
     transparent: true,
     frame: false,
     hasShadow: false, // otherwise a grey rectangle shadow shows around the model
@@ -277,16 +281,17 @@ function saveWindowState() {
   }
 }
 
-function setPetSize(width, height) {
+// The overlay window now spans the whole work area; "size" means scaling the
+// pet inside it, which the renderer owns. Tray presets just push a scale.
+function setPetScale(scale) {
+  sendToPet('pet:set-scale', scale)
+}
+
+// Keep the overlay covering the current primary work area across display changes.
+function fitWindowToWorkArea() {
   if (!win || win.isDestroyed()) return
-  const [oldX, oldY] = win.getPosition()
-  const display = screen.getDisplayMatching({ x: oldX, y: oldY, width, height })
-  const next = defaultWindowState(display.workArea, width, height)
-  win.setResizable(true) // some platforms ignore setSize while non-resizable
-  win.setSize(next.width, next.height)
-  win.setResizable(false)
-  win.setPosition(next.x, next.y)
-  saveWindowState()
+  const { workArea } = screen.getPrimaryDisplay()
+  win.setBounds({ x: workArea.x, y: workArea.y, width: workArea.width, height: workArea.height })
 }
 
 // renderer -> main: toggle click-through
@@ -308,11 +313,8 @@ ipcMain.on('pet:move', (e, dx, dy, visibleBounds) => {
   saveWindowState()
 })
 
-ipcMain.on('pet:set-window-size', (_e, size) => {
-  const width = Number(size?.width)
-  const height = Number(size?.height)
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return
-  setPetSize(Math.max(180, width), Math.max(240, height))
+ipcMain.on('pet:set-window-size', () => {
+  // No-op: the overlay spans the full work area now; pet size is a renderer scale.
 })
 
 ipcMain.on('pet:set-hidden', (_e, hidden) => {
@@ -1510,10 +1512,10 @@ function refreshTray() {
   items.push({
     label: '大小',
     submenu: [
-      { label: '很小', click: () => setPetSize(200, 290) },
-      { label: '小', click: () => setPetSize(280, 400) },
-      { label: '中（默认）', click: () => setPetSize(360, 520) },
-      { label: '大', click: () => setPetSize(460, 650) },
+      { label: '很小', click: () => setPetScale(0.5) },
+      { label: '小', click: () => setPetScale(0.72) },
+      { label: '中（默认）', click: () => setPetScale(0.95) },
+      { label: '大', click: () => setPetScale(1.2) },
     ],
   })
   items.push({ label: '配饰', submenu: buildAccessoryMenu() })
@@ -1564,9 +1566,10 @@ app.whenReady().then(() => {
   refreshTokenStats({ force: true })
   topmostInterval = setInterval(reassertTopmost, 15 * 1000)
   topmostInterval.unref?.()
-  screen.on('display-added', scheduleTopmostReassert)
-  screen.on('display-removed', scheduleTopmostReassert)
-  screen.on('display-metrics-changed', scheduleTopmostReassert)
+  const onDisplayChange = () => { fitWindowToWorkArea(); scheduleTopmostReassert() }
+  screen.on('display-added', onDisplayChange)
+  screen.on('display-removed', onDisplayChange)
+  screen.on('display-metrics-changed', onDisplayChange)
   app.on('browser-window-focus', scheduleTopmostReassert)
   app.on('browser-window-blur', scheduleTopmostReassert)
 

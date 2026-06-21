@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('pet', {
   setIgnoreMouse: (ignore, opts) => ipcRenderer.send('pet:set-ignore-mouse', ignore, opts),
   move: (dx, dy, visibleBounds) => ipcRenderer.send('pet:move', dx, dy, visibleBounds),
   setWindowSize: (size) => ipcRenderer.send('pet:set-window-size', size),
+  onSetScale: (cb) => ipcRenderer.on('pet:set-scale', (_e, scale) => cb(scale)),
   setHidden: (hidden) => ipcRenderer.send('pet:set-hidden', hidden),
   openTarget: (target) => ipcRenderer.invoke('pet:open-target', target),
   sessionPreview: (request) => ipcRenderer.invoke('pet:session-preview', request),

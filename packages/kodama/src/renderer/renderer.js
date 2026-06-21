@@ -1683,16 +1683,46 @@ function renderSessionList(el, list) {
     return
   }
   el.className = 'event-list sessions'
-  el.innerHTML = list.map((event) => [
-    `<article class="event-item" data-event-id="${escapeHtml(event.id || '')}">`,
-    '<div class="event-meta">',
-    `<span>${escapeHtml(sourceLabel(event.source))} · ${escapeHtml(typeLabel(event.type))}</span>`,
-    `<time>${escapeHtml(fmtTime(event.receivedAt))}</time>`,
-    '</div>',
-    `<div class="event-text">${escapeHtml(eventText(event))}</div>`,
-    `<div class="event-target">${escapeHtml(event.target?.label || '打开会话')}</div>`,
-    '</article>',
-  ].join('')).join('')
+  el.innerHTML = list.map((event) => {
+    const subs = subagentsForSession(event)
+    const parent = [
+      `<article class="event-item" data-event-id="${escapeHtml(event.id || '')}">`,
+      '<div class="event-meta">',
+      `<span>${escapeHtml(sourceLabel(event.source))} · ${escapeHtml(typeLabel(event.type))}${subs.length ? ` · ${subs.length} 子 Agent` : ''}</span>`,
+      `<time>${escapeHtml(fmtTime(event.receivedAt))}</time>`,
+      '</div>',
+      `<div class="event-text">${escapeHtml(eventText(event))}</div>`,
+      `<div class="event-target">${escapeHtml(event.target?.label || '打开会话')}</div>`,
+      '</article>',
+    ].join('')
+    // Sub-agents run inside the parent session's terminal, so clicking jumps to
+    // the same parent terminal; the value here is showing them separately with a
+    // clear parent→child hierarchy.
+    const children = subs.map((sub) => [
+      `<article class="event-item event-subagent" data-event-id="${escapeHtml(event.id || '')}" title="子 Agent 运行在父会话终端内">`,
+      `<div class="event-subagent-name">↳ 子 Agent · ${escapeHtml(sub.name)}</div>`,
+      `<div class="event-text">${escapeHtml(eventText(sub.last))}</div>`,
+      '</article>',
+    ].join('')).join('')
+    return parent + children
+  }).join('')
+}
+
+// Collect the sub-agents (SubagentStart/Stop carry agent_transcript_path + the
+// parent session_id) belonging to a parent session, deduped by transcript.
+function subagentsForSession(sessionEvent) {
+  const parentId = sessionEvent?.sessionId || sessionEvent?.session_id || ''
+  if (!parentId) return []
+  const seen = new Set()
+  const subs = []
+  for (const ev of eventLog) {
+    const transcript = ev.agentTranscriptPath || ev.agent_transcript_path || ''
+    const pid = ev.sessionId || ev.session_id || ''
+    if (!transcript || pid !== parentId || seen.has(transcript)) continue
+    seen.add(transcript)
+    subs.push({ transcript, name: ev.agent || ev.agentId || ev.agent_id || '子 Agent', last: ev })
+  }
+  return subs
 }
 
 function renderConfig() {

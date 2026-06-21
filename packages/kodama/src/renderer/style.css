@@ -550,6 +550,21 @@ body {
   background: #fff7ed;
 }
 
+/* Sub-agent session nested under its parent: indented, dimmer, dashed accent. */
+.event-item.event-subagent {
+  margin-left: 16px;
+  border-left: 2px dashed #9aa7bd;
+  background: #f6f8fb;
+  opacity: 0.92;
+}
+
+.event-subagent-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #5d6ee8;
+  margin-bottom: 2px;
+}
+
 .event-item.done {
   border-left-color: #2f9b7b;
 }

@@ -33,4 +33,10 @@ contextBridge.exposeInMainWorld('pet', {
   // accessory tray menu state and commands
   updateAccessoryMenu: (state) => ipcRenderer.send('pet:accessory-menu', state),
   onEquipAccessory: (cb) => ipcRenderer.on('pet:equip-accessory', (_e, payload) => cb(payload)),
+  // management window <-> pet renderer ui-settings sync (via main cache)
+  reportUiSettings: (settings) => ipcRenderer.send('pet:report-ui-settings', settings),
+  onApplyUiPatch: (cb) => ipcRenderer.on('pet:apply-ui-patch', (_e, patch) => cb(patch)),
+  getUiSettings: () => ipcRenderer.invoke('pet:get-ui-settings'),
+  patchUiSettings: (patch) => ipcRenderer.send('pet:patch-ui-settings', patch),
+  openManageWindow: () => ipcRenderer.invoke('pet:open-manage-window'),
 })

@@ -193,6 +193,7 @@ function applyUiSettings() {
   positionPanel()
   configureWander()
   syncSettingControls()
+  window.pet.reportUiSettings?.(uiSettings) // keep the management window in sync
 }
 
 function setDndMode(enabled, announce = true) {
@@ -293,6 +294,13 @@ async function init() {
     // itself is fixed to the work area now).
     window.pet.onSetScale?.((scale) => {
       uiSettings.petScale = clampNumber(scale, 0.4, 1.25, uiSettings.petScale)
+      saveUiSettings()
+      applyUiSettings()
+    })
+    // Settings changed from the management window arrive as a patch.
+    window.pet.onApplyUiPatch?.((patch) => {
+      if (!patch || typeof patch !== 'object') return
+      uiSettings = normalizeUiSettings({ ...uiSettings, ...patch })
       saveUiSettings()
       applyUiSettings()
     })

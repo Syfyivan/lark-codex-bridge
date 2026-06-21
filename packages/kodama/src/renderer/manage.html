@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';" />
+  <title>Kodama 管理</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 13px/1.5 -apple-system, "PingFang SC", system-ui, sans-serif;
+      color: #1c2430;
+      background: #f4f6f9;
+      padding: 18px 20px 28px;
+    }
+    h1 { font-size: 17px; margin: 0 0 2px; }
+    .sub { color: #6b7787; font-size: 12px; margin: 0 0 16px; }
+    .card {
+      background: #fff;
+      border: 1px solid rgba(111, 125, 145, 0.16);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+    }
+    .card h2 { font-size: 13px; margin: 0 0 10px; color: #3a4658; letter-spacing: .02em; }
+    .row { display: grid; grid-template-columns: 120px 1fr 56px; align-items: center; gap: 10px; padding: 6px 0; }
+    .row label { color: #45506180; color: #455061; }
+    .row input[type=range] { width: 100%; }
+    .row .val { text-align: right; color: #6b7787; font-variant-numeric: tabular-nums; }
+    .seg { display: inline-flex; border: 1px solid rgba(111,125,145,.25); border-radius: 8px; overflow: hidden; }
+    .seg button { border: 0; background: #fff; padding: 5px 12px; cursor: pointer; font: inherit; color: #455061; }
+    .seg button.active { background: #5d6ee8; color: #fff; }
+    .toggle { display: grid; grid-template-columns: 1fr auto; align-items: center; padding: 6px 0; }
+    .switch { width: 42px; height: 24px; border-radius: 999px; background: #cfd6e0; position: relative; cursor: pointer; border: 0; transition: background .15s; }
+    .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .15s; }
+    .switch.on { background: #2f9b7b; }
+    .switch.on::after { transform: translateX(18px); }
+    .num { display: grid; grid-template-columns: 1fr 72px; align-items: center; gap: 10px; padding: 5px 0; }
+    .num input { width: 72px; padding: 4px 6px; border: 1px solid rgba(111,125,145,.3); border-radius: 6px; font: inherit; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .stat { background: #f6f8fb; border-radius: 8px; padding: 8px 10px; }
+    .stat b { display: block; font-size: 16px; }
+    .stat span { color: #6b7787; font-size: 11px; }
+    .muted { color: #93a0b2; font-size: 11px; margin-top: 8px; }
+    #status { position: fixed; right: 14px; bottom: 10px; font-size: 11px; color: #93a0b2; }
+  </style>
+</head>
+<body>
+  <h1>🌳 Kodama 管理中心</h1>
+  <p class="sub">这些设置实时同步到桌宠。关掉本窗口不影响桌宠运行。</p>
+
+  <section class="card">
+    <h2>外观</h2>
+    <div class="row"><label>大小</label><input id="petScale" type="range" min="40" max="125" /><span class="val" id="petScaleV"></span></div>
+    <div class="row"><label>透明度</label><input id="petOpacity" type="range" min="25" max="100" /><span class="val" id="petOpacityV"></span></div>
+    <div class="row"><label>点击范围</label><input id="hitboxScale" type="range" min="25" max="100" /><span class="val" id="hitboxScaleV"></span></div>
+    <div class="row"><label>气泡高度</label><input id="bubbleAnchor" type="range" min="35" max="80" /><span class="val" id="bubbleAnchorV"></span></div>
+    <div class="row"><label>气泡间距</label><input id="bubbleGap" type="range" min="0" max="48" /><span class="val" id="bubbleGapV"></span></div>
+    <div class="row"><label>触发键</label><div class="seg" id="triggerMode"><button data-v="right">右键</button><button data-v="left">左键</button></div><span></span></div>
+    <div class="row"><label>贴边</label><div class="seg" id="edgeMode"><button data-v="half">半露</button><button data-v="inside">屏内</button></div><span></span></div>
+  </section>
+
+  <section class="card">
+    <h2>行为</h2>
+    <div class="toggle"><span>双击摸摸</span><button class="switch" id="pettingEnabled"></button></div>
+    <div class="toggle"><span>自动游走</span><button class="switch" id="wanderEnabled"></button></div>
+    <div class="toggle"><span>勿扰模式</span><button class="switch" id="dndMode"></button></div>
+    <div class="toggle"><span>声音</span><button class="switch" id="soundEnabled"></button></div>
+    <div class="toggle"><span>系统通知</span><button class="switch" id="notificationsEnabled"></button></div>
+  </section>
+
+  <section class="card">
+    <h2>番茄钟（分钟）</h2>
+    <div class="num"><span>专注时长</span><input id="focusMinutes" type="number" min="1" max="180" /></div>
+    <div class="num"><span>短休</span><input id="shortBreakMinutes" type="number" min="1" max="60" /></div>
+    <div class="num"><span>长休</span><input id="longBreakMinutes" type="number" min="1" max="120" /></div>
+    <div class="num"><span>长休间隔（轮）</span><input id="longBreakEvery" type="number" min="1" max="12" /></div>
+    <div class="num"><span>久坐提醒（0=关）</span><input id="sedentaryMinutes" type="number" min="0" max="240" /></div>
+  </section>
+
+  <section class="card">
+    <h2>统计（只读）</h2>
+    <div class="stats">
+      <div class="stat"><b id="statLevel">–</b><span>等级</span></div>
+      <div class="stat"><b id="statFood">–</b><span>食物</span></div>
+      <div class="stat"><b id="statExp">–</b><span>经验</span></div>
+      <div class="stat"><b id="tokToday">–</b><span>今日 token</span></div>
+      <div class="stat"><b id="tok7">–</b><span>近 7 天</span></div>
+      <div class="stat"><b id="tokTotal">–</b><span>累计</span></div>
+    </div>
+    <p class="muted" id="tokSplit"></p>
+  </section>
+
+  <div id="status">就绪</div>
+  <script type="module" src="./manage.js"></script>
+</body>
+</html>

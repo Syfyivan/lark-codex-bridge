@@ -9,6 +9,8 @@ const { mapHookToEvent } = require('./hook-events')
 
 let win
 let taskWin
+let manageWin
+let lastUiSettings = null
 let tray
 let pomodoro = null
 let sedentaryTimer = null
@@ -126,6 +128,38 @@ function createBridgeTasksWindow() {
     taskWin = null
   })
   return taskWin
+}
+
+// A real, roomy settings/management window (the right-click overlay panel is
+// cramped). It talks to the pet renderer's ui-settings via the main cache.
+function openManageWindow() {
+  if (manageWin && !manageWin.isDestroyed()) {
+    manageWin.show()
+    manageWin.focus()
+    return manageWin
+  }
+  manageWin = new BrowserWindow({
+    width: 760,
+    height: 720,
+    minWidth: 560,
+    minHeight: 520,
+    title: 'Kodama 管理',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+  manageWin.loadFile(path.join(__dirname, '../renderer/manage.html'))
+  manageWin.once('ready-to-show', () => {
+    manageWin.show()
+    manageWin.focus()
+  })
+  manageWin.on('closed', () => {
+    manageWin = null
+  })
+  return manageWin
 }
 
 // Float above everything — including other apps' fullscreen spaces — on all desktops.
@@ -315,6 +349,19 @@ ipcMain.on('pet:move', (e, dx, dy, visibleBounds) => {
 
 ipcMain.on('pet:set-window-size', () => {
   // No-op: the overlay spans the full work area now; pet size is a renderer scale.
+})
+
+// Management window <-> pet renderer ui-settings sync, brokered by main.
+ipcMain.on('pet:report-ui-settings', (_e, settings) => {
+  if (settings && typeof settings === 'object') lastUiSettings = settings
+})
+ipcMain.handle('pet:get-ui-settings', () => lastUiSettings)
+ipcMain.on('pet:patch-ui-settings', (_e, patch) => {
+  if (patch && typeof patch === 'object') sendToPet('pet:apply-ui-patch', patch)
+})
+ipcMain.handle('pet:open-manage-window', () => {
+  openManageWindow()
+  return { ok: true }
 })
 
 ipcMain.on('pet:set-hidden', (_e, hidden) => {
@@ -1492,6 +1539,7 @@ function refreshTray() {
     click: () => setPetHidden(!petHidden),
   })
   items.push({ label: '事件 / 配置面板  ⌘⌥P', click: () => showPetAndMaybeTogglePanel(true) })
+  items.push({ label: '管理 / 设置中心…', click: () => openManageWindow() })
   items.push({ label: 'Bridge 任务详情', click: () => createBridgeTasksWindow() })
   items.push({
     label: petUiMenuState.dndMode ? '退出勿扰模式' : '进入勿扰模式',

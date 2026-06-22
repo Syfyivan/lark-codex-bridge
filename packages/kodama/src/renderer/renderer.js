@@ -66,6 +66,7 @@ document.body.appendChild(bubbleHoverTip)
 
 // Active rendering backend: { getBounds(), playMotion(pref), setStatus(status) }.
 let backend = null
+let activeGifConfig = null // set when the gif backend is active (for evolution图鉴)
 let accessoryLayer = null
 let panelVisible = false
 let agentSyncStatus = 'offline'
@@ -285,7 +286,8 @@ async function init() {
     if (local?.RENDER?.backend === 'gif') {
       const { initGifBackend } = await import('./backends/gif.js')
       canvas.style.display = 'none'
-      backend = initGifBackend(local.RENDER.gif || {})
+      activeGifConfig = local.RENDER.gif || {}
+      backend = initGifBackend(activeGifConfig)
       // The gif backend is a plain <img>; give it the same petX/petY positioning
       // Live2D gets via layout(), or it can't be dragged (drag updates petX/petY
       // then calls applySettings, which was a no-op for gif before).
@@ -410,9 +412,29 @@ async function init() {
   }
 }
 
+// Report the slime's evolution stages + current level to the management window
+// (via main cache), so it can show an evolution图鉴 — useful since a high-level
+// pet only ever shows its final form. No-op for Live2D / stage-less configs.
+function syncEvolution(level) {
+  if (!activeGifConfig?.stages?.length) {
+    window.pet.reportEvolution?.(null)
+    return
+  }
+  window.pet.reportEvolution?.({
+    set: activeGifConfig.set || 'default',
+    level,
+    stages: activeGifConfig.stages.map((s) => ({
+      file: s.file,
+      minLevel: Number(s.minLevel) || 1,
+      label: s.label || '',
+    })),
+  })
+}
+
 function syncAccessories() {
   const state = getGrowthState()
   backend?.setLevel?.(state.level) // gif backend: evolve the sprite by level
+  syncEvolution(state.level)
   accessoryLayer?.setEquipped(state.equippedAccessories || {})
   window.pet.updateAccessoryMenu?.({
     slots: activeAccessorySlots,

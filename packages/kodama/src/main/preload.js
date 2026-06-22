@@ -43,6 +43,9 @@ contextBridge.exposeInMainWorld('pet', {
   getAccessoryCatalog: () => ipcRenderer.invoke('pet:get-accessory-catalog'),
   equipAccessoryCmd: (payload) => ipcRenderer.send('pet:equip-accessory-cmd', payload),
   unlockAccessoryCmd: (payload) => ipcRenderer.send('pet:unlock-accessory-cmd', payload),
+  // evolution stages (management window 进化图鉴): pet reports → main cache → manage reads
+  reportEvolution: (state) => ipcRenderer.send('pet:evolution-state', state),
+  getEvolution: () => ipcRenderer.invoke('pet:get-evolution'),
   // management window <-> pet renderer ui-settings sync (via main cache)
   reportUiSettings: (settings) => ipcRenderer.send('pet:report-ui-settings', settings),
   onApplyUiPatch: (cb) => ipcRenderer.on('pet:apply-ui-patch', (_e, patch) => cb(patch)),

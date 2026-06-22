@@ -14,11 +14,11 @@ export const RENDER = {
   gif: {
     set: 'slime',
     stages: [
-      { file: 'green.png', minLevel: 1 },   // 幼体
-      { file: 'blue.png', minLevel: 5 },    // 成长期
-      { file: 'yellow.png', minLevel: 15 }, // 进阶
-      { file: 'red.png', minLevel: 30 },    // 高阶
-      { file: 'purple.png', minLevel: 60 }, // 最终形态
+      { file: 'green.png', minLevel: 1, label: '幼体' },
+      { file: 'blue.png', minLevel: 5, label: '成长期' },
+      { file: 'yellow.png', minLevel: 15, label: '进阶' },
+      { file: 'red.png', minLevel: 30, label: '高阶' },
+      { file: 'purple.png', minLevel: 60, label: '最终形态' },
     ],
     map: { idle: 'green.png' }, // fallback if `stages` is removed
   },

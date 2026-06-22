@@ -123,6 +123,54 @@ async function refreshStats() {
   } catch { /* ignore */ }
 }
 
+// ---- evolution 图鉴 ----
+// Shows the pet's level-based stages with the current one highlighted. Only the
+// gif backend with `stages` reports this; Live2D / stage-less configs hide it.
+let lastEvoKey = ''
+async function refreshEvolution() {
+  let evo = null
+  try { evo = await window.pet.getEvolution?.() } catch { /* ignore */ }
+  const card = $('evoCard')
+  const grid = $('evoGrid')
+  if (!card || !grid) return
+  if (!evo || !Array.isArray(evo.stages) || !evo.stages.length) {
+    card.style.display = 'none'
+    lastEvoKey = ''
+    return
+  }
+  card.style.display = ''
+  const level = Number(evo.level) || 1
+  let curIdx = 0
+  evo.stages.forEach((s, i) => { if (level >= (Number(s.minLevel) || 1)) curIdx = i })
+
+  const key = JSON.stringify({ set: evo.set, level, n: evo.stages.length })
+  if (key === lastEvoKey) return
+  lastEvoKey = key
+
+  grid.innerHTML = ''
+  evo.stages.forEach((s, i) => {
+    const locked = level < (Number(s.minLevel) || 1)
+    const cell = document.createElement('div')
+    cell.className = `evo-item${i === curIdx ? ' current' : ''}${locked ? ' locked' : ''}`
+    const img = document.createElement('img')
+    img.className = 'evo-img'
+    img.src = `../pets/${evo.set}/${s.file}`
+    img.alt = s.label || ''
+    cell.appendChild(img)
+    const label = document.createElement('div')
+    label.className = 'evo-label'
+    label.textContent = s.label || `阶段${i + 1}`
+    cell.appendChild(label)
+    const lv = document.createElement('div')
+    lv.className = 'evo-lv'
+    lv.textContent = `Lv.${s.minLevel}`
+    cell.appendChild(lv)
+    grid.appendChild(cell)
+  })
+  const cur = evo.stages[curIdx]
+  $('evoNote').textContent = `当前 Lv.${level} · ${cur?.label || ''}`
+}
+
 // ---- accessory shop ----
 // Catalog is the same payload the pet renderer pushes to the tray (cached in main).
 // We render a grid: locked → 「解锁 N⭐」(disabled if exp<cost), unlocked → 佩戴/卸下.
@@ -217,7 +265,8 @@ async function init() {
   fillPomodoro(await window.pet.getPomodoroSettings?.())
   refreshStats()
   refreshShop()
-  setInterval(() => { refreshStats(); refreshShop() }, 5000)
+  refreshEvolution()
+  setInterval(() => { refreshStats(); refreshShop(); refreshEvolution() }, 5000)
   setStatus(ui ? '已连接桌宠' : '桌宠未运行（设置仍会在桌宠下次启动后生效）')
 }
 

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self';" />
   <title>Kodama 管理</title>
   <style>
     :root { color-scheme: light dark; }
@@ -61,6 +61,14 @@
     .shop-btn.ghost:hover { background: #eef0fe; }
     .shop-btn.off { border-color: #2f9b7b; background: #fff; color: #2f9b7b; }
     .shop-btn:disabled { border-color: #cfd6e0; background: #f2f4f8; color: #aab3c0; cursor: not-allowed; }
+    .evo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 8px; align-items: end; }
+    .evo-item { text-align: center; padding: 8px 4px; border-radius: 10px; border: 1px solid transparent; }
+    .evo-item.current { border-color: #5d6ee8; background: #eef0fe; }
+    .evo-img { width: 100%; height: 56px; object-fit: contain; }
+    .evo-item.locked .evo-img { filter: grayscale(1); opacity: .4; }
+    .evo-label { font-size: 12px; color: #455061; margin-top: 4px; }
+    .evo-item.current .evo-label { color: #5d6ee8; font-weight: 600; }
+    .evo-lv { font-size: 10px; color: #93a0b2; }
   </style>
 </head>
 <body>
@@ -102,6 +110,12 @@
     <div class="toggle"><span>摸摸桌宠（动作 + 气泡）</span><button id="petAction" class="btn">摸摸 🐾</button></div>
     <div class="toggle"><span>主动投喂（消耗食物 → 换经验，可能升级变大）</span><button id="feedPet" class="btn">投喂 🍖</button></div>
     <p class="muted">食物由 agent 使用<b>自动累积</b>（事件 + token 用量）；<b>投喂</b>把食物花成经验、攒满即升级，<b>等级越高桌宠越大</b>。基础配饰按等级解锁，在菜单栏托盘「配饰」佩戴；emoji 配饰可在下方<b>配饰商店</b>用经验购买。<br>（从蛋→幼崽→成年的多阶段皮肤是下一步——已确认有 CC0 免费素材可用，待挑选接入。）</p>
+  </section>
+
+  <section class="card" id="evoCard" style="display:none">
+    <h2>进化图鉴</h2>
+    <div class="evo-grid" id="evoGrid"></div>
+    <p class="muted" id="evoNote"></p>
   </section>
 
   <section class="card">

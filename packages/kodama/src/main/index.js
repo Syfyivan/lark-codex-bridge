@@ -1279,6 +1279,13 @@ ipcMain.handle('pet:get-accessory-catalog', () => accessoryMenuState)
 ipcMain.on('pet:equip-accessory-cmd', (_e, payload) => sendToPet('pet:equip-accessory', payload))
 ipcMain.on('pet:unlock-accessory-cmd', (_e, payload) => sendToPet('pet:unlock-accessory', payload))
 
+// 管理中心「进化图鉴」:桌宠渲染端上报当前皮肤的进化阶段 + 等级,管理窗读取。
+let evolutionState = null
+ipcMain.on('pet:evolution-state', (_e, state) => {
+  evolutionState = state && typeof state === 'object' ? state : null
+})
+ipcMain.handle('pet:get-evolution', () => evolutionState)
+
 ipcMain.on('pet:ui-menu-state', (_e, state) => {
   if (state && typeof state === 'object') {
     petUiMenuState = {

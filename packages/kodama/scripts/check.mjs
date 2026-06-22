@@ -17,6 +17,7 @@ const ESM = [
   'src/renderer/renderer.js',
   'src/renderer/bridge-tasks.js',
   'src/renderer/agent-sync.js',
+  'src/renderer/manage.js',
   'src/renderer/accessories.js',
   'src/renderer/reactions.js',
   'src/renderer/growth.js',

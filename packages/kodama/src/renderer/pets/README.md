@@ -1,6 +1,21 @@
-# 私人 GIF 素材目录
+# GIF / sprite 桌宠素材目录
 
-这里放**自己用、不公开**的 GIF 桌宠素材（比如水豚噜噜）。
+放 GIF / APNG 桌宠素材。默认桌宠仍是 Live2D;这里的素材是**可选**后端,通过
+`config/render.local.js` 启用(见 `config/render.local.example.js`)。
+
+## 内置:slime（CC0,已随仓库分发）
+
+`slime/` 是一只**随等级进化变色**的史莱姆(绿→蓝→黄→红→紫),
+素材为 **"Slime (CC0)" by Rick Hoppmann**(https://opengameart.org/content/slime-0),
+CC0 可商用、免署名(详见 `slime/LICENSE.txt`)。启用:
+
+```
+cp ../config/render.local.example.js ../config/render.local.js && pnpm start
+```
+
+等级阈值与配色在 `render.local.example.js` 的 `stages` 里可调。
+
+## 自定义:你自己的私人 GIF
 
 ## 用法
 

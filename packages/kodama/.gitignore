@@ -15,3 +15,6 @@ src/renderer/config/agent.local.js
 src/renderer/config/accessories.local.js
 src/renderer/pets/*
 !src/renderer/pets/README.md
+# Bundled CC0 pet (optional, opt-in via render.local.js) — safe to ship.
+!src/renderer/pets/slime/
+!src/renderer/pets/slime/**

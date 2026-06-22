@@ -13,7 +13,7 @@ globalThis.window = {
   },
 }
 
-const { initGrowth, feed, feedTokens, statusText, getState, equipAccessory } = await import('../src/renderer/growth.js')
+const { initGrowth, feed, feedTokens, statusText, getState, equipAccessory, unlockWithExp } = await import('../src/renderer/growth.js')
 
 function setLoadedState(state) {
   loadedState = state
@@ -76,4 +76,36 @@ test('locked accessories cannot be equipped', async () => {
   assert.equal(result.ok, false)
   assert.match(result.reason, /Lv\.5/)
   assert.equal(getState().equippedAccessories.aura, undefined)
+})
+
+test('shop: buying an emoji accessory spends exp and unlocks it', async () => {
+  // 'crown' costs 120⭐; high level gives a big exp buffer before next level-up.
+  setLoadedState({ level: 50, exp: 200, food: 0, totalFed: 0 })
+  await initGrowth({ say() {}, playMotion() {} })
+  assert.ok(!getState().unlockedAccessories.includes('crown'))
+  const result = unlockWithExp({ id: 'crown' })
+  assert.equal(result.ok, true)
+  assert.equal(result.action, 'unlock')
+  assert.equal(getState().exp, 80) // 200 - 120
+  assert.ok(getState().unlockedAccessories.includes('crown'))
+  assert.equal(saved.exp, 80)
+})
+
+test('shop: cannot buy with insufficient exp', async () => {
+  setLoadedState({ level: 50, exp: 10, food: 0, totalFed: 0 })
+  await initGrowth({ say() {}, playMotion() {} })
+  const result = unlockWithExp({ id: 'crown' })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /经验不足/)
+  assert.ok(!getState().unlockedAccessories.includes('crown'))
+  assert.equal(getState().exp, 10) // unchanged
+})
+
+test('shop: a purchased emoji accessory can then be equipped', async () => {
+  setLoadedState({ level: 50, exp: 100, food: 0, totalFed: 0 })
+  await initGrowth({ say() {}, playMotion() {} })
+  unlockWithExp({ id: 'star_badge' }) // 30⭐, slot badge
+  const result = equipAccessory({ id: 'star_badge' })
+  assert.equal(result.ok, true)
+  assert.equal(getState().equippedAccessories.badge, 'star_badge')
 })

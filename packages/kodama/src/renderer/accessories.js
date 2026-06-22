@@ -42,7 +42,13 @@ function render() {
     el.className = `accessory accessory-${acc.id}`
     el.dataset.accessoryId = acc.id
     el.setAttribute('aria-hidden', 'true')
-    el.innerHTML = ACCESSORY_MARKUP[acc.id] || ''
+    // emoji 配饰:直接画字形(免素材);其余走内置 CSS markup。
+    if (acc.icon) {
+      el.classList.add('accessory-emoji')
+      el.textContent = acc.icon
+    } else {
+      el.innerHTML = ACCESSORY_MARKUP[acc.id] || ''
+    }
     root.appendChild(el)
   }
 }
@@ -66,6 +72,8 @@ function position() {
     el.style.top = `${bounds.y + bounds.height * a.y}px`
     el.style.width = `${width}px`
     el.style.height = `${height}px`
+    // emoji 字形按盒子大小缩放(取较小边,避免溢出)。
+    if (acc.icon) el.style.fontSize = `${Math.min(width, height)}px`
   }
 }
 

@@ -120,6 +120,8 @@ function localContext(data) {
   const turnId = firstString(data?.['turn-id'], data?.turn_id, data?.turnId)
   const client = firstString(data?.client, data?.originator, data?.source_app, data?.sourceApp)
   const tty = firstString(data?.tty, data?.terminal_tty, data?.terminalTty)
+  const prompt = firstString(data?.prompt)
+  if (prompt) context.prompt = clampText(prompt, 80)
   if (sessionId) context.sessionId = sessionId
   if (cwd) context.cwd = cwd
   if (transcriptPath) context.transcriptPath = transcriptPath
@@ -143,9 +145,19 @@ function withAgent(event, data) {
   return agent ? { ...withContext, agent } : withContext
 }
 
+// Codex notify carries the turn's user input as `input-messages` (array or string).
+// It's the closest thing to a task title, so we surface it for the bubble headline.
+function codexInputPrompt(data) {
+  const raw = data['input-messages'] || data.input_messages || data.inputMessages
+  if (Array.isArray(raw)) return clampText(raw.filter(Boolean).join(' '), 80)
+  return clampText(raw, 80)
+}
+
 function codexNotifyToEvent(data) {
   if (data.type === 'agent-turn-complete') {
-    return withLocalContext({ type: 'task_done', source: 'local', text: clampText(data['last-assistant-message']) }, data)
+    const event = withLocalContext({ type: 'task_done', source: 'local', text: clampText(data['last-assistant-message']) }, data)
+    const prompt = codexInputPrompt(data)
+    return prompt ? { ...event, prompt } : event
   }
   if (/permission|approval|confirm|ask/i.test(String(data.type || ''))) {
     return withLocalContext({ type: 'task_waiting', source: 'local', text: clampText(data.message || data.reason || '需要你确认') }, data)

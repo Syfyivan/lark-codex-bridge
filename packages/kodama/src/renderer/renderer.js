@@ -4,7 +4,7 @@ import { reactToEvent } from './reactions.js'
 import { PET_CONFIG } from './config/pet-config.js'
 import { initAccessoryLayer } from './accessories.js'
 import { ACCESSORIES, ACCESSORY_SLOTS } from './config/accessories.js'
-import { initGrowth, feed as feedGrowth, feedManually, growthScale, feedTokens, statusText, getState as getGrowthState, equipAccessory, configureAccessories } from './growth.js'
+import { initGrowth, feed as feedGrowth, feedManually, growthScale, feedTokens, statusText, getState as getGrowthState, equipAccessory, unlockWithExp, configureAccessories } from './growth.js'
 
 // Live2D model is chosen by `pnpm run setup <name>` (writes ./models/current-model.js).
 const FALLBACK_MODEL_URL = './models/wanko/Wanko.model3.json'
@@ -286,6 +286,13 @@ async function init() {
       const { initGifBackend } = await import('./backends/gif.js')
       canvas.style.display = 'none'
       backend = initGifBackend(local.RENDER.gif || {})
+      // The gif backend is a plain <img>; give it the same petX/petY positioning
+      // Live2D gets via layout(), or it can't be dragged (drag updates petX/petY
+      // then calls applySettings, which was a no-op for gif before).
+      backend.applySettings = gifLayout
+      backend.el.addEventListener('load', gifLayout)
+      window.addEventListener('resize', gifLayout)
+      gifLayout()
     } else {
       backend = await initLive2D()
     }
@@ -371,6 +378,21 @@ async function init() {
       if (result.action === 'equip') say(`已佩戴 ${result.accessory.label}`, 2200)
       if (result.action === 'unequip') say('已摘下配饰', 1800)
     })
+    // 配饰商店购买:用经验解锁,解锁后顺手佩戴。
+    window.pet.onUnlockAccessory?.((request) => {
+      const result = unlockWithExp(request)
+      if (!result.ok) {
+        say(`🛒 ${result.reason}`, 2800)
+        syncAccessories()
+        return
+      }
+      if (!result.already) {
+        backend?.playMotion?.('Tap')
+        say(`🛒 解锁 ${result.accessory.label} ${result.accessory.icon || ''} -${result.cost}⭐`, 2800)
+      }
+      equipAccessory({ slot: result.accessory.slot, id: result.accessory.id })
+      syncAccessories()
+    })
 
     // P4: poll local token usage and feed the pet by token delta.
     refreshTokens()
@@ -390,12 +412,15 @@ async function init() {
 
 function syncAccessories() {
   const state = getGrowthState()
+  backend?.setLevel?.(state.level) // gif backend: evolve the sprite by level
   accessoryLayer?.setEquipped(state.equippedAccessories || {})
   window.pet.updateAccessoryMenu?.({
     slots: activeAccessorySlots,
-    accessories: activeAccessories.map(({ id, slot, label, unlockLevel }) => ({ id, slot, label, unlockLevel })),
+    accessories: activeAccessories.map(({ id, slot, label, unlockLevel, icon, cost }) => ({ id, slot, label, unlockLevel, icon, cost })),
     unlocked: state.unlockedAccessories || [],
     equipped: state.equippedAccessories || {},
+    exp: state.exp,
+    level: state.level,
   })
 }
 
@@ -520,6 +545,40 @@ function dragVisibleBounds() {
     ...b,
     minVisibleRatio: uiSettings.edgeMode === 'half' ? 0.42 : 1,
   }
+}
+
+// Position the gif backend's <img> by petX/petY, mirroring Live2D's layout() so
+// the slime can be dragged and hugs edges. Scale/opacity also ride here (baked
+// into width/height) instead of the CSS transform, so getBounds stays truthful.
+function gifLayout() {
+  const img = backend?.el
+  if (!img) return
+  const natW = img.naturalWidth || 212
+  const natH = img.naturalHeight || 159
+  const scale = uiSettings.petScale * growthScale()
+  const pw = natW * scale
+  const ph = natH * scale
+  img.style.maxWidth = 'none'
+  img.style.maxHeight = 'none'
+  img.style.transform = 'none'
+  img.style.bottom = 'auto'
+  img.style.width = `${pw}px`
+  img.style.height = `${ph}px`
+  img.style.opacity = String(uiSettings.petOpacity)
+  const margin = 24
+  const autoX = window.innerWidth - pw - margin
+  const autoY = window.innerHeight - ph - margin
+  const minVisible = uiSettings.edgeMode === 'half' ? 0.42 : 1
+  const overflowX = pw * (1 - minVisible)
+  const overflowY = ph * (1 - minVisible)
+  const px = clampPoint(Number.isFinite(uiSettings.petX) ? uiSettings.petX : autoX, -overflowX, window.innerWidth - pw + overflowX)
+  const py = clampPoint(Number.isFinite(uiSettings.petY) ? uiSettings.petY : autoY, -overflowY, window.innerHeight - ph + overflowY)
+  img.style.left = `${px}px`
+  img.style.top = `${py}px`
+  uiSettings.petX = px
+  uiSettings.petY = py
+  positionBubble()
+  positionPanel()
 }
 
 function overPet(x, y) {
@@ -1050,9 +1109,26 @@ function bubbleKind(event) {
   return 'system'
 }
 
+function baseName(p) {
+  return String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+}
+
+// A per-task headline so stacked bubbles are distinguishable at a glance, instead
+// of every card reading the same "本地 · 完成". Prefer the project folder (always
+// present for Claude Code hooks), then the task prompt (Codex input-messages),
+// then degrade to the generic source label.
+function taskName(event) {
+  const cwd = event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || ''
+  const project = baseName(cwd)
+  if (project) return project
+  const prompt = event.prompt || event.title || ''
+  if (prompt) return shortText(prompt, 28)
+  return sourceLabel(event.source)
+}
+
 function bubbleTitle(event) {
   if (!event) return 'Kodama'
-  return `${sourceLabel(event.source)} · ${typeLabel(event.type)}`
+  return `${taskName(event)} · ${typeLabel(event.type)}`
 }
 
 function isCodexTranscriptPath(value) {
@@ -1238,9 +1314,25 @@ function previewKey(request) {
   ].join(':')
 }
 
+// Build a hover summary from the event alone — used when no transcript file is
+// available (Codex `agent-turn-complete` notify carries the prompt + result but
+// no transcript path, so the file-read preview always failed before).
+function localPreviewFromEvent(event) {
+  const lines = []
+  if (event?.prompt) lines.push(`你: ${shortText(event.prompt, 74)}`)
+  if (event?.text) lines.push(`Agent: ${shortText(event.text, 74)}`)
+  if (!lines.length) return { ok: false, error: '这条事件没有可显示的摘要' }
+  return { ok: true, title: bubbleTitle(event), lines }
+}
+
 async function ensureBubblePreview(item, event, anchor) {
   const request = sessionRequestForEvent(item.event)
   if (!request || item.preview?.ok || item.preview?.loading) return
+  // No transcript on disk → synthesize from the event (avoids missing-transcript-path).
+  if (!request.transcriptPath && !request.agentTranscriptPath) {
+    item.preview = localPreviewFromEvent(item.event)
+    return
+  }
   const key = previewKey(request)
   if (sessionPreviewCache.has(key)) {
     item.preview = sessionPreviewCache.get(key)

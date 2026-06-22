@@ -38,6 +38,11 @@ contextBridge.exposeInMainWorld('pet', {
   // accessory tray menu state and commands
   updateAccessoryMenu: (state) => ipcRenderer.send('pet:accessory-menu', state),
   onEquipAccessory: (cb) => ipcRenderer.on('pet:equip-accessory', (_e, payload) => cb(payload)),
+  onUnlockAccessory: (cb) => ipcRenderer.on('pet:unlock-accessory', (_e, payload) => cb(payload)),
+  // accessory shop (management window): read cached catalog + send equip/unlock commands
+  getAccessoryCatalog: () => ipcRenderer.invoke('pet:get-accessory-catalog'),
+  equipAccessoryCmd: (payload) => ipcRenderer.send('pet:equip-accessory-cmd', payload),
+  unlockAccessoryCmd: (payload) => ipcRenderer.send('pet:unlock-accessory-cmd', payload),
   // management window <-> pet renderer ui-settings sync (via main cache)
   reportUiSettings: (settings) => ipcRenderer.send('pet:report-ui-settings', settings),
   onApplyUiPatch: (cb) => ipcRenderer.on('pet:apply-ui-patch', (_e, patch) => cb(patch)),

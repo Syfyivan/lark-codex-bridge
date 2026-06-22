@@ -46,6 +46,21 @@
     .stat span { color: #6b7787; font-size: 11px; }
     .muted { color: #93a0b2; font-size: 11px; margin-top: 8px; }
     #status { position: fixed; right: 14px; bottom: 10px; font-size: 11px; color: #93a0b2; }
+    .shop-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+    .shop-exp { font-size: 12px; color: #6b7787; }
+    .shop-exp b { color: #5d6ee8; font-variant-numeric: tabular-nums; }
+    .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
+    .shop-item { border: 1px solid rgba(111,125,145,.18); border-radius: 10px; padding: 10px 8px; text-align: center; background: #fafbfd; }
+    .shop-item.equipped { border-color: #2f9b7b; background: #f0faf6; }
+    .shop-emoji { font-size: 30px; line-height: 1.1; }
+    .shop-emoji.locked { filter: grayscale(1); opacity: .45; }
+    .shop-name { font-size: 12px; color: #455061; margin: 4px 0 8px; }
+    .shop-btn { width: 100%; border-radius: 7px; padding: 4px 0; font: inherit; font-size: 12px; cursor: pointer; border: 1px solid #5d6ee8; background: #5d6ee8; color: #fff; }
+    .shop-btn:hover { background: #4d5ed8; }
+    .shop-btn.ghost { background: #fff; color: #5d6ee8; }
+    .shop-btn.ghost:hover { background: #eef0fe; }
+    .shop-btn.off { border-color: #2f9b7b; background: #fff; color: #2f9b7b; }
+    .shop-btn:disabled { border-color: #cfd6e0; background: #f2f4f8; color: #aab3c0; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -86,7 +101,16 @@
     <h2>互动 / 成长</h2>
     <div class="toggle"><span>摸摸桌宠（动作 + 气泡）</span><button id="petAction" class="btn">摸摸 🐾</button></div>
     <div class="toggle"><span>主动投喂（消耗食物 → 换经验，可能升级变大）</span><button id="feedPet" class="btn">投喂 🍖</button></div>
-    <p class="muted">食物由 agent 使用<b>自动累积</b>（事件 + token 用量）；<b>投喂</b>把食物花成经验、攒满即升级，<b>等级越高桌宠越大</b>。配饰按等级解锁，在菜单栏托盘「配饰」佩戴。<br>（用经验购买皮肤/配饰的"商店"、以及从蛋→幼崽→成年的多阶段皮肤，是下一步——已确认有 CC0 免费素材可用，待挑选接入。）</p>
+    <p class="muted">食物由 agent 使用<b>自动累积</b>（事件 + token 用量）；<b>投喂</b>把食物花成经验、攒满即升级，<b>等级越高桌宠越大</b>。基础配饰按等级解锁，在菜单栏托盘「配饰」佩戴；emoji 配饰可在下方<b>配饰商店</b>用经验购买。<br>（从蛋→幼崽→成年的多阶段皮肤是下一步——已确认有 CC0 免费素材可用，待挑选接入。）</p>
+  </section>
+
+  <section class="card">
+    <div class="shop-head">
+      <h2 style="margin:0">配饰商店（emoji · 用经验购买）</h2>
+      <span class="shop-exp">可用经验 <b id="shopExp">–</b>⭐</span>
+    </div>
+    <div class="shop-grid" id="shopGrid"></div>
+    <p class="muted">购买后<b>自动佩戴</b>;每槽位(头/脸/徽章/光效)同时只戴一件。经验靠 agent 使用与<b>投喂</b>攒;经验不够时先上面「投喂 🍖」换点经验再买。配饰也会显示在桌宠身上和菜单栏托盘「配饰」里。</p>
   </section>
 
   <section class="card">

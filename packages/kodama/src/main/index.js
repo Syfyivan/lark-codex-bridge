@@ -1274,6 +1274,10 @@ ipcMain.on('pet:accessory-menu', (_e, state) => {
   accessoryMenuState = state && typeof state === 'object' ? state : null
   refreshTray()
 })
+// 管理中心「配饰商店」:读缓存的配饰目录,以及佩戴/购买命令转发给桌宠渲染端。
+ipcMain.handle('pet:get-accessory-catalog', () => accessoryMenuState)
+ipcMain.on('pet:equip-accessory-cmd', (_e, payload) => sendToPet('pet:equip-accessory', payload))
+ipcMain.on('pet:unlock-accessory-cmd', (_e, payload) => sendToPet('pet:unlock-accessory', payload))
 
 ipcMain.on('pet:ui-menu-state', (_e, state) => {
   if (state && typeof state === 'object') {
@@ -1703,8 +1707,11 @@ function buildAccessoryMenu() {
       },
       ...slotAccessories.map((acc) => {
         const isUnlocked = unlocked.has(acc.id)
+        const name = acc.icon ? `${acc.icon} ${acc.label}` : acc.label
+        // 锁定项:商店件提示售价(去管理中心购买),等级件提示所需等级。
+        const lockedLabel = acc.cost ? `🔒 ${name}（${acc.cost}⭐·商店）` : `🔒 Lv.${acc.unlockLevel} ${name}`
         return {
-          label: isUnlocked ? acc.label : `🔒 Lv.${acc.unlockLevel} ${acc.label}`,
+          label: isUnlocked ? name : lockedLabel,
           type: isUnlocked ? 'radio' : 'normal',
           checked: equipped[slot.id] === acc.id,
           enabled: isUnlocked,

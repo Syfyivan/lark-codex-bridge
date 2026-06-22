@@ -58,6 +58,15 @@ body {
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.22));
 }
 
+.accessory-emoji {
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  text-align: center;
+  /* font-size is set inline from the anchor box; keep the glyph inside the box. */
+  overflow: visible;
+}
+
 .accessory-sprout {
   background: linear-gradient(90deg, transparent 44%, #2d9b55 44% 56%, transparent 56%);
 }

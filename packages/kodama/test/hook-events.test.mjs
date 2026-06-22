@@ -8,6 +8,20 @@ test('codex notify completion maps to a local task_done event', () => {
   assert.deepEqual(event, { type: 'task_done', source: 'local', text: '已经完成测试' })
 })
 
+test('codex notify captures input-messages as the task prompt (bubble headline)', () => {
+  const event = mapHookToEvent({
+    type: 'agent-turn-complete',
+    'last-assistant-message': '搞定了',
+    'input-messages': ['继续 kodama', '读 ROADMAP'],
+  })
+  assert.deepEqual(event, {
+    type: 'task_done',
+    source: 'local',
+    text: '搞定了',
+    prompt: '继续 kodama 读 ROADMAP',
+  })
+})
+
 test('claude subagent lifecycle maps to local progress bubbles', () => {
   assert.deepEqual(mapHookToEvent({ hook_event_name: 'SubagentStart', subagent_name: 'verifier' }), {
     type: 'task_progress',

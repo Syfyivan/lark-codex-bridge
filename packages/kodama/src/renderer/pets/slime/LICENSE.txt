@@ -1,0 +1,8 @@
+Slime sprites — "Slime (CC0)"
+Author: Rick Hoppmann (https://www.tinyworlds.org/)
+Source: https://opengameart.org/content/slime-0
+License: CC0 1.0 (public domain) — free for commercial use, no attribution required.
+
+5 color variants (green/blue/yellow/red/purple), 2-frame idle bounce each,
+sliced from the original spritesheet into per-color animated APNGs (full alpha)
+for Kodama's level-based evolution stages.

@@ -1,7 +1,7 @@
 # Kodama + Bridge 优化蓝图
 
 > 滚动更新的改进蓝图。完成项打勾并标注 commit。开源参考见文末。
-> 最近更新:2026-06-21。
+> 最近更新:2026-06-22。
 
 ## ✅ 已完成
 - [x] 桌宠浮在别的 App 原生全屏之上(`type:'panel'` + `setActivationPolicy('accessory')` + LSUIElement)。`36d8e8e`
@@ -21,16 +21,23 @@
 ## ▶ 进行中 / 下一步(#9 养成经济,带可恢复方案)
 已确认方向 = **换 CC0 像素精灵宠物 + 经验商店**。拆成两半:
 
-**A. 配饰商店(无需外部素材,用 emoji 当配饰 —— 下一个 session 直接做)**
-- 思路:配饰用 **emoji**(🎩👑🧢👓🕶️🎀🎖️🦴⭐💫🌸…)渲染成宠物身上的叠加层,**免费/零版权/不用下载**,可做很多件。锁定=灰(grayscale+低透明),解锁=彩色。
-- 现状代码:`src/renderer/config/accessories.js` 定义 4 件(slot/label/unlockLevel/anchor,CSS 渲染);`src/renderer/accessories.js` 是渲染层(`ACCESSORY_MARKUP` 映射 + position 按 anchor 定位);`growth.js` 管 unlocked/equipped、`equipAccessory(slot,id)`、按等级自动解锁 `unlockForLevel()`。
-- 要做:① accessories.js 渲染层支持 `acc.icon`(emoji)→ `el.textContent = acc.icon`,加 CSS 字号随 anchor.width;② accessories 配置改成一批 emoji 配饰(加 `icon` + `cost`<经验价>;商店专属件设 `unlockLevel: Infinity` 只能买);③ growth 加 `unlockWithExp(id)`(exp≥cost 则 exp-=cost + 加入 unlocked + persist)、`accessoryCatalog()`(返回 {id,label,slot,icon,unlocked,equipped,cost});④ 经 IPC 把 catalog 同步到管理窗口(**镜像现有 ui-settings 同步管道**:pet 渲染端 report→main 缓存→管理窗 invoke 读;管理窗 命令→main→sendToPet 执行);⑤ manage.html/js 加「配饰商店」卡:网格,每件 emoji + 名称,锁定显灰+「解锁 N⭐」按钮,已解锁显彩+佩戴/卸下切换。
-- 注意 level 582 已把现有 4 件按等级解锁完,故商店要加**新的 emoji 专属件**(unlockLevel 高/只能买)才有东西买。
+**A. 配饰商店(emoji 配饰,零素材)—— ✅ 已完成 (2026-06-22)**
+- emoji 配饰(🎩🧢👑🎀🕶️🥸🎖️⭐🦴💫🌸 共 11 件)用经验购买,零版权/免下载。锁定=灰(grayscale),解锁=彩色;购买后自动佩戴。
+- 落点:`config/accessories.js` 加 `EMOJI_SHOP`(`icon`+`cost`,`unlockLevel:9999` 只能买);`accessories.js` 渲染层见 `icon` 即画 emoji 文本(字号随 anchor 盒);`growth.js` 加 `unlockWithExp()`(exp≥cost 扣经验+解锁+持久化);同步沿用 accessory-menu 管道(pet→main 缓存 `accessoryMenuState`→管理窗 `getAccessoryCatalog` 读;管理窗命令→main→`sendToPet`);`manage.html/js` 加「配饰商店」网格卡(解锁 N⭐ / 佩戴 / 卸下)。托盘「配饰」子菜单也显示 emoji + 售价。
+- 测试:growth.test 加购买/经验不足/购后可佩戴 3 例;全套 34 绿。
+- 经验经济说明:exp 同时是升级货币,可购预算 = 距下一级的累积 exp;高等级缓冲大,买 emoji 件绰绰有余,不够先「投喂」换经验。
 
-**B. 宠物精灵蛋→幼崽→成年(需真素材,卡用户挑包)**
-- emoji 不适合做宠物主体,需 CC0 像素生物精灵(蛋/孵化/成长阶段)。接桌宠已有 **gif/sprite 后端**(`src/renderer/backends/gif.js`,靠 gitignored `config/render.local.js` 切 backend:'gif')。
-- 卡点:需用户挑定一个 CC0 包(我无法替下载/核许可)。**注意工具限制:我无法下载二进制素材文件**,需用户下载或借浏览器工具取。
-- 许可常识:CC0=可商用/不用署名/不用授权;CC-BY=要署名;"free for personal use"≠可商用。"免费下载"≠许可,要看徽章。
+**A′. 气泡可读性修复(顺带,用户反馈)—— ✅ 已完成 (2026-06-22)**
+- 标题不再统一「本地·完成」:`bubbleTitle` 改用任务名(cwd 项目名 → 任务 prompt → 兜底 source)。
+- 悬浮「摘要读取失败:missing-transcript-path」:Codex `agent-turn-complete` notify 不带 transcript_path,改为无 transcript 时用事件自带的 `prompt`(input-messages)+ 结果直接合成摘要;Codex prompt 在 hook-events 捕获。
+
+**B. 宠物随等级进化(CC0 史莱姆)—— ✅ 已完成 (2026-06-22)**
+- 换人物已落地:**"Slime (CC0)" by Rick Hoppmann**(https://opengameart.org/content/slime-0),CC0 可商用免署名。从 5 色 sprite sheet 用 ffmpeg 切成**每色 2 帧循环 APNG**(带 alpha,无白边),放 `src/renderer/pets/slime/` + `LICENSE.txt`。
+- **进化 = 等级选颜色阶段**:绿(Lv1)→蓝(5)→黄(15)→红(30)→紫(60)。`backends/gif.js` 加 `stages`+`setLevel()`(按 file 比对重渲染);`renderer.js` 的 `syncAccessories` 在等级变化时调 `setLevel`。
+- **gif 后端可拖动**:补 `gifLayout`(renderer 作用域,按 petX/petY 定位 `<img>`、贴边、缩放、重排气泡)赋给 `backend.applySettings`——之前 gif 没有 applySettings 导致拖拽无效。
+- **分发**:slime 素材从 gitignore 放出(CC0 可提交),作为**可选宠物**;默认仍 Live2D,经 `render.local.js` 启用(`render.local.example.js` 已以 slime 为开箱示例)。
+- 下一步可做:蛋→孵化的真·形态(目前是颜色阶段,非蛋/幼崽不同体型);per-status 动画(当前各状态共用待机帧);emoji 配饰 anchor 按 slime 头部微调。
+- 许可常识:CC0=可商用/不用署名/不用授权;CC-BY=要署名;"free for personal use"≠可商用。
 
 ## P1 — 还能做的功能
 - [x] **一键注册 Claude Code Hook**(参考 [clawd-on-desk]):托盘按钮,安全合并(备份+只追加+幂等)进 `~/.claude/settings.json`,补齐缺失的失败/细粒度事件;不覆盖已有 hook。`4ae8c56`

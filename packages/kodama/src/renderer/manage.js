@@ -123,6 +123,81 @@ async function refreshStats() {
   } catch { /* ignore */ }
 }
 
+// ---- accessory shop ----
+// Catalog is the same payload the pet renderer pushes to the tray (cached in main).
+// We render a grid: locked → 「解锁 N⭐」(disabled if exp<cost), unlocked → 佩戴/卸下.
+let lastShopKey = ''
+async function refreshShop() {
+  let cat = null
+  try { cat = await window.pet.getAccessoryCatalog?.() } catch { /* ignore */ }
+  const grid = $('shopGrid')
+  if (!grid) return
+  if (!cat || !Array.isArray(cat.accessories)) {
+    if (lastShopKey !== 'empty') { grid.innerHTML = '<p class="muted">桌宠未运行,启动后显示配饰商店。</p>'; lastShopKey = 'empty' }
+    return
+  }
+  const exp = Number(cat.exp) || 0
+  if ($('shopExp')) $('shopExp').textContent = String(exp)
+  // 只展示商店件(带 cost 的 emoji 配饰);等级解锁件留给托盘菜单。
+  const items = cat.accessories.filter((a) => a.cost && a.icon)
+  const unlocked = new Set(Array.isArray(cat.unlocked) ? cat.unlocked : [])
+  const equipped = cat.equipped && typeof cat.equipped === 'object' ? cat.equipped : {}
+
+  // Skip re-render when nothing changed (avoids clobbering hover/focus on poll).
+  const key = JSON.stringify({ exp, u: [...unlocked].sort(), e: equipped, n: items.length })
+  if (key === lastShopKey) return
+  lastShopKey = key
+
+  grid.innerHTML = ''
+  for (const acc of items) {
+    const isUnlocked = unlocked.has(acc.id)
+    const isEquipped = equipped[acc.slot] === acc.id
+    const cell = document.createElement('div')
+    cell.className = `shop-item${isEquipped ? ' equipped' : ''}`
+
+    const emoji = document.createElement('div')
+    emoji.className = `shop-emoji${isUnlocked ? '' : ' locked'}`
+    emoji.textContent = acc.icon
+    cell.appendChild(emoji)
+
+    const name = document.createElement('div')
+    name.className = 'shop-name'
+    name.textContent = acc.label
+    cell.appendChild(name)
+
+    const btn = document.createElement('button')
+    if (!isUnlocked) {
+      btn.className = 'shop-btn'
+      btn.textContent = `解锁 ${acc.cost}⭐`
+      btn.disabled = exp < acc.cost
+      btn.title = btn.disabled ? `经验不足(${exp}/${acc.cost})` : ''
+      btn.addEventListener('click', () => {
+        window.pet.unlockAccessoryCmd?.({ id: acc.id })
+        setStatus(`购买 ${acc.label}…`)
+        setTimeout(() => { lastShopKey = ''; refreshShop(); refreshStats() }, 400)
+      })
+    } else if (isEquipped) {
+      btn.className = 'shop-btn off'
+      btn.textContent = '卸下'
+      btn.addEventListener('click', () => {
+        window.pet.equipAccessoryCmd?.({ slot: acc.slot, id: null })
+        setStatus(`卸下 ${acc.label}`)
+        setTimeout(() => { lastShopKey = ''; refreshShop() }, 400)
+      })
+    } else {
+      btn.className = 'shop-btn ghost'
+      btn.textContent = '佩戴'
+      btn.addEventListener('click', () => {
+        window.pet.equipAccessoryCmd?.({ slot: acc.slot, id: acc.id })
+        setStatus(`佩戴 ${acc.label}`)
+        setTimeout(() => { lastShopKey = ''; refreshShop() }, 400)
+      })
+    }
+    cell.appendChild(btn)
+    grid.appendChild(cell)
+  }
+}
+
 async function init() {
   bindSliders()
   bindSegments()
@@ -141,7 +216,8 @@ async function init() {
   fillUi(ui)
   fillPomodoro(await window.pet.getPomodoroSettings?.())
   refreshStats()
-  setInterval(refreshStats, 5000)
+  refreshShop()
+  setInterval(() => { refreshStats(); refreshShop() }, 5000)
   setStatus(ui ? '已连接桌宠' : '桌宠未运行（设置仍会在桌宠下次启动后生效）')
 }
 

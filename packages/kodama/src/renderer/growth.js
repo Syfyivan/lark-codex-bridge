@@ -222,6 +222,29 @@ export function unequipAccessory(slot) {
   return { ok: true, action: 'unequip', slot, state: getState() }
 }
 
+// 用经验购买配饰:exp ≥ cost 则扣经验 + 加入已解锁 + 持久化。
+// 注意:exp 同时是升级货币(applyGains 会把 exp 攒满转成等级),所以可购买的
+// 预算 = 当前距下一级前累积的 exp。等级越高缓冲越大,买 emoji 件绰绰有余;
+// 不够时可先「投喂」把食物换成经验再来买。
+export function unlockWithExp(request) {
+  const id = typeof request === 'object' ? request?.id : request
+  const acc = accessoryById.get(id)
+  if (!acc) return { ok: false, reason: '未知配饰' }
+  if (state.unlockedAccessories.includes(acc.id)) {
+    return { ok: true, already: true, accessory: publicAccessory(acc), state: getState() }
+  }
+  const cost = Math.max(0, Math.floor(numberOr(acc.cost, 0)))
+  if (cost <= 0) return { ok: false, reason: `${acc.label} 不在商店出售` }
+  if (state.exp < cost) return { ok: false, reason: `经验不足(${state.exp}/${cost}⭐)` }
+
+  state.exp -= cost
+  const unlocked = new Set(state.unlockedAccessories)
+  unlocked.add(acc.id)
+  state.unlockedAccessories = activeAccessories.filter((a) => unlocked.has(a.id)).map((a) => a.id)
+  persist()
+  return { ok: true, action: 'unlock', cost, accessory: publicAccessory(acc), state: getState() }
+}
+
 function publicAccessory(acc) {
-  return { id: acc.id, slot: acc.slot, label: acc.label, unlockLevel: acc.unlockLevel }
+  return { id: acc.id, slot: acc.slot, label: acc.label, unlockLevel: acc.unlockLevel, icon: acc.icon, cost: acc.cost }
 }

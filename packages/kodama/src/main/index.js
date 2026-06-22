@@ -242,8 +242,12 @@ const WINDOW_STATE_VERSION = 3
 const DEFAULT_WINDOW = { width: 280, height: 400 }
 const windowStateFile = () => path.join(app.getPath('userData'), 'kodama-window.json')
 
-// sessionId -> tty, captured while a session is alive so we can still jump to its
-// cmux tab after the agent process exits (the tab/tty persist).
+// sessionId -> { tty, surface, workspace, pane, window }, captured while a session
+// is alive so we can still jump to its cmux tab after the agent process exits.
+// We pin cmux's own surface id (not just the tty) because ttys get reused by new
+// panes and several panes can share a cwd — keying on tty/cwd alone is why jumps
+// used to drift to the wrong tab. cmux's own notifications never drift because
+// they carry the surface id; pinning it here brings us to parity.
 const sessionTtyFile = () => path.join(app.getPath('userData'), 'kodama-session-tty.json')
 let sessionTtyCache = new Map()
 let sessionTtySaveTimer = null
@@ -259,6 +263,14 @@ function saveSessionTtyCache() {
     sessionTtySaveTimer = null
     try { fs.writeFileSync(sessionTtyFile(), JSON.stringify(Object.fromEntries(sessionTtyCache))) } catch { /* ignore */ }
   }, 1000)
+}
+// Normalize a cache entry into a record. Old caches stored a bare tty string, so
+// upgrade those transparently instead of forcing a re-pin.
+function getSessionRecord(id) {
+  const v = sessionTtyCache.get(String(id || '').trim())
+  if (!v) return null
+  if (typeof v === 'string') return { tty: v, surface: '', workspace: '', pane: '', window: '' }
+  return { tty: '', surface: '', workspace: '', pane: '', window: '', ...v }
 }
 function clampWindowState(state, workArea) {
   const margin = 8
@@ -682,34 +694,89 @@ async function listCmuxSurfaces() {
   return surfaces
 }
 
-async function focusCmuxByTty(tty) {
-  const bare = bareTty(tty)
-  if (!bare) return null
+// cmux's control socket rejects connections from processes outside a terminal
+// session (manaflow-ai/cmux#3089), surfacing as a broken pipe / refused handshake.
+// Kodama is an external Electron process, so we flag this distinctly: when it
+// happens, no in-Kodama change can focus the pane — it's an upstream limitation.
+function isCmuxAccessError(err) {
+  return /broken pipe|EPIPE|ECONNREFUSED|connection refused|handshake|outside the terminal/i.test(String(err?.message || ''))
+}
+
+// Focus the exact cmux surface hosting a session. Prefers the surface id we pinned
+// while the session was alive (immune to tty reuse / shared-cwd ambiguity), and
+// only falls back to a live tty match when no surface was pinned. The live
+// `cmux tree` listing is the source of truth, so stale/closed panes are skipped.
+async function focusCmuxForSession(rec) {
   const bin = cmuxBinPath()
   if (!bin) return null
-  const hit = (await listCmuxSurfaces()).find((s) => s.tty === bare)
+  let surfaces
+  try {
+    surfaces = await listCmuxSurfaces()
+  } catch (err) {
+    if (isCmuxAccessError(err)) console.error(`[kodama] cmux CLI refused — external process (issue #3089): ${err.message}`)
+    else console.error(`[kodama] cmux tree failed: ${err.message}`)
+    return null
+  }
+  let hit = rec.surface ? surfaces.find((s) => s.surface === rec.surface) : null
+  const matchedBy = hit ? 'surface' : 'tty'
+  if (!hit && rec.tty) hit = surfaces.find((s) => s.tty === bareTty(rec.tty))
   if (!hit) return null
   try {
     if (hit.window) await runCommand(bin, ['focus-window', '--window', hit.window]).catch(() => {})
     if (hit.workspace) await runCommand(bin, ['select-workspace', '--workspace', hit.workspace])
     if (hit.pane) await runCommand(bin, ['focus-pane', '--pane', hit.pane, '--workspace', hit.workspace]).catch(() => {})
-    return { workspace: hit.workspace, pane: hit.pane, surface: hit.surface, tty: bare }
+    return { workspace: hit.workspace, pane: hit.pane, surface: hit.surface, tty: hit.tty, matchedBy }
   } catch (err) {
-    console.error(`[kodama] cmux focus failed: ${err.message}`)
+    if (isCmuxAccessError(err)) console.error(`[kodama] cmux focus refused — external process (issue #3089): ${err.message}`)
+    else console.error(`[kodama] cmux focus failed: ${err.message}`)
     return null
   }
 }
 
-// While a session is alive, remember its tty so we can still jump after it ends.
-async function cacheSessionTty(sessionId) {
+// Resolve the tty of a live agent process. Strongest signal: the session id is on
+// the agent's argv (Codex). Fallback: match the agent by cwd (Claude Code rarely
+// puts the session id on argv). If several agents share the cwd we cannot tell
+// them apart by tty, so we refuse to guess rather than pin the wrong pane.
+async function resolveAgentTty(id, cwd) {
+  const rows = parsePs(await runCommand('ps', ['-axo', 'pid,ppid,pgid,tty,args']))
+  let hit = rows.find((row) => row.command.includes(id) && isAgentCommand(row.command) && normalizeTty(row.tty))
+  if (!hit && cwd) {
+    const want = String(cwd).trim()
+    const agents = rows.filter((row) => isAgentCommand(row.command) && normalizeTty(row.tty))
+    const matches = []
+    for (const row of agents) {
+      if (await processCwd(row.pid) === want) matches.push(row)
+    }
+    if (matches.length === 1) hit = matches[0]
+    else if (matches.length > 1) console.warn(`[kodama] cmux: ${matches.length} agents share cwd ${want}; tty ambiguous for ${id}`)
+  }
+  return hit ? normalizeTty(hit.tty) : ''
+}
+
+// While a session is alive, pin its cmux surface so we can jump precisely later —
+// even after the agent process exits and its tty gets reused. Cheap once pinned:
+// returns immediately when a surface is already known; otherwise resolves the tty
+// once, then keeps trying to upgrade it to a cmux surface as cmux comes/goes.
+async function cacheSessionTty(sessionId, cwd) {
   const id = String(sessionId || '').trim()
   if (!id) return
+  const existing = getSessionRecord(id)
+  if (existing?.surface) return // fully pinned — nothing better to learn
   try {
-    const rows = parsePs(await runCommand('ps', ['-axo', 'pid,ppid,pgid,tty,args']))
-    const hit = rows.find((row) => row.command.includes(id) && isAgentCommand(row.command) && normalizeTty(row.tty))
-    const tty = hit ? normalizeTty(hit.tty) : ''
-    if (tty && sessionTtyCache.get(id) !== tty) {
-      sessionTtyCache.set(id, tty)
+    const tty = existing?.tty || await resolveAgentTty(id, cwd)
+    if (!tty) return
+    let surfaceInfo = null
+    try { surfaceInfo = (await listCmuxSurfaces()).find((s) => s.tty === bareTty(tty)) || null }
+    catch (err) { if (isCmuxAccessError(err)) console.error(`[kodama] cmux CLI refused while pinning (issue #3089): ${err.message}`) }
+    const record = {
+      tty,
+      surface: surfaceInfo?.surface || existing?.surface || '',
+      workspace: surfaceInfo?.workspace || existing?.workspace || '',
+      pane: surfaceInfo?.pane || existing?.pane || '',
+      window: surfaceInfo?.window || existing?.window || '',
+    }
+    if (JSON.stringify(record) !== JSON.stringify(existing || {})) {
+      sessionTtyCache.set(id, record)
       saveSessionTtyCache()
     }
   } catch { /* best-effort */ }
@@ -764,29 +831,57 @@ async function openAppPath(appPath) {
   }
 }
 
+// Append-only, self-trimming jump log so a misfire can be diagnosed without
+// knowing the internals: each line records which path won (cmux focus / Terminal
+// tty / open host app / failed) and how cmux matched (surface vs tty fallback).
+// Path: <userData>/kodama-jump.log  (see message printed at startup).
+function logJump(method, info) {
+  const line = `${new Date().toISOString()} ${method} ${JSON.stringify(info)}`
+  console.log(`[kodama] jump → ${line}`)
+  try {
+    const file = path.join(app.getPath('userData'), 'kodama-jump.log')
+    let prev = ''
+    try { prev = fs.readFileSync(file, 'utf8') } catch { /* first run */ }
+    const trimmed = (prev + line + '\n').split('\n').slice(-200).join('\n')
+    fs.writeFileSync(file, trimmed)
+  } catch { /* logging must never break a jump */ }
+}
+
 async function openTerminalSessionTarget(target) {
   const found = await findCliSessionTarget(target)
-  let tty = normalizeTty(target?.tty) || normalizeTty(found?.tty)
-  // Completed session: process gone, recover the tty cached while it was alive.
-  if (!tty && target?.sessionId) tty = normalizeTty(sessionTtyCache.get(String(target.sessionId).trim()))
+  const liveTty = normalizeTty(target?.tty) || normalizeTty(found?.tty)
+  // Surface pinned while the session was alive — survives process exit and tty reuse.
+  const cached = target?.sessionId ? getSessionRecord(String(target.sessionId).trim()) : null
+  const rec = {
+    tty: liveTty || cached?.tty || '',
+    surface: cached?.surface || '',
+    workspace: cached?.workspace || '',
+    pane: cached?.pane || '',
+    window: cached?.window || '',
+  }
 
-  // Prefer cmux: focus the exact workspace/pane by tty rather than re-opening
-  // the app (which is what spawned a stray cmux instead of jumping).
-  if (tty && cmuxBinPath()) {
-    const cmux = await focusCmuxByTty(tty)
+  // Prefer cmux: focus the exact surface/pane rather than re-opening the app
+  // (which used to spawn a stray cmux instead of jumping).
+  if ((rec.surface || rec.tty) && cmuxBinPath()) {
+    const cmux = await focusCmuxForSession(rec)
     if (cmux) {
       await openAppPath(found?.appPath || cmuxBinPath().replace(/\/Contents\/.*$/, ''))
-      return { ok: true, method: 'cmux focus', tty, pid: found?.pid || null, ...cmux }
+      logJump('cmux focus', { session: target?.sessionId || '', ...cmux })
+      return { ok: true, method: 'cmux focus', tty: rec.tty, pid: found?.pid || null, ...cmux }
     }
   }
 
-  if (tty && await activateTerminalTty(tty)) {
-    return { ok: true, method: 'Terminal tty', tty, pid: found?.pid || null }
+  if (rec.tty && await activateTerminalTty(rec.tty)) {
+    logJump('Terminal tty', { session: target?.sessionId || '', tty: rec.tty })
+    return { ok: true, method: 'Terminal tty', tty: rec.tty, pid: found?.pid || null }
   }
   if (found?.appPath && await openAppPath(found.appPath)) {
-    return { ok: true, method: 'open host app', appPath: found.appPath, tty, pid: found.pid }
+    logJump('open host app', { session: target?.sessionId || '', appPath: found.appPath })
+    return { ok: true, method: 'open host app', appPath: found.appPath, tty: rec.tty, pid: found.pid }
   }
-  return { ok: false, error: found ? 'terminal-tab-not-found' : 'agent-process-not-found' }
+  const error = found ? 'terminal-tab-not-found' : 'agent-process-not-found'
+  logJump('failed', { session: target?.sessionId || '', error })
+  return { ok: false, error }
 }
 
 function appExists(name) {
@@ -1555,7 +1650,7 @@ function startLocalAgentServer() {
       }
       if (event) {
         const sid = event.sessionId || event.session_id
-        if (sid) cacheSessionTty(sid) // remember tty while the session is alive
+        if (sid) cacheSessionTty(sid, event.cwd) // pin tty + cmux surface while alive
         emitRendererAgentEvent(event)
       }
       writeJson(res, 200, { ok: true })

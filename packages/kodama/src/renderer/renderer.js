@@ -590,7 +590,9 @@ function gifLayout() {
   const margin = 24
   const autoX = window.innerWidth - pw - margin
   const autoY = window.innerHeight - ph - margin
-  const minVisible = uiSettings.edgeMode === 'half' ? 0.42 : 1
+  // gif sprites are tight (little transparent padding), so 'half' is gentler here
+  // than for Live2D (whose models carry big padding) — otherwise the body gets cut.
+  const minVisible = uiSettings.edgeMode === 'half' ? 0.7 : 1
   const overflowX = pw * (1 - minVisible)
   const overflowY = ph * (1 - minVisible)
   const px = clampPoint(Number.isFinite(uiSettings.petX) ? uiSettings.petX : autoX, -overflowX, window.innerWidth - pw + overflowX)

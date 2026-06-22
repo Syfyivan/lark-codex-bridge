@@ -346,6 +346,11 @@ async function init() {
     }
     await initGrowth(hooks)
     syncAccessories()
+    // initGrowth loads the real level after the first applyUiSettings() already
+    // sized the pet at level 1; re-layout once so the pet reflects its actual
+    // growth size (growthScale) instead of rendering ~30% too small until the
+    // first feed/setting change. Same idempotent layout used on resize/feed.
+    backend?.applySettings?.()
     const handleAgentEvent = (event) => {
       recordAgentEvent(event)
       // 子 Agent 事件只进 session 列表,不冒泡/不 TTS(否则气泡太多)。

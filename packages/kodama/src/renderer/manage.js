@@ -154,7 +154,9 @@ async function refreshEvolution() {
     cell.className = `evo-item${i === curIdx ? ' current' : ''}${locked ? ' locked' : ''}`
     const img = document.createElement('img')
     img.className = 'evo-img'
-    img.src = `../pets/${evo.set}/${s.file}`
+    // manage.html lives in src/renderer/, same as pets/ — so the path is `pets/…`
+    // (not `../pets/`, which would escape to src/pets/ and 404).
+    img.src = `pets/${evo.set}/${s.file}`
     img.alt = s.label || ''
     cell.appendChild(img)
     const label = document.createElement('div')

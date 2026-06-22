@@ -16,13 +16,21 @@
 // evolution is conveyed by the stage art, not per-status animations.
 const TRANSIENT = new Set(['done', 'failed', 'waiting', 'tap'])
 
-function pickStageFile(stages, level) {
+// Pick the stage whose minLevel is the highest one still <= level. Order-independent
+// (doesn't assume `stages` is sorted), and falls back to the lowest-minLevel stage
+// when level is below every threshold. Exported for unit testing.
+export function pickStageFile(stages, level) {
   let chosen = ''
+  let chosenMin = -Infinity
+  let lowest = ''
+  let lowestMin = Infinity
   for (const s of stages) {
     if (!s?.file) continue
-    if (level >= (Number(s.minLevel) || 1)) chosen = s.file
+    const min = Number(s.minLevel) || 1
+    if (min < lowestMin) { lowestMin = min; lowest = s.file }
+    if (level >= min && min > chosenMin) { chosenMin = min; chosen = s.file }
   }
-  return chosen || stages[0]?.file || ''
+  return chosen || lowest || ''
 }
 
 export function initGifBackend(cfg = {}) {

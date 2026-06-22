@@ -18,6 +18,20 @@
 - [ ] 桌宠各项肉眼验收(全屏/贴边/气泡距离/子 Agent 分享/完成会话跳转)。
 - [ ] 决定推送代码 / 合并发布博客。
 
+## ▶ 进行中 / 下一步(#9 养成经济,带可恢复方案)
+已确认方向 = **换 CC0 像素精灵宠物 + 经验商店**。拆成两半:
+
+**A. 配饰商店(无需外部素材,用 emoji 当配饰 —— 下一个 session 直接做)**
+- 思路:配饰用 **emoji**(🎩👑🧢👓🕶️🎀🎖️🦴⭐💫🌸…)渲染成宠物身上的叠加层,**免费/零版权/不用下载**,可做很多件。锁定=灰(grayscale+低透明),解锁=彩色。
+- 现状代码:`src/renderer/config/accessories.js` 定义 4 件(slot/label/unlockLevel/anchor,CSS 渲染);`src/renderer/accessories.js` 是渲染层(`ACCESSORY_MARKUP` 映射 + position 按 anchor 定位);`growth.js` 管 unlocked/equipped、`equipAccessory(slot,id)`、按等级自动解锁 `unlockForLevel()`。
+- 要做:① accessories.js 渲染层支持 `acc.icon`(emoji)→ `el.textContent = acc.icon`,加 CSS 字号随 anchor.width;② accessories 配置改成一批 emoji 配饰(加 `icon` + `cost`<经验价>;商店专属件设 `unlockLevel: Infinity` 只能买);③ growth 加 `unlockWithExp(id)`(exp≥cost 则 exp-=cost + 加入 unlocked + persist)、`accessoryCatalog()`(返回 {id,label,slot,icon,unlocked,equipped,cost});④ 经 IPC 把 catalog 同步到管理窗口(**镜像现有 ui-settings 同步管道**:pet 渲染端 report→main 缓存→管理窗 invoke 读;管理窗 命令→main→sendToPet 执行);⑤ manage.html/js 加「配饰商店」卡:网格,每件 emoji + 名称,锁定显灰+「解锁 N⭐」按钮,已解锁显彩+佩戴/卸下切换。
+- 注意 level 582 已把现有 4 件按等级解锁完,故商店要加**新的 emoji 专属件**(unlockLevel 高/只能买)才有东西买。
+
+**B. 宠物精灵蛋→幼崽→成年(需真素材,卡用户挑包)**
+- emoji 不适合做宠物主体,需 CC0 像素生物精灵(蛋/孵化/成长阶段)。接桌宠已有 **gif/sprite 后端**(`src/renderer/backends/gif.js`,靠 gitignored `config/render.local.js` 切 backend:'gif')。
+- 卡点:需用户挑定一个 CC0 包(我无法替下载/核许可)。**注意工具限制:我无法下载二进制素材文件**,需用户下载或借浏览器工具取。
+- 许可常识:CC0=可商用/不用署名/不用授权;CC-BY=要署名;"free for personal use"≠可商用。"免费下载"≠许可,要看徽章。
+
 ## P1 — 还能做的功能
 - [x] **一键注册 Claude Code Hook**(参考 [clawd-on-desk]):托盘按钮,安全合并(备份+只追加+幂等)进 `~/.claude/settings.json`,补齐缺失的失败/细粒度事件;不覆盖已有 hook。`4ae8c56`
 - [x] **更细粒度事件**:测试/构建/Git 的 正在跑/完成/失败(commandEvent 已实现,去噪后纳入注册)。`4cbf9b5`

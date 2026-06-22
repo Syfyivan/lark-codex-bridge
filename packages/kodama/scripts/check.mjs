@@ -4,7 +4,13 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Resolve file paths against the package root (one level up from scripts/), so
+// `node check.mjs` works from any cwd — not just packages/kodama (otherwise every
+// relative path 404s and the script silently "fails" all files).
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const CJS = [
   'src/main/index.js',
@@ -38,10 +44,10 @@ let failed = 0
 
 function check(file, asModule) {
   try {
-    let target = file
+    let target = resolve(ROOT, file)
     if (asModule && file.endsWith('.js')) {
       target = join(dir, file.replace(/[/\\]/g, '_') + '.mjs')
-      writeFileSync(target, readFileSync(file))
+      writeFileSync(target, readFileSync(resolve(ROOT, file)))
     }
     execFileSync(process.execPath, ['--check', target], { stdio: 'pipe' })
     console.log('ok   ', file)

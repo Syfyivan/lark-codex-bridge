@@ -36,7 +36,8 @@
 - **进化 = 等级选颜色阶段**:绿(Lv1)→蓝(5)→黄(15)→红(30)→紫(60)。`backends/gif.js` 加 `stages`+`setLevel()`(按 file 比对重渲染);`renderer.js` 的 `syncAccessories` 在等级变化时调 `setLevel`。
 - **gif 后端可拖动**:补 `gifLayout`(renderer 作用域,按 petX/petY 定位 `<img>`、贴边、缩放、重排气泡)赋给 `backend.applySettings`——之前 gif 没有 applySettings 导致拖拽无效。
 - **分发**:slime 素材从 gitignore 放出(CC0 可提交),作为**可选宠物**;默认仍 Live2D,经 `render.local.js` 启用(`render.local.example.js` 已以 slime 为开箱示例)。
-- 下一步可做:蛋→孵化的真·形态(目前是颜色阶段,非蛋/幼崽不同体型);per-status 动画(当前各状态共用待机帧);emoji 配饰 anchor 按 slime 头部微调。
+- 管理中心已加「进化图鉴」(横排全阶段+高亮当前+灰显未达,(2026-06-22));gif 后端贴边改 0.7 可见比(紧凑精灵不切半)。
+- 下一步可做:蛋→孵化的真·形态(目前是颜色阶段,非蛋/幼崽不同体型,需另找带形态变化的 CC0 包);per-status 动画(当前各状态共用待机帧);emoji 配饰 anchor 按 slime 头部微调。
 - 许可常识:CC0=可商用/不用署名/不用授权;CC-BY=要署名;"free for personal use"≠可商用。
 
 ## P1 — 还能做的功能

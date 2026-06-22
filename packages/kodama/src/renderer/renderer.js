@@ -339,7 +339,9 @@ async function init() {
     syncAccessories()
     const handleAgentEvent = (event) => {
       recordAgentEvent(event)
-      if (!uiSettings.dndMode) {
+      // 子 Agent 事件只进 session 列表,不冒泡/不 TTS(否则气泡太多)。
+      const isSubagent = Boolean(event?.agentTranscriptPath || event?.agent_transcript_path)
+      if (!uiSettings.dndMode && !isSubagent) {
         reactToEvent(event, hooks, {
           sound: uiSettings.soundEnabled,
           notifications: uiSettings.notificationsEnabled,

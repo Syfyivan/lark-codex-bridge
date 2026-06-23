@@ -1,5 +1,5 @@
 /* global PIXI */
-import { connectAgentSync } from './agent-sync.js'
+import { connectAgentSync, DEFAULT_BRIDGE_URL } from './agent-sync.js'
 import { reactToEvent } from './reactions.js'
 import { PET_CONFIG } from './config/pet-config.js'
 import { initAccessoryLayer } from './accessories.js'
@@ -58,6 +58,7 @@ const settingBubbleGap = document.getElementById('setting-bubble-gap')
 const settingBubbleGapValue = document.getElementById('setting-bubble-gap-value')
 const settingExportConfig = document.getElementById('setting-export-config')
 const settingImportConfig = document.getElementById('setting-import-config')
+const settingMovePet = document.getElementById('setting-move-pet')
 const settingHidePet = document.getElementById('setting-hide-pet')
 const bubbleHoverTip = document.createElement('div')
 bubbleHoverTip.id = 'bubble-hover-tip'
@@ -70,7 +71,7 @@ let activeGifConfig = null // set when the gif backend is active (for evolution�
 let accessoryLayer = null
 let panelVisible = false
 let agentSyncStatus = 'offline'
-let activeAgentConfig = { bridgeUrl: 'http://127.0.0.1:8787' }
+let activeAgentConfig = { bridgeUrl: DEFAULT_BRIDGE_URL }
 let activeAccessorySlots = ACCESSORY_SLOTS
 let activeAccessories = ACCESSORIES
 let activeBubbleEvent = null
@@ -80,12 +81,18 @@ let bubbleSeq = 0
 const eventLog = []
 const bubbleLog = []
 const sessionPreviewCache = new Map()
+const pendingBubbleShares = new Set()
+const pendingSubagentShares = new Set()
 const MAX_EVENT_LOG = 40
-const MAX_BUBBLES = 4
+const MAX_TRANSIENT_BUBBLES = 6
+const MAX_PERSISTENT_BUBBLES = 120
 const PANEL_TABS = new Set(['settings', 'waiting', 'done', 'sessions', 'bridge', 'recent', 'config'])
+const BUBBLE_ACTION_DEBOUNCE_MS = 600
+const ACTIVE_TARGET_TTL_MS = 10 * 60 * 1000
 const FLOATING_PADDING = 8
 const BUBBLE_WIDTH = 260
 const PANEL_WIDTH = 310
+let bridgeTasksSharePending = false
 let bridgeTasksState = {
   loading: false,
   loaded: false,
@@ -95,6 +102,7 @@ let bridgeTasksState = {
 }
 const UI_SETTINGS_VERSION = 3
 const CORNERS = new Set(['auto', 'near', 'top-left', 'top-right', 'bottom-left', 'bottom-right'])
+const MOVE_MODE_MS = 15000
 const DEFAULT_UI_SETTINGS = {
   version: UI_SETTINGS_VERSION,
   petScale: 0.72,
@@ -126,6 +134,12 @@ let pomodoroSettings = {
 let activeHoverBubbleId = ''
 let wanderTimer = null
 let floatingLayoutFrame = 0
+let moveModeUntil = 0
+let moveModeTimer = 0
+let refreshMouseInteractivity = () => {}
+let bubbleActionCooldownUntil = 0
+let bubbleActionCooldownTimer = 0
+let activeViewedTarget = { key: '', at: 0 }
 
 function clampNumber(value, min, max, fallback) {
   const n = Number(value)
@@ -346,6 +360,8 @@ async function init() {
     }
     await initGrowth(hooks)
     syncAccessories()
+    const lastTarget = await window.pet.getLastOpenedTarget?.()
+    if (lastTarget) noteActiveTarget(lastTarget)
     // initGrowth loads the real level after the first applyUiSettings() already
     // sized the pet at level 1; re-layout once so the pet reflects its actual
     // growth size (growthScale) instead of rendering ~30% too small until the
@@ -353,9 +369,10 @@ async function init() {
     backend?.applySettings?.()
     const handleAgentEvent = (event) => {
       recordAgentEvent(event)
-      // 子 Agent 事件只进 session 列表,不冒泡/不 TTS(否则气泡太多)。
-      const isSubagent = Boolean(event?.agentTranscriptPath || event?.agent_transcript_path)
-      if (!uiSettings.dndMode && !isSubagent) {
+      // 子 Agent / team-worker 事件只进详情统计和 session 列表,不冒泡/不 TTS。
+      const isSubagent = event?.subagent === true
+        || Boolean(event?.agentTranscriptPath || event?.agent_transcript_path || event?.agentId || event?.agent_id)
+      if (!uiSettings.dndMode && !isSubagent && !shouldSuppressForegroundBubble(event)) {
         reactToEvent(event, hooks, {
           sound: uiSettings.soundEnabled,
           notifications: uiSettings.notificationsEnabled,
@@ -367,12 +384,13 @@ async function init() {
       if (event.source === 'lark' && event.tokens) window.pet.addLarkTokens?.(event.tokens)
     }
 
-    // source 'lark' via lark-codex-bridge SSE; bridge URL/token overridable.
+    // source 'lark' arrives via the configured bridge SSE adapter.
     const agentCfg = (await importLocal('./config/agent.local.js'))?.AGENT || {}
-    activeAgentConfig = { bridgeUrl: agentCfg.bridgeUrl || 'http://127.0.0.1:8787', token: agentCfg.token || '' }
+    activeAgentConfig = { bridgeUrl: agentCfg.bridgeUrl || DEFAULT_BRIDGE_URL, token: agentCfg.token || '' }
     connectAgentSync(handleAgentEvent, { ...agentCfg, onStatus: hooks.onStatus })
     window.pet.onAgentEvent?.(handleAgentEvent) // source 'local'
     window.pet.onTogglePanel?.(() => togglePanel())
+    window.pet.onEnterMoveMode?.(() => enterMoveMode())
     window.pet.onSetDndMode?.((enabled) => setDndMode(enabled === true))
     setupEventPanel()
     window.pet.onEquipAccessory?.((request) => {
@@ -548,9 +566,14 @@ function petBounds() {
   return b
 }
 
+function isMoveModeActive() {
+  return moveModeUntil > Date.now()
+}
+
 function interactivePetBounds() {
   const b = petBounds()
   if (!b) return null
+  if (isMoveModeActive()) return b
   const width = b.width * uiSettings.hitboxScale
   const height = b.height * uiSettings.hitboxScale
   const centerX = b.x + b.width / 2
@@ -626,11 +649,61 @@ function overInteractiveSurface(x, y) {
   return panelVisible || overElement(bubble, x, y) || overPet(x, y)
 }
 
+function areBubbleActionsCoolingDown() {
+  return bubbleActionCooldownUntil > Date.now()
+}
+
+function debounceBubbleActions(ms = BUBBLE_ACTION_DEBOUNCE_MS) {
+  bubbleActionCooldownUntil = Date.now() + ms
+  if (bubbleActionCooldownTimer) clearTimeout(bubbleActionCooldownTimer)
+  bubbleActionCooldownTimer = setTimeout(() => {
+    bubbleActionCooldownTimer = 0
+    bubbleActionCooldownUntil = 0
+    renderBubbles()
+  }, ms + 20)
+  renderBubbles()
+}
+
+function syncMoveModeUi() {
+  const active = isMoveModeActive()
+  document.body.classList.toggle('move-mode', active)
+  if (settingMovePet) {
+    settingMovePet.textContent = active ? '拖动模式中…' : '移动桌宠'
+    settingMovePet.classList.toggle('active', active)
+  }
+}
+
+function exitMoveMode({ announce = false } = {}) {
+  moveModeUntil = 0
+  if (moveModeTimer) {
+    clearTimeout(moveModeTimer)
+    moveModeTimer = 0
+  }
+  syncMoveModeUi()
+  refreshMouseInteractivity()
+  if (announce) say('已退出移动模式', 1600)
+}
+
+function enterMoveMode(ms = MOVE_MODE_MS) {
+  if (panelVisible) togglePanel(false)
+  moveModeUntil = Date.now() + ms
+  if (moveModeTimer) clearTimeout(moveModeTimer)
+  moveModeTimer = setTimeout(() => {
+    moveModeTimer = 0
+    exitMoveMode()
+  }, ms + 20)
+  syncMoveModeUi()
+  refreshMouseInteractivity()
+  say('移动模式已开启：按住左键拖动桌宠，Esc 退出', 2600)
+}
+
 function setupInteraction() {
   let ignoring = true
   let dragging = false
   let lastX = 0
   let lastY = 0
+  let lastClientX = -1
+  let lastClientY = -1
   let suppressOutsidePanelClick = false
 
   function startDrag(e, { tap = false } = {}) {
@@ -639,6 +712,20 @@ function setupInteraction() {
     lastY = e.screenY
     if (tap) onTap()
   }
+
+  function syncIgnoringState() {
+    if (dragging) return
+    const over = overInteractiveSurface(lastClientX, lastClientY)
+    if (over && ignoring) {
+      ignoring = false
+      window.pet.setIgnoreMouse(false)
+    } else if (!over && !ignoring) {
+      ignoring = true
+      window.pet.setIgnoreMouse(true, { forward: true })
+    }
+  }
+
+  refreshMouseInteractivity = syncIgnoringState
 
   function targetInsidePanel(target) {
     return Boolean(eventPanel && target?.nodeType && eventPanel.contains(target))
@@ -663,7 +750,16 @@ function setupInteraction() {
     if (panelVisible) togglePanel(false)
   })
 
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isMoveModeActive()) {
+      e.preventDefault()
+      exitMoveMode({ announce: true })
+    }
+  })
+
   window.addEventListener('mousemove', (e) => {
+    lastClientX = e.clientX
+    lastClientY = e.clientY
     if (dragging) {
       // Move the pet *within* the full-workarea overlay; layout() re-clamps so
       // it can hug any edge, and repositions the bubble adaptively.
@@ -677,14 +773,7 @@ function setupInteraction() {
       scheduleSavePetPos()
       return
     }
-    const over = overInteractiveSurface(e.clientX, e.clientY)
-    if (over && ignoring) {
-      ignoring = false
-      window.pet.setIgnoreMouse(false)
-    } else if (!over && !ignoring) {
-      ignoring = true
-      window.pet.setIgnoreMouse(true, { forward: true })
-    }
+    syncIgnoringState()
   })
 
   window.addEventListener('mousedown', (e) => {
@@ -692,12 +781,13 @@ function setupInteraction() {
     if (!overPet(e.clientX, e.clientY)) return
     // 左键直接按在桌宠身上即可拖动(抓住就拖,符合直觉);静止点击不会移动它,
     // 左键触发模式下静止点击=摸摸。右键仍打开面板。
-    startDrag(e, { tap: uiSettings.triggerMode === 'left' })
+    startDrag(e, { tap: uiSettings.triggerMode === 'left' && !isMoveModeActive() })
   })
 
   window.addEventListener('mouseup', () => {
     if (dragging) saveUiSettings()
     dragging = false
+    syncIgnoringState()
   })
 
   window.addEventListener('contextmenu', (e) => {
@@ -716,6 +806,8 @@ function setupInteraction() {
   bubble.addEventListener('click', (e) => {
     e.stopPropagation()
     if (e.target.closest?.('[data-dismiss-all-bubbles]')) {
+      if (areBubbleActionsCoolingDown()) return
+      debounceBubbleActions()
       bubbleLog.length = 0
       hideBubbleHover()
       renderBubbles()
@@ -723,12 +815,16 @@ function setupInteraction() {
     }
     const dismiss = e.target.closest?.('[data-dismiss-bubble]')
     if (dismiss) {
+      if (areBubbleActionsCoolingDown()) return
+      debounceBubbleActions()
       hideBubbleHover()
       removeBubble(dismiss.dataset.dismissBubble)
       return
     }
     const share = e.target.closest?.('[data-share-bubble]')
     if (share) {
+      if (areBubbleActionsCoolingDown()) return
+      debounceBubbleActions()
       hideBubbleHover()
       shareBubbleSession(share.dataset.shareBubble)
       return
@@ -737,10 +833,14 @@ function setupInteraction() {
     const item = bubbleLog.find(record => record.id === card?.dataset.bubbleId)
     if (item) {
       const target = targetForEvent(item.event)
-      if (target) openTarget(target)
+      if (target) {
+        openTarget(target).then((ok) => {
+          if (ok) removeBubble(item.id)
+        })
+      }
       return
     }
-    openBubbleTarget(activeBubbleEvent)
+    openBubbleTarget(item?.event || activeBubbleEvent, item?.id || '')
   })
 
   bubble.addEventListener('mousemove', (e) => {
@@ -1195,13 +1295,52 @@ function sessionRequestForEvent(event) {
     transcriptPath,
     agentTranscriptPath,
     cwd: event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || '',
-    bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',
+    bridgeUrl: activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL,
     token: activeAgentConfig.token || '',
   }
 }
 
 function shouldPersistBubble(event) {
   return Boolean(event?.type)
+}
+
+function bubbleMergeKey(event) {
+  if (!event?.type) return ''
+  if (!new Set(['task_started', 'task_progress', 'task_waiting', 'task_done', 'task_failed']).has(event.type)) {
+    return ''
+  }
+  const session = sessionRequestForEvent(event)
+  if (session) {
+    return `session:${session.provider}:${session.threadId || session.sessionId}`
+  }
+  const chatId = String(event.chatId || event.chat_id || '').trim()
+  const messageId = String(event.messageId || event.message_id || '').trim()
+  if (chatId) return `chat:${chatId}:${messageId}`
+  const url = String(event.url || event.link || event.deepLink || event.deep_link || '').trim()
+  if (url) return `url:${url}`
+  const cwd = String(event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || '').trim()
+  if (cwd) return `cwd:${event.source || 'local'}:${cwd}`
+  return ''
+}
+
+function clearSupersededTaskBubbles(event) {
+  if (!event || !new Set(['task_done', 'task_failed']).has(event.type)) return
+  const cwd = String(event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || '').trim()
+  if (!cwd) return
+  for (let i = bubbleLog.length - 1; i >= 0; i -= 1) {
+    const item = bubbleLog[i]
+    const itemCwd = String(
+      item?.event?.cwd
+      || item?.event?.projectDir
+      || item?.event?.project_dir
+      || item?.event?.workspacePath
+      || item?.event?.workspace_path
+      || '',
+    ).trim()
+    if (itemCwd !== cwd) continue
+    if (!new Set(['task_started', 'task_progress']).has(item?.event?.type)) continue
+    bubbleLog.splice(i, 1)
+  }
 }
 
 function removeBubble(id) {
@@ -1211,9 +1350,17 @@ function removeBubble(id) {
 }
 
 function trimBubbles() {
-  while (bubbleLog.length > MAX_BUBBLES) {
-    const transientIndex = bubbleLog.findLastIndex(item => !item.persistent)
-    bubbleLog.splice(transientIndex >= 0 ? transientIndex : bubbleLog.length - 1, 1)
+  const transientIds = bubbleLog.filter(item => !item.persistent).map(item => item.id)
+  while (transientIds.length > MAX_TRANSIENT_BUBBLES) {
+    const id = transientIds.pop()
+    const index = bubbleLog.findIndex(item => item.id === id)
+    if (index >= 0) bubbleLog.splice(index, 1)
+  }
+  const persistentIds = bubbleLog.filter(item => item.persistent).map(item => item.id)
+  while (persistentIds.length > MAX_PERSISTENT_BUBBLES) {
+    const id = persistentIds.pop()
+    const index = bubbleLog.findIndex(item => item.id === id)
+    if (index >= 0) bubbleLog.splice(index, 1)
   }
 }
 
@@ -1226,22 +1373,21 @@ function renderBubbles() {
     return
   }
   activeBubbleEvent = bubbleLog[0]?.event || null
+  const actionsCoolingDown = areBubbleActionsCoolingDown()
   const stackTools = bubbleLog.length > 1
-    ? '<div class="bubble-stack-tools"><button type="button" data-dismiss-all-bubbles="1">全部忽略</button></div>'
+    ? `<div class="bubble-stack-tools"><button type="button" data-dismiss-all-bubbles="1"${actionsCoolingDown ? ' disabled' : ''}>全部忽略</button></div>`
     : ''
   bubble.innerHTML = stackTools + bubbleLog.map((item) => {
     const target = targetForEvent(item.event)
     const targetText = target ? `<div class="bubble-target">${escapeHtml(target.label || '打开会话')}</div>` : ''
-    const shareButton = sessionRequestForEvent(item.event)
-      ? `<button type="button" data-share-bubble="${escapeHtml(item.id)}" title="生成会话分享链接">分享</button>`
-      : ''
+    const shareButton = bubbleShareButtonHtml(item, actionsCoolingDown)
     return [
       `<article class="bubble-card bubble-${escapeHtml(item.kind)}${target ? ' clickable' : ''}" data-bubble-id="${escapeHtml(item.id)}">`,
       '<div class="bubble-head">',
       `<strong>${escapeHtml(item.title)}</strong>`,
       '<div class="bubble-actions">',
       shareButton,
-      `<button type="button" data-dismiss-bubble="${escapeHtml(item.id)}" title="忽略">忽略</button>`,
+      `<button type="button" data-dismiss-bubble="${escapeHtml(item.id)}" title="忽略"${actionsCoolingDown ? ' disabled' : ''}>忽略</button>`,
       '</div>',
       '</div>',
       `<div class="bubble-text">${escapeHtml(item.text)}</div>`,
@@ -1253,9 +1399,23 @@ function renderBubbles() {
   positionBubble()
 }
 
+function bubbleShareButtonHtml(item, actionsCoolingDown = false) {
+  if (!sessionRequestForEvent(item.event)) return ''
+  const pending = pendingBubbleShares.has(item.id)
+  return [
+    `<button type="button" data-share-bubble="${escapeHtml(item.id)}"`,
+    ` title="${pending ? '正在生成会话分享链接' : '生成会话分享链接'}"`,
+    pending || actionsCoolingDown ? ' disabled aria-busy="true"' : '',
+    `>${pending ? '分享中...' : '分享'}</button>`,
+  ].join('')
+}
+
 function say(text, ms = 2500, event = null) {
-  const id = String(++bubbleSeq)
   const persistent = shouldPersistBubble(event)
+  const mergeKey = persistent ? bubbleMergeKey(event) : ''
+  const existingIndex = mergeKey ? bubbleLog.findIndex(item => item.mergeKey === mergeKey) : -1
+  const current = existingIndex >= 0 ? bubbleLog.splice(existingIndex, 1)[0] : null
+  const id = current?.id || String(++bubbleSeq)
   bubbleLog.unshift({
     id,
     text,
@@ -1263,8 +1423,11 @@ function say(text, ms = 2500, event = null) {
     persistent,
     kind: bubbleKind(event),
     title: bubbleTitle(event),
-    createdAt: new Date().toISOString(),
+    createdAt: current?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    mergeKey,
   })
+  clearSupersededTaskBubbles(event)
   trimBubbles()
   renderBubbles()
   if (!persistent) {
@@ -1390,6 +1553,7 @@ function setupEventPanel() {
   bridgeTasksRefresh?.addEventListener('click', () => refreshBridgeTasks({ force: true }))
   bridgeTasksShare?.addEventListener('click', () => shareBridgeTaskViewer())
   bridgeTasksWindow?.addEventListener('click', () => openBridgeTasksWindow())
+  syncBridgeTasksShareButton()
   settingPetScale?.addEventListener('input', () => {
     uiSettings.petScale = clampNumber(Number(settingPetScale.value) / 100, 0.4, 1.25, DEFAULT_UI_SETTINGS.petScale)
     saveUiSettings()
@@ -1483,6 +1647,7 @@ function setupEventPanel() {
   })
   settingExportConfig?.addEventListener('click', exportConfigToClipboard)
   settingImportConfig?.addEventListener('click', importConfigFromClipboard)
+  settingMovePet?.addEventListener('click', () => enterMoveMode())
   settingHidePet?.addEventListener('click', () => window.pet.setHidden?.(true))
   eventPanel?.addEventListener('click', (e) => {
     const tabButton = e.target.closest?.('[data-tab]')
@@ -1566,6 +1731,7 @@ function togglePanel(force) {
   } else {
     window.pet.setIgnoreMouse(true, { forward: true })
   }
+  refreshMouseInteractivity()
   syncEventPanel()
 }
 
@@ -1627,6 +1793,29 @@ function targetKey(target) {
   return target.url || target.path || target.threadId || target.sessionId || `${target.chatId || ''}:${target.messageId || ''}`
 }
 
+function noteActiveTarget(target) {
+  const key = targetKey(target)
+  if (!key) return
+  activeViewedTarget = { key, at: Date.now() }
+}
+
+function isTargetLikelyActive(target) {
+  const key = targetKey(target)
+  if (!key || !activeViewedTarget.key) return false
+  return activeViewedTarget.key === key && (Date.now() - activeViewedTarget.at) <= ACTIVE_TARGET_TTL_MS
+}
+
+function shouldSuppressForegroundBubble(event) {
+  if (!event) return false
+  if (!new Set(['task_started', 'task_progress', 'task_done', 'agent_done', 'share_ready']).has(event.type)) {
+    return false
+  }
+  const target = targetForEvent(event)
+  const active = isTargetLikelyActive(target)
+  if (active) activeViewedTarget.at = Date.now()
+  return active
+}
+
 function openableEvents() {
   const seen = new Set()
   const out = []
@@ -1655,17 +1844,38 @@ async function openTarget(target) {
       : target.kind === 'codex-thread'
         ? '正在打开 Codex 会话'
         : '正在打开飞书会话'
+  noteActiveTarget(target)
   say(text, 1400)
   return true
 }
 
+function notifyShareReady(label) {
+  const text = String(label || '分享链接已生成，已复制到剪贴板')
+  say(text, 0, {
+    source: 'local',
+    type: 'share_ready',
+    text,
+  })
+  if (uiSettings.notificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try {
+      new Notification('Kodama · 分享完成', { body: text })
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
 async function shareBubbleSession(id) {
-  const item = bubbleLog.find(record => record.id === String(id))
+  const bubbleId = String(id)
+  if (pendingBubbleShares.has(bubbleId)) return
+  const item = bubbleLog.find(record => record.id === bubbleId)
   const request = sessionRequestForEvent(item?.event)
   if (!request) {
     say('这条气泡没有可分享的会话信息', 2400)
     return
   }
+  pendingBubbleShares.add(bubbleId)
+  renderBubbles()
   say('正在生成会话分享链接...', 2200)
   try {
     const result = await window.pet.shareSession?.(request)
@@ -1674,14 +1884,12 @@ async function shareBubbleSession(id) {
       return
     }
     const url = result.url || result.share?.url
-    say('分享链接已生成，已复制', 0, {
-      source: 'local',
-      type: 'task_done',
-      text: url || '分享链接已生成',
-      url,
-    })
+    notifyShareReady(url ? `分享链接已复制到剪贴板：${url}` : '分享链接已生成，已复制到剪贴板')
   } catch (error) {
     say(`分享失败：${error?.message || error}`, 4200)
+  } finally {
+    pendingBubbleShares.delete(bubbleId)
+    renderBubbles()
   }
 }
 
@@ -1710,18 +1918,21 @@ function speakEvent(event) {
 // Share a single sub-agent's own conversation (its transcript file → session-share).
 async function shareSubagentTranscript(transcript) {
   const transcriptPath = String(transcript || '').trim()
+  if (pendingSubagentShares.has(transcriptPath)) return
   const sessionId = inferSessionIdFromTranscriptPath(transcriptPath)
   if (!sessionId) {
     say('这个子 Agent 没有可分享的会话文件', 2600)
     return
   }
+  pendingSubagentShares.add(transcriptPath)
+  syncEventPanel()
   say('正在生成子 Agent 分享链接...', 2200)
   try {
     const result = await window.pet.shareSession?.({
       provider: 'claude',
       sessionId,
       transcriptPath,
-      bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',
+      bridgeUrl: activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL,
       token: activeAgentConfig.token || '',
     })
     if (!result?.ok) {
@@ -1729,22 +1940,29 @@ async function shareSubagentTranscript(transcript) {
       return
     }
     const url = result.url || result.share?.url
-    say('子 Agent 分享链接已生成，已复制', 0, { source: 'local', type: 'task_done', text: url || '已生成', url })
+    notifyShareReady(url ? `子 Agent 分享链接已复制到剪贴板：${url}` : '子 Agent 分享链接已生成，已复制到剪贴板')
   } catch (error) {
     say(`子 Agent 分享失败：${error?.message || error}`, 4200)
+  } finally {
+    pendingSubagentShares.delete(transcriptPath)
+    syncEventPanel()
   }
 }
 
-function openBubbleTarget(event = activeBubbleEvent) {
+function openBubbleTarget(event = activeBubbleEvent, bubbleId = '') {
   const bubbleTarget = targetForEvent(event)
   const sessions = openableEvents()
   const hasOtherSession = bubbleTarget && sessions.some(event => targetKey(event.target) !== targetKey(bubbleTarget))
   if (bubbleTarget && !hasOtherSession) {
-    openTarget(bubbleTarget)
+    openTarget(bubbleTarget).then((ok) => {
+      if (ok && bubbleId) removeBubble(bubbleId)
+    })
     return
   }
   if (sessions.length === 1) {
-    openTarget(sessions[0].target)
+    openTarget(sessions[0].target).then((ok) => {
+      if (ok && bubbleId) removeBubble(bubbleId)
+    })
     return
   }
   if (sessions.length > 1) {
@@ -1808,6 +2026,7 @@ function syncSettingControls() {
   if (settingBubbleAnchorValue) settingBubbleAnchorValue.textContent = `${Math.round(uiSettings.bubbleAnchor)}%`
   if (settingBubbleGap) settingBubbleGap.value = String(Math.round(uiSettings.bubbleGap))
   if (settingBubbleGapValue) settingBubbleGapValue.textContent = `${Math.round(uiSettings.bubbleGap)}px`
+  syncMoveModeUi()
 }
 
 function escapeHtml(text) {
@@ -1829,6 +2048,7 @@ function typeLabel(type) {
     agent_done: 'Agent 完成',
     task_done: '完成',
     task_failed: '失败',
+    share_ready: '分享完成',
     pomodoro_completed: '番茄钟',
   }[type] || type
 }
@@ -1913,13 +2133,24 @@ function renderSessionList(el, list) {
     const children = subs.map((sub) => [
       `<article class="event-item event-subagent" data-event-id="${escapeHtml(event.id || '')}" title="子 Agent 运行在父会话终端内">`,
       `<div class="event-subagent-name">↳ 子 Agent · ${escapeHtml(sub.name)}`,
-      sub.transcript ? `<button type="button" class="subagent-share" data-share-subagent="${escapeHtml(sub.transcript)}">分享</button>` : '',
+      subagentShareButtonHtml(sub.transcript),
       '</div>',
       `<div class="event-text">${escapeHtml(eventText(sub.last))}</div>`,
       '</article>',
     ].join('')).join('')
     return parent + children
   }).join('')
+}
+
+function subagentShareButtonHtml(transcript) {
+  const transcriptPath = String(transcript || '').trim()
+  if (!transcriptPath) return ''
+  const pending = pendingSubagentShares.has(transcriptPath)
+  return [
+    `<button type="button" class="subagent-share" data-share-subagent="${escapeHtml(transcriptPath)}"`,
+    pending ? ' disabled aria-busy="true"' : '',
+    `>${pending ? '分享中...' : '分享'}</button>`,
+  ].join('')
 }
 
 // Collect the sub-agents (SubagentStart/Stop carry agent_transcript_path + the
@@ -1944,7 +2175,7 @@ function renderConfig() {
   const notif = typeof Notification === 'undefined' ? '不可用' : Notification.permission
   const tokenText = activeAgentConfig.token ? '已配置' : '未配置'
   configEvents.innerHTML = [
-    ['Bridge', activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787'],
+    ['Bridge', activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL],
     ['SSE', agentSyncStatus === 'connected' ? '已连接' : '离线/重连中'],
     ['Hook', '127.0.0.1:7766'],
     ['Token', tokenText],
@@ -2025,7 +2256,7 @@ async function refreshBridgeTasks({ force = false } = {}) {
   renderBridgeTasks()
   try {
     const result = await window.pet.bridgeTasks?.({
-      bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',
+      bridgeUrl: activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL,
       token: activeAgentConfig.token || '',
       limit: 50,
     })
@@ -2064,10 +2295,13 @@ async function openBridgeTasksWindow() {
 }
 
 async function shareBridgeTaskViewer() {
+  if (bridgeTasksSharePending) return
+  bridgeTasksSharePending = true
+  syncBridgeTasksShareButton()
   say('正在生成 Bridge 全部任务分享页...', 2200)
   try {
     const result = await window.pet.shareBridgeTasks?.({
-      bridgeUrl: activeAgentConfig.bridgeUrl || 'http://127.0.0.1:8787',
+      bridgeUrl: activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL,
       token: activeAgentConfig.token || '',
       limit: 100,
     })
@@ -2075,15 +2309,20 @@ async function shareBridgeTaskViewer() {
       say(`分享失败：${result?.error || 'bridge 没返回链接'}`, 4200)
       return
     }
-    say('Bridge 任务分享链接已复制', 0, {
-      source: 'local',
-      type: 'task_done',
-      text: result.url || 'Bridge 任务分享链接已复制',
-      url: result.url || '',
-    })
+    notifyShareReady(result.url ? `Bridge 任务分享链接已复制到剪贴板：${result.url}` : 'Bridge 任务分享链接已复制到剪贴板')
   } catch (error) {
     say(`分享失败：${error?.message || error}`, 4200)
+  } finally {
+    bridgeTasksSharePending = false
+    syncBridgeTasksShareButton()
   }
+}
+
+function syncBridgeTasksShareButton() {
+  if (!bridgeTasksShare) return
+  bridgeTasksShare.disabled = bridgeTasksSharePending
+  bridgeTasksShare.textContent = bridgeTasksSharePending ? '分享中...' : '分享全部任务'
+  bridgeTasksShare.setAttribute('aria-busy', bridgeTasksSharePending ? 'true' : 'false')
 }
 
 function syncEventPanel() {

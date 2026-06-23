@@ -6,6 +6,11 @@ const { spawn } = require('child_process')
 const tokenUsage = require('./token-usage')
 const { createPomodoro } = require('./pomodoro')
 const { mapHookToEvent } = require('./hook-events')
+const {
+  bridgeTasks: loadBridgeTasks,
+  shareBridgeTasks: createBridgeTasksShare,
+  shareSession: createSessionShare,
+} = require('./bridge-client')
 
 // Local hook receiver port — declared early; referenced by top-level consts
 // (e.g. KODAMA_HOOK_CURL) that would otherwise hit the temporal dead zone.
@@ -38,14 +43,25 @@ function sendToPet(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
 }
 
+function combinedWorkAreaBounds(displays = screen.getAllDisplays()) {
+  const areas = displays
+    .map(display => display?.workArea)
+    .filter(area => area && Number.isFinite(area.x) && Number.isFinite(area.y) && area.width > 0 && area.height > 0)
+  if (!areas.length) return screen.getPrimaryDisplay().workArea
+  const left = Math.min(...areas.map(area => area.x))
+  const top = Math.min(...areas.map(area => area.y))
+  const right = Math.max(...areas.map(area => area.x + area.width))
+  const bottom = Math.max(...areas.map(area => area.y + area.height))
+  return { x: left, y: top, width: right - left, height: bottom - top }
+}
+
 function createWindow() {
-  const { workArea } = screen.getPrimaryDisplay()
+  const workArea = combinedWorkAreaBounds()
 
   win = new BrowserWindow({
-    // Full-workarea transparent overlay. The pet is positioned *inside* this
-    // window (renderer petX/petY) so it can hug any screen edge and bubbles
-    // never clip at a tiny window's border. Click-through by default (set right
-    // below) keeps the rest of the desktop fully usable.
+    // Full visible-workarea transparent overlay across every display. The pet is
+    // positioned *inside* this window (renderer petX/petY), so it can travel
+    // between monitors instead of being trapped inside the primary display.
     x: workArea.x,
     y: workArea.y,
     width: workArea.width,
@@ -198,6 +214,11 @@ function setPetHidden(hidden) {
 function showPetAndMaybeTogglePanel(togglePanel = false) {
   setPetHidden(false)
   if (togglePanel) setTimeout(() => sendToPet('pet:toggle-panel'), 80)
+}
+
+function showPetAndEnterMoveMode() {
+  setPetHidden(false)
+  setTimeout(() => sendToPet('pet:enter-move-mode'), 80)
 }
 
 function notifyHiddenControls() {
@@ -356,23 +377,38 @@ function setPetScale(scale) {
   sendToPet('pet:set-scale', scale)
 }
 
-// One-click registration of the Kodama hook into the user's global Claude Code
-// settings.json. SAFE: backs up first, only APPENDS the 7766 curl to events that
-// don't already have it (never touches existing hooks), idempotent. Triggered
-// manually from the tray — never written silently.
+// One-click registration of the Kodama hook into local coding-agent hook files.
+// SAFE: backs up first, only APPENDS the 7766 curl to events that don't already
+// have it (never touches existing hooks), idempotent. Triggered manually from the
+// tray — never written silently.
 const KODAMA_HOOK_CURL =
-  `curl -s -m 1 --noproxy 127.0.0.1 -X POST http://127.0.0.1:${LOCAL_AGENT_PORT} -H 'Content-Type: application/json' -d "$(cat)"`
-// PreToolUse/PostToolUse only emit for notable commands (test/build/git) now,
-// so wiring them gives fine-grained progress without per-tool-call noise.
-const KODAMA_HOOK_EVENTS = ['Stop', 'StopFailure', 'Notification', 'SubagentStart', 'SubagentStop', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure']
+  `curl -s -m 1 --noproxy 127.0.0.1 -X POST http://127.0.0.1:${LOCAL_AGENT_PORT} -H 'Content-Type: application/json' -d "$(cat)" >/dev/null 2>&1 || true`
+// Mirror the richer event surface Flux Island listens to, but Kodama still keeps
+// its renderer-side filtering narrow so we don't spam every tool call.
+const KODAMA_HOOK_EVENTS = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'PermissionRequest',
+  'Notification',
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'SubagentStart',
+  'SubagentStop',
+  'Stop',
+  'StopFailure',
+  'SessionEnd',
+]
 
-function registerClaudeHook({ dryRun = false } = {}) {
-  const file = path.join(app.getPath('home'), '.claude', 'settings.json')
+function registerHookFile(file, label, { dryRun = false, allowCreate = false } = {}) {
   let json
   try {
     json = JSON.parse(fs.readFileSync(file, 'utf8'))
   } catch (err) {
-    return { ok: false, error: `读取 settings.json 失败: ${err.message}` }
+    if (!allowCreate || err?.code !== 'ENOENT') {
+      return { ok: false, error: `读取 ${label} 失败: ${err.message}` }
+    }
+    json = { hooks: {} }
   }
   json.hooks = json.hooks || {}
   const added = []
@@ -385,20 +421,36 @@ function registerClaudeHook({ dryRun = false } = {}) {
     added.push(ev)
   }
   if (dryRun) return { ok: true, added, dryRun: true }
-  if (!added.length) return { ok: true, added: [], message: '所有相关事件已连到 Kodama' }
+  if (!added.length) return { ok: true, added: [], message: `${label} 已是最新，无需改动` }
   try {
     fs.copyFileSync(file, `${file}.bak-kodama-${Date.now()}`)
     fs.writeFileSync(file, JSON.stringify(next, null, 2))
   } catch (err) {
-    return { ok: false, error: `写入失败: ${err.message}` }
+    return { ok: false, error: `写入 ${label} 失败: ${err.message}` }
   }
   return { ok: true, added }
 }
 
-// Keep the overlay covering the current primary work area across display changes.
+function registerLocalCliHooks(options = {}) {
+  const home = app.getPath('home')
+  const targets = [
+    { key: 'claude', label: 'Claude Code settings.json', file: path.join(home, '.claude', 'settings.json'), allowCreate: false },
+    { key: 'codex', label: 'Codex hooks.json', file: path.join(home, '.codex', 'hooks.json'), allowCreate: true },
+  ]
+  const summary = {}
+  let ok = true
+  for (const target of targets) {
+    const result = registerHookFile(target.file, target.label, { ...options, allowCreate: target.allowCreate })
+    summary[target.key] = result
+    if (!result.ok) ok = false
+  }
+  return { ok, summary }
+}
+
+// Keep the overlay covering the combined visible work area across display changes.
 function fitWindowToWorkArea() {
   if (!win || win.isDestroyed()) return
-  const { workArea } = screen.getPrimaryDisplay()
+  const workArea = combinedWorkAreaBounds()
   win.setBounds({ x: workArea.x, y: workArea.y, width: workArea.width, height: workArea.height })
 }
 
@@ -879,6 +931,14 @@ async function openTerminalSessionTarget(target) {
     logJump('open host app', { session: target?.sessionId || '', appPath: found.appPath })
     return { ok: true, method: 'open host app', appPath: found.appPath, tty: rec.tty, pid: found.pid }
   }
+  const fallbackPath = String(target?.fallbackPath || target?.transcriptPath || '').trim()
+  if (fallbackPath) {
+    const local = await openLocalTarget({ path: fallbackPath })
+    if (local.ok) {
+      logJump('fallback transcript', { session: target?.sessionId || '', path: local.path })
+      return { ok: true, method: 'fallback transcript', path: local.path }
+    }
+  }
   const error = found ? 'terminal-tab-not-found' : 'agent-process-not-found'
   logJump('failed', { session: target?.sessionId || '', error })
   return { ok: false, error }
@@ -944,6 +1004,8 @@ ipcMain.handle('pet:open-target', async (_e, target) => {
   clipboard.writeText(urls[0])
   return { ok: false, error: lastError || 'open-target-failed', copiedUrl: urls[0] }
 })
+
+ipcMain.handle('pet:get-last-opened-target', () => lastOpenedTarget?.target || null)
 
 function shortSessionIdFromPath(value) {
   const file = String(value || '').split(path.sep).pop() || ''
@@ -1085,158 +1147,20 @@ ipcMain.handle('pet:session-preview', async (_e, request) => {
   }
 })
 
-function bridgeTokenFromDisk() {
-  const envToken = String(process.env.KODAMA_BRIDGE_TOKEN || '').trim()
-  if (envToken) return envToken
-  const candidates = [
-    path.join(app.getPath('home'), '.lark-codex-bridge-http-token'),
-  ]
-  for (const candidate of candidates) {
-    if (!candidate) continue
-    try {
-      const value = fs.readFileSync(candidate, 'utf8').trim()
-      if (value) return value
-    } catch {
-      /* optional token file */
-    }
-  }
-  return ''
-}
-
-function normalizeBridgeBaseUrl(value) {
-  const parsed = new URL(String(value || 'http://127.0.0.1:8787'))
-  const hostname = parsed.hostname.toLowerCase()
-  if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(hostname)) {
-    throw new Error('bridge URL must be loopback')
-  }
-  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('unsupported bridge protocol')
-  return `${parsed.protocol}//${parsed.host}`
-}
-
-async function requestBridgeJson(baseUrl, pathName, { method = 'GET', body = null, token = '', timeoutMs = 30000 } = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const headers = {}
-    if (token) headers.Authorization = `Bearer ${token}`
-    if (body != null) headers['Content-Type'] = 'application/json'
-    const res = await fetch(`${baseUrl}${pathName}`, {
-      method,
-      headers,
-      body: body == null ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-    })
-    const text = await res.text()
-    let json = {}
-    try {
-      json = JSON.parse(text || '{}')
-    } catch {
-      json = { error: text || `HTTP ${res.status}` }
-    }
-    if (!res.ok) return { ok: false, status: res.status, error: json.error || `HTTP ${res.status}`, raw: json }
-    return json
-  } catch (err) {
-    if (err?.name === 'AbortError') return { ok: false, error: 'bridge request timed out' }
-    return { ok: false, error: err?.message || String(err) }
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-async function postBridgeJson(baseUrl, pathName, body, token) {
-  return requestBridgeJson(baseUrl, pathName, {
-    method: 'POST',
-    body,
-    token,
-    timeoutMs: 180000,
-  })
-}
-
 ipcMain.handle('pet:share-session', async (_e, request) => {
-  try {
-    const provider = request?.provider === 'claude' ? 'claude' : 'codex'
-    const sessionId = String(request?.sessionId || request?.threadId || '').trim()
-    if (!sessionId) return { ok: false, error: 'missing-session-id' }
-    const baseUrl = normalizeBridgeBaseUrl(request?.bridgeUrl)
-    const token = String(request?.token || '').trim() || bridgeTokenFromDisk()
-    const result = await postBridgeJson(baseUrl, '/v1/sessions/session-shares', {
-      provider,
-      session_id: sessionId,
-    }, token)
-    if (!result?.ok) return result || { ok: false, error: 'bridge-share-failed' }
-    const url = result.share?.url || result.doc?.url || result.url || ''
-    if (!url) return { ok: false, error: 'bridge did not return a share URL', raw: result }
-    clipboard.writeText(url)
-    return { ...result, url, copied: true }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
+  const result = await createSessionShare(request, { homeDir: app.getPath('home') })
+  if (result?.ok && result.url) clipboard.writeText(result.url)
+  return result?.ok ? { ...result, copied: Boolean(result.url) } : result
 })
 
-function normalizeBridgeTaskLimit(value) {
-  return clampInt(value, 1, 200, 50)
-}
-
-function normalizeBridgeTaskScope(request = {}) {
-  const source = request || {}
-  const scope = {}
-  const taskId = String(source.taskId || source.task_id || '').trim()
-  const contextKey = String(source.contextKey || source.context_key || '').trim()
-  const chatId = String(source.chatId || source.chat_id || '').trim()
-  const messageId = String(source.messageId || source.message_id || '').trim()
-  if (taskId) scope.task_id = taskId
-  if (contextKey) scope.context_key = contextKey
-  if (chatId) scope.chat_id = chatId
-  if (messageId) scope.message_id = messageId
-  return scope
-}
-
-function bridgeTaskQueryPath(limit, scope = {}) {
-  const params = new URLSearchParams({ limit: String(limit) })
-  Object.entries(scope).forEach(([key, value]) => {
-    if (value) params.set(key, value)
-  })
-  return `/task-viewer/tasks.json?${params.toString()}`
-}
-
 ipcMain.handle('pet:bridge-tasks', async (_e, request) => {
-  try {
-    const baseUrl = normalizeBridgeBaseUrl(request?.bridgeUrl)
-    const token = String(request?.token || '').trim() || bridgeTokenFromDisk()
-    const limit = normalizeBridgeTaskLimit(request?.limit)
-    const scope = normalizeBridgeTaskScope(request)
-    const result = await requestBridgeJson(baseUrl, bridgeTaskQueryPath(limit, scope), {
-      token,
-      timeoutMs: 15000,
-    })
-    if (!result?.ok) return result || { ok: false, error: 'bridge task viewer request failed' }
-    const tasks = Array.isArray(result.tasks) ? result.tasks : []
-    return {
-      ok: true,
-      bridgeUrl: baseUrl,
-      updatedAt: new Date().toISOString(),
-      tasks,
-      scope: result.scope || scope,
-    }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
+  return loadBridgeTasks(request, { homeDir: app.getPath('home') })
 })
 
 ipcMain.handle('pet:share-bridge-tasks', async (_e, request) => {
-  try {
-    const baseUrl = normalizeBridgeBaseUrl(request?.bridgeUrl)
-    const token = String(request?.token || '').trim() || bridgeTokenFromDisk()
-    const limit = normalizeBridgeTaskLimit(request?.limit)
-    const scope = normalizeBridgeTaskScope(request)
-    const result = await postBridgeJson(baseUrl, '/v1/bridge/task-viewer/share', { limit, ...scope }, token)
-    if (!result?.ok) return result || { ok: false, error: 'bridge task viewer share failed' }
-    const url = result.url || result.share?.url || result.doc?.url || ''
-    if (url) clipboard.writeText(url)
-    return { ...result, url, copied: Boolean(url) }
-  } catch (err) {
-    return { ok: false, error: err?.message || String(err) }
-  }
+  const result = await createBridgeTasksShare(request, { homeDir: app.getPath('home') })
+  if (result?.ok && result.url) clipboard.writeText(result.url)
+  return result?.ok ? { ...result, copied: Boolean(result.url) } : result
 })
 
 ipcMain.handle('pet:open-bridge-tasks-window', () => {
@@ -1745,18 +1669,24 @@ function refreshTray() {
     click: () => setPetHidden(!petHidden),
   })
   items.push({ label: '事件 / 配置面板  ⌘⌥P', click: () => showPetAndMaybeTogglePanel(true) })
+  items.push({ label: '移动桌宠  ⌘⌥M', click: () => showPetAndEnterMoveMode() })
   items.push({ label: '管理 / 设置中心…', click: () => openManageWindow() })
   items.push({
-    label: '注册 Claude Code Hook → Kodama',
+    label: '补齐 Claude / Codex Hooks → Kodama',
     click: () => {
-      const result = registerClaudeHook()
-      const body = !result.ok
-        ? `失败：${result.error}`
-        : result.added.length
-          ? `已补齐事件：${result.added.join(', ')}\n重启 Claude Code 后生效`
-          : (result.message || '已是最新，无需改动')
-      try { new Notification({ title: 'Kodama · Claude Code Hook', body }).show() } catch { /* ignore */ }
-      console.error(`[kodama] register hook: ${JSON.stringify(result)}`)
+      const result = registerLocalCliHooks()
+      const parts = []
+      for (const [key, value] of Object.entries(result.summary || {})) {
+        if (!value?.ok) {
+          parts.push(`${key} 失败：${value?.error || '未知错误'}`)
+          continue
+        }
+        if (value.added?.length) parts.push(`${key} 已补齐：${value.added.join(', ')}`)
+        else parts.push(`${key} 已是最新`)
+      }
+      const body = `${parts.join('\n')}\n重启对应的 Claude / Codex 会话后生效`
+      try { new Notification({ title: 'Kodama · Local Hooks', body }).show() } catch { /* ignore */ }
+      console.error(`[kodama] register local hooks: ${JSON.stringify(result)}`)
     },
   })
   items.push({ label: 'Bridge 任务详情', click: () => createBridgeTasksWindow() })
@@ -1812,6 +1742,7 @@ function registerGlobalShortcuts() {
   const shortcuts = [
     ['CommandOrControl+Option+K', () => setPetHidden(!petHidden)],
     ['CommandOrControl+Option+P', () => showPetAndMaybeTogglePanel(true)],
+    ['CommandOrControl+Option+M', () => showPetAndEnterMoveMode()],
   ]
   shortcuts.forEach(([accelerator, handler]) => {
     if (!globalShortcut.register(accelerator, handler)) {

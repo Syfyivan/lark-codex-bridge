@@ -28,12 +28,14 @@ test('claude subagent lifecycle maps to local progress bubbles', () => {
     source: 'local',
     text: '子 Agent verifier 开始工作',
     agent: 'verifier',
+    subagent: true,
   })
   assert.deepEqual(mapHookToEvent({ hook_event_name: 'SubagentStop', subagent_name: 'verifier' }), {
     type: 'agent_done',
     source: 'local',
     text: '子 Agent verifier 完成',
     agent: 'verifier',
+    subagent: true,
   })
 })
 
@@ -56,6 +58,7 @@ test('local agent events preserve jump context', () => {
     transcriptPath: '/Users/bytedance/.claude/projects/main.jsonl',
     agentTranscriptPath: '/Users/bytedance/.claude/projects/agent.jsonl',
     agent: 'verifier',
+    subagent: true,
   })
 })
 
@@ -91,6 +94,7 @@ test('task completion and permission requests keep agent names', () => {
     source: 'local',
     text: 'api-reviewer 完成任务',
     agent: 'api-reviewer',
+    subagent: true,
   })
   assert.deepEqual(mapHookToEvent({ hook_event_name: 'PermissionRequest', agent_name: 'executor', reason: '需要运行测试' }), {
     type: 'task_waiting',

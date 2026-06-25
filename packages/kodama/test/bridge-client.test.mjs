@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { test } from 'node:test'
 
 import {
@@ -34,7 +35,7 @@ test('bridgeTokenFromDisk prefers env override and otherwise reads the bridge to
       return 'disk-token\n'
     },
   }), 'disk-token')
-  assert.deepEqual(fileReads, [['/Users/test/.lark-codex-bridge-http-token', 'utf8']])
+  assert.deepEqual(fileReads, [[path.join('/Users/test', '.lark-codex-bridge-http-token'), 'utf8']])
 })
 
 test('shareSession sends the current share endpoint and resolves the share URL', async () => {

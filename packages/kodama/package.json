@@ -1,6 +1,6 @@
 {
   "name": "kodama",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Kodama — a Live2D desktop pet that reacts to your coding agents (Claude Code / Codex).",
   "author": "Syfyivan",
   "main": "src/main/index.js",

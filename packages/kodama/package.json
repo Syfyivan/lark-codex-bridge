@@ -19,7 +19,7 @@
     "dev": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "dist:mac": "electron-builder --mac dmg",
+    "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win nsis",
     "dist:linux": "electron-builder --linux AppImage",
     "check": "node scripts/check.mjs",
@@ -41,10 +41,20 @@
       "!**/*.map"
     ],
     "asar": true,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Syfyivan",
+        "repo": "lark-codex-bridge"
+      }
+    ],
     "mac": {
       "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "notarize": true,
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "extendInfo": {
         "LSUIElement": true
@@ -75,5 +85,8 @@
     "electron": "^33.0.0",
     "electron-builder": "^26.15.3",
     "electron-builder-squirrel-windows": "26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

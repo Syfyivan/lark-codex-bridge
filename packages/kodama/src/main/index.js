@@ -7,6 +7,13 @@ const tokenUsage = require('./token-usage')
 const { createPomodoro } = require('./pomodoro')
 const { mapHookToEvent } = require('./hook-events')
 const {
+  registerAutoUpdater,
+  checkForUpdates,
+  installDownloadedUpdate,
+  getUpdateStatus,
+  disposeAutoUpdater,
+} = require('./updater')
+const {
   bridgeTasks: loadBridgeTasks,
   shareBridgeTasks: createBridgeTasksShare,
   shareSession: createSessionShare,
@@ -1519,6 +1526,7 @@ function startLocalAgentServer() {
         localEventCount,
         lastLocalEvent,
         lastOpenedTarget,
+        updateStatus: getUpdateStatus(),
         tokenStats: tokenStatsCache,
         loginItemEnabled: isLoginItemEnabled(),
       })
@@ -1716,6 +1724,10 @@ function refreshTray() {
     ],
   })
   items.push({ label: '配饰', submenu: buildAccessoryMenu() })
+  const updateMenuItems = buildUpdateMenuItems()
+  if (updateMenuItems.length) {
+    items.push({ type: 'separator' }, ...updateMenuItems)
+  }
   const larkToday = stats.lark?.today || 0
   items.push(
     { type: 'separator' },
@@ -1751,6 +1763,29 @@ function registerGlobalShortcuts() {
   })
 }
 
+function shortMenuText(text, max = 36) {
+  const raw = String(text || '')
+  return raw.length > max ? `${raw.slice(0, max - 1)}...` : raw
+}
+
+function buildUpdateMenuItems() {
+  const update = getUpdateStatus()
+  if (!update.supported) return []
+  const version = update.version ? ` ${update.version}` : ''
+  if (update.downloaded) {
+    return [{ label: `安装更新${version}`, click: () => installDownloadedUpdate() }]
+  }
+  if (update.available) {
+    const percent = Number.isFinite(update.progress?.percent) ? `（${Math.round(update.progress.percent)}%）` : ''
+    return [{ label: `正在下载更新${version}${percent}`, enabled: false }]
+  }
+  if (update.checking) return [{ label: '正在检查更新...', enabled: false }]
+
+  const items = [{ label: '检查更新', click: () => checkForUpdates({ manual: true }) }]
+  if (update.error) items.push({ label: `更新失败：${shortMenuText(update.error)}`, enabled: false })
+  return items
+}
+
 app.whenReady().then(() => {
   console.error('[kodama] app ready')
   loadSessionTtyCache()
@@ -1761,6 +1796,10 @@ app.whenReady().then(() => {
   startLocalAgentServer()
   createWindow()
   createTray()
+  registerAutoUpdater({
+    onStatusChange: () => refreshTray(),
+    notifyPet: (payload) => sendToPet('pet-notify', payload),
+  })
   registerGlobalShortcuts()
   refreshTokenStats({ force: true })
   topmostInterval = setInterval(reassertTopmost, 15 * 1000)
@@ -1800,5 +1839,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  disposeAutoUpdater()
   globalShortcut.unregisterAll()
 })

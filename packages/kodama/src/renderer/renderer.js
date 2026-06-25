@@ -90,7 +90,7 @@ const PANEL_TABS = new Set(['settings', 'waiting', 'done', 'sessions', 'bridge',
 const BUBBLE_ACTION_DEBOUNCE_MS = 600
 const ACTIVE_TARGET_TTL_MS = 10 * 60 * 1000
 const FLOATING_PADDING = 8
-const BUBBLE_WIDTH = 260
+const BUBBLE_WIDTH = 340
 const PANEL_WIDTH = 310
 let bridgeTasksSharePending = false
 let bridgeTasksState = {
@@ -1840,7 +1840,9 @@ async function openTarget(target) {
   const text = target.kind === 'local-path'
     ? '正在打开本地记录'
     : target.kind === 'terminal-session'
-      ? '正在打开 Agent 终端'
+      ? result.method === 'fallback transcript'
+        ? '终端已结束，正在打开历史记录'
+        : '正在打开 Agent 终端'
       : target.kind === 'codex-thread'
         ? '正在打开 Codex 会话'
         : '正在打开飞书会话'

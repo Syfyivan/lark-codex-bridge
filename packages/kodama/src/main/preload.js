@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld('pet', {
   onEnterMoveMode: (cb) => ipcRenderer.on('pet:enter-move-mode', () => cb()),
   updateUiMenuState: (state) => ipcRenderer.send('pet:ui-menu-state', state),
   onSetDndMode: (cb) => ipcRenderer.on('pet:set-dnd-mode', (_e, enabled) => cb(enabled)),
+  getUpdateStatus: () => ipcRenderer.invoke('pet:update-status'),
+  checkForUpdates: () => ipcRenderer.invoke('pet:check-for-updates'),
+  installUpdate: () => ipcRenderer.invoke('pet:install-update'),
+  onUpdateStatus: (cb) => ipcRenderer.on('pet:update-status-changed', (_e, status) => cb(status)),
   // accessory tray menu state and commands
   updateAccessoryMenu: (state) => ipcRenderer.send('pet:accessory-menu', state),
   onEquipAccessory: (cb) => ipcRenderer.on('pet:equip-accessory', (_e, payload) => cb(payload)),

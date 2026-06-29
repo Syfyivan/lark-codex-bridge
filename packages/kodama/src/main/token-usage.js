@@ -10,6 +10,7 @@
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+const { costFor } = require('./pricing')
 
 function listJsonl(root) {
   const out = []
@@ -52,7 +53,7 @@ function tokenCount(u) {
   return u.total_tokens || (u.input_tokens || 0) + (u.output_tokens || 0)
 }
 
-function addClaude(byDay, file, seen) {
+function addClaude(byDay, file, seen, costByDay) {
   eachLine(file, (obj) => {
     const u = obj?.message?.usage
     if (!u) return
@@ -72,30 +73,69 @@ function addClaude(byDay, file, seen) {
     const nestedCacheCreation =
       (u.cache_creation?.ephemeral_5m_input_tokens || 0) +
       (u.cache_creation?.ephemeral_1h_input_tokens || 0)
+    const cacheCreate = (u.cache_creation_input_tokens || 0) + nestedCacheCreation
     const t =
       (u.input_tokens || 0) +
       (u.output_tokens || 0) +
-      (u.cache_creation_input_tokens || 0) +
-      nestedCacheCreation +
+      cacheCreate +
       (u.cache_read_input_tokens || 0)
     const day = String(obj.timestamp || '').slice(0, 10)
-    if (day && t) byDay[day] = (byDay[day] || 0) + t
+    if (!day) return
+    if (t) byDay[day] = (byDay[day] || 0) + t
+    // Cost is priced per-model (Claude input/output/cache rates differ a lot
+    // across opus/sonnet/haiku). The model lives on message.model.
+    if (costByDay) {
+      const c = costFor(obj?.message?.model, {
+        input: u.input_tokens || 0,
+        output: u.output_tokens || 0,
+        cacheCreate,
+        cacheRead: u.cache_read_input_tokens || 0,
+      })
+      if (c) costByDay[day] = (costByDay[day] || 0) + c
+    }
   })
 }
 
-function addCodex(byDay, file) {
+// Best-effort split of a Codex usage object into priced token kinds. OpenAI
+// counts cached tokens inside input_tokens, so the non-cached input is the
+// remainder; the cached part is billed at the discounted cache-read rate.
+function codexBreakdown(u) {
+  if (!u || typeof u !== 'object') return null
+  const inputTotal = u.input_tokens || 0
+  const cached = u.cached_input_tokens || u.cache_read_input_tokens || 0
+  return {
+    input: Math.max(0, inputTotal - cached),
+    output: u.output_tokens || 0,
+    cacheRead: cached,
+  }
+}
+
+function addCodex(byDay, file, costByDay) {
   // Codex reports cumulative usage per session. Attribute per-turn deltas to the
   // day each turn landed on (better for multi-day sessions) instead of dumping
   // the whole session total onto the last day. Field names vary across versions.
   let prevTotal = 0
+  // Parallel running total for the per-kind cost breakdown (diffed like above).
+  let prevBreak = { input: 0, output: 0, cacheRead: 0 }
+  // Codex rarely tags model per-turn; capture it from session_meta and reuse it.
+  let model = 'gpt-5'
   eachLine(file, (obj) => {
+    const seenModel =
+      obj?.payload?.model ||
+      obj?.session_meta?.model ||
+      obj?.payload?.session_meta?.model ||
+      obj?.model
+    if (seenModel) model = seenModel
+
     const day = String(obj?.timestamp || obj?.ts || '').slice(0, 10)
     if (!day) return
     // Prefer an explicit per-turn delta when present.
     const delta = obj?.info?.last_token_usage
     let t = 0
+    let bd = null
     if (delta) {
       t = tokenCount(delta)
+      bd = codexBreakdown(delta)
     } else {
       // Otherwise diff the running cumulative total against the previous row.
       const cum = obj?.info?.total_token_usage || obj?.total_token_usage || obj?.token_usage || obj?.usage
@@ -103,21 +143,40 @@ function addCodex(byDay, file) {
         const total = tokenCount(cum)
         t = Math.max(0, total - prevTotal)
         prevTotal = total
+        const cb = codexBreakdown(cum)
+        if (cb) {
+          bd = {
+            input: Math.max(0, cb.input - prevBreak.input),
+            output: Math.max(0, cb.output - prevBreak.output),
+            cacheRead: Math.max(0, cb.cacheRead - prevBreak.cacheRead),
+          }
+          prevBreak = cb
+        }
       }
     }
     if (t) byDay[day] = (byDay[day] || 0) + t
+    if (costByDay && bd) {
+      const c = costFor(model, bd)
+      if (c) costByDay[day] = (costByDay[day] || 0) + c
+    }
   })
 }
 
-function usageByDay({ claudeRoot, codexRoot } = {}) {
+// Walk both ledgers once, returning {day -> tokens} and {day -> USD cost}.
+function usageAndCostByDay({ claudeRoot, codexRoot } = {}) {
   const cRoot = claudeRoot || path.join(os.homedir(), '.claude', 'projects')
   const xRoot = codexRoot || path.join(os.homedir(), '.codex', 'sessions')
   const byDay = {}
+  const costByDay = {}
   // Shared across all Claude files so a replayed message dedupes globally.
   const seen = new Set()
-  for (const f of listJsonl(cRoot)) addClaude(byDay, f, seen)
-  for (const f of listJsonl(xRoot)) addCodex(byDay, f)
-  return byDay
+  for (const f of listJsonl(cRoot)) addClaude(byDay, f, seen, costByDay)
+  for (const f of listJsonl(xRoot)) addCodex(byDay, f, costByDay)
+  return { byDay, costByDay }
+}
+
+function usageByDay(roots = {}) {
+  return usageAndCostByDay(roots).byDay
 }
 
 function dayString(d) {
@@ -138,8 +197,16 @@ function summarizeByDay(byDay, now = new Date()) {
 }
 
 function summarize({ now = new Date(), ...roots } = {}) {
-  const byDay = usageByDay(roots)
-  return { ...summarizeByDay(byDay, now), byDay }
+  const { byDay, costByDay } = usageAndCostByDay(roots)
+  // cost is the dollar ($) twin of today/last7/total, rolled up the same way.
+  // The existing { today, last7, total, byDay } shape is unchanged so the
+  // Feishu ledger (which reuses summarizeByDay) is unaffected.
+  const cost = summarizeByDay(costByDay, now)
+  return {
+    ...summarizeByDay(byDay, now),
+    byDay,
+    cost: { today: cost.today, last7: cost.last7, total: cost.total },
+  }
 }
 
-module.exports = { usageByDay, summarize, summarizeByDay }
+module.exports = { usageByDay, usageAndCostByDay, summarize, summarizeByDay }

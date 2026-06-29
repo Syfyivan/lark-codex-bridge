@@ -289,7 +289,7 @@ function saveSessionTtyCache() {
   if (sessionTtySaveTimer) return
   sessionTtySaveTimer = setTimeout(() => {
     sessionTtySaveTimer = null
-    try { fs.writeFileSync(sessionTtyFile(), JSON.stringify(Object.fromEntries(sessionTtyCache))) } catch { /* ignore */ }
+    try { writeJsonAtomic(sessionTtyFile(), Object.fromEntries(sessionTtyCache)) } catch { /* ignore */ }
   }, 1000)
 }
 // Normalize a cache entry into a record. Old caches stored a bare tty string, so
@@ -372,7 +372,7 @@ function saveWindowState() {
   const [x, y] = win.getPosition()
   const [width, height] = win.getSize()
   try {
-    fs.writeFileSync(windowStateFile(), JSON.stringify({ version: WINDOW_STATE_VERSION, width, height, x, y }))
+    writeJsonAtomic(windowStateFile(), { version: WINDOW_STATE_VERSION, width, height, x, y })
   } catch (err) {
     console.error(`[kodama] save window state failed: ${err.message}`)
   }
@@ -431,7 +431,7 @@ function registerHookFile(file, label, { dryRun = false, allowCreate = false } =
   if (!added.length) return { ok: true, added: [], message: `${label} 已是最新，无需改动` }
   try {
     fs.copyFileSync(file, `${file}.bak-kodama-${Date.now()}`)
-    fs.writeFileSync(file, JSON.stringify(next, null, 2))
+    writeJsonAtomic(file, next, { pretty: true })
   } catch (err) {
     return { ok: false, error: `写入 ${label} 失败: ${err.message}` }
   }
@@ -634,19 +634,47 @@ async function openLocalTarget(target) {
   return { ok: true, path: resolved.path, method: 'shell.showItemInFolder' }
 }
 
-function runCommand(command, args) {
+// All callers are short-lived local commands (lsof / ps / cmux / osascript / open).
+// A hung child (cmux half-open socket, unresponsive Terminal) must never wedge a
+// jump forever — every call gets a hard timeout that SIGTERMs the strays.
+function runCommand(command, args, { timeout = 8000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
+    let settled = false
+    let timer = null
+    const finish = (fn, arg) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      fn(arg)
+    }
     child.stdout.on('data', chunk => { stdout += chunk })
     child.stderr.on('data', chunk => { stderr += chunk })
-    child.once('error', reject)
+    child.once('error', (err) => finish(reject, err))
     child.once('close', (code) => {
-      if (code === 0) resolve(stdout)
-      else reject(new Error(stderr.trim() || `${command} exited ${code}`))
+      if (code === 0) finish(resolve, stdout)
+      else finish(reject, new Error(stderr.trim() || `${command} exited ${code}`))
     })
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        try { child.kill('SIGTERM') } catch { /* already exited */ }
+        finish(reject, new Error(`${command} timed out after ${timeout}ms`))
+      }, timeout)
+      if (typeof timer.unref === 'function') timer.unref()
+    }
   })
+}
+
+// Crash-safe JSON write: a process death mid-write must not leave a truncated file
+// that the next read silently treats as corrupt and resets to defaults — that path
+// loses the user's level / food / token ledger without warning. Write a sibling temp
+// file, then rename (atomic on the same filesystem).
+function writeJsonAtomic(file, value, { pretty = false } = {}) {
+  const tmp = `${file}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(value, null, pretty ? 2 : undefined))
+  fs.renameSync(tmp, file)
 }
 
 function parsePs(stdout) {
@@ -726,8 +754,86 @@ function cmuxBinPath() {
   return ''
 }
 
+function cmuxAppPath() {
+  const bin = cmuxBinPath()
+  return bin ? bin.replace(/\/Contents\/.*$/, '') : ''
+}
+
 function bareTty(value) {
   return String(value || '').replace(/^\/dev\//, '').trim()
+}
+
+function readCmuxState() {
+  const file = path.join(app.getPath('home'), 'Library', 'Application Support', 'cmux', 'session-com.cmuxterm.app.json')
+  try {
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return state && typeof state === 'object' ? state : null
+  } catch {
+    return null
+  }
+}
+
+function cmuxStatePanels() {
+  const state = readCmuxState()
+  const windows = Array.isArray(state?.windows) ? state.windows : []
+  const out = []
+  for (const [windowIndex, window] of windows.entries()) {
+    const workspaces = Array.isArray(window?.tabManager?.workspaces) ? window.tabManager.workspaces : []
+    for (const [workspaceIndex, workspace] of workspaces.entries()) {
+      const panels = Array.isArray(workspace?.panels) ? workspace.panels : []
+      for (const [panelIndex, panel] of panels.entries()) {
+        out.push({
+          windowIndex,
+          workspaceIndex,
+          panelIndex,
+          workspaceTitle: workspace?.customTitle || workspace?.currentDirectory || '',
+          workspaceCwd: String(workspace?.currentDirectory || '').trim(),
+          workspaceSelected: workspaceIndex === Number(window?.tabManager?.selectedWorkspaceIndex ?? -1),
+          panelId: panel?.id || '',
+          panelTitle: panel?.customTitle || panel?.title || '',
+          tty: bareTty(panel?.ttyName),
+          cwd: String(panel?.directory || panel?.terminal?.workingDirectory || workspace?.currentDirectory || '').trim(),
+        })
+      }
+    }
+  }
+  return out
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || '').trim())
+}
+
+function findCmuxPanel(rec, target) {
+  const panels = cmuxStatePanels()
+  const targetTty = bareTty(rec?.tty)
+  const targetPanelId = [rec?.panelId, rec?.surface].find(isUuid) || ''
+  const targetCwd = String(target?.cwd || '').trim()
+
+  if (targetPanelId) {
+    const hit = panels.find((panel) => panel.panelId.toLowerCase() === targetPanelId.toLowerCase())
+    if (hit) return { ...hit, matchedBy: 'panel' }
+  }
+
+  if (targetTty) {
+    const matches = panels.filter((panel) => panel.tty === targetTty)
+    if (matches.length === 1) return { ...matches[0], matchedBy: 'tty' }
+    if (matches.length > 1) {
+      console.warn(`[kodama] cmux: ${matches.length} panels share tty ${targetTty}; refusing to guess`)
+      return null
+    }
+  }
+
+  if (targetCwd) {
+    const matches = panels.filter((panel) => panel.cwd === targetCwd || panel.workspaceCwd === targetCwd)
+    if (matches.length === 1) return { ...matches[0], matchedBy: 'cwd' }
+    if (matches.length > 1) {
+      console.warn(`[kodama] cmux: ${matches.length} panels share cwd ${targetCwd}; refusing to guess`)
+      return null
+    }
+  }
+
+  return null
 }
 
 // Parse `cmux tree --all` into surfaces with their enclosing window/workspace/pane.
@@ -735,7 +841,11 @@ async function listCmuxSurfaces() {
   const bin = cmuxBinPath()
   if (!bin) return []
   let out = ''
-  try { out = await runCommand(bin, ['tree', '--all']) } catch { return [] }
+  try { out = await runCommand(bin, ['tree', '--all']) } catch (err) {
+    if (isCmuxAccessError(err)) console.error(`[kodama] cmux tree refused — external process or socket policy: ${err.message}`)
+    else console.error(`[kodama] cmux tree failed: ${err.message}`)
+    return []
+  }
   const surfaces = []
   let win = ''
   let ws = ''
@@ -753,10 +863,10 @@ async function listCmuxSurfaces() {
   return surfaces
 }
 
-// cmux's control socket rejects connections from processes outside a terminal
-// session (manaflow-ai/cmux#3089), surfacing as a broken pipe / refused handshake.
-// Kodama is an external Electron process, so we flag this distinctly: when it
-// happens, no in-Kodama change can focus the pane — it's an upstream limitation.
+// cmux's default cmuxOnly socket policy rejects clients that were not started
+// from cmux, surfacing as a broken pipe / refused handshake. Kodama is an
+// external Electron process, so we flag this distinctly instead of reporting a
+// missing tab.
 function isCmuxAccessError(err) {
   return /broken pipe|EPIPE|ECONNREFUSED|connection refused|handshake|outside the terminal/i.test(String(err?.message || ''))
 }
@@ -765,9 +875,38 @@ function isCmuxAccessError(err) {
 // while the session was alive (immune to tty reuse / shared-cwd ambiguity), and
 // only falls back to a live tty match when no surface was pinned. The live
 // `cmux tree` listing is the source of truth, so stale/closed panes are skipped.
-async function focusCmuxForSession(rec) {
+async function focusCmuxPanel(panel) {
   const bin = cmuxBinPath()
   if (!bin) return null
+  if (!panel?.panelId || !isUuid(panel.panelId)) return null
+  // A cwd-only match is too weak to drive a hard focus: another session in the same directory
+  // would get jumped to. Skip it and let the caller fall back to merely opening cmux.
+  if (panel.matchedBy === 'cwd') return null
+  try {
+    await runCommand(bin, ['rpc', 'surface.focus', JSON.stringify({ surface_id: panel.panelId })])
+    return {
+      workspace: '',
+      pane: '',
+      surface: panel.panelId,
+      panelId: panel.panelId,
+      tty: panel.tty || '',
+      matchedBy: panel.matchedBy || 'panel',
+      focusApi: 'surface.focus',
+    }
+  } catch (err) {
+    if (isCmuxAccessError(err)) console.error(`[kodama] cmux surface.focus refused — external process or socket policy: ${err.message}`)
+    else console.error(`[kodama] cmux surface.focus failed: ${err.message}`)
+    return null
+  }
+}
+
+async function focusCmuxForSession(rec, target) {
+  const bin = cmuxBinPath()
+  if (!bin) return null
+  const panel = findCmuxPanel(rec, target)
+  const focusedPanel = await focusCmuxPanel(panel)
+  if (focusedPanel) return focusedPanel
+
   let surfaces
   try {
     surfaces = await listCmuxSurfaces()
@@ -820,19 +959,33 @@ async function cacheSessionTty(sessionId, cwd) {
   const id = String(sessionId || '').trim()
   if (!id) return
   const existing = getSessionRecord(id)
-  if (existing?.surface) return // fully pinned — nothing better to learn
+  if (existing?.surface && existing?.panelId) return // fully pinned — nothing better to learn
+  // Once a surface is pinned the only thing left to chase is the cmux panelId. Some cmux builds
+  // never expose it, so cap the attempts — otherwise every hook event re-spawns `ps` + `cmux tree`
+  // forever for such a session (a steady background spawn churn).
+  const panelTries = Number(existing?.panelTries || 0)
+  if (existing?.surface && panelTries >= 3) return
   try {
     const tty = existing?.tty || await resolveAgentTty(id, cwd)
     if (!tty) return
     let surfaceInfo = null
-    try { surfaceInfo = (await listCmuxSurfaces()).find((s) => s.tty === bareTty(tty)) || null }
-    catch (err) { if (isCmuxAccessError(err)) console.error(`[kodama] cmux CLI refused while pinning (issue #3089): ${err.message}`) }
+    // Skip the `cmux tree` spawn once a surface is already known — we only re-enter here for the panelId.
+    if (!existing?.surface) {
+      try { surfaceInfo = (await listCmuxSurfaces()).find((s) => s.tty === bareTty(tty)) || null }
+      catch (err) { if (isCmuxAccessError(err)) console.error(`[kodama] cmux CLI refused while pinning (issue #3089): ${err.message}`) }
+    }
+    // Only pin a panelId confirmed by tty/panel identity — a cwd-derived one would later be
+    // jumped to as if authoritative, reintroducing the same-directory misjump we guard against.
+    const panelMatch = findCmuxPanel({ tty }, { cwd })
+    const panelId = (panelMatch && panelMatch.matchedBy !== 'cwd' ? panelMatch.panelId : '') || existing?.panelId || ''
     const record = {
       tty,
       surface: surfaceInfo?.surface || existing?.surface || '',
       workspace: surfaceInfo?.workspace || existing?.workspace || '',
       pane: surfaceInfo?.pane || existing?.pane || '',
       window: surfaceInfo?.window || existing?.window || '',
+      panelId,
+      panelTries: panelId ? 0 : panelTries + 1,
     }
     if (JSON.stringify(record) !== JSON.stringify(existing || {})) {
       sessionTtyCache.set(id, record)
@@ -890,6 +1043,31 @@ async function openAppPath(appPath) {
   }
 }
 
+async function openCmuxFallback(target, rec, reason) {
+  const appPath = cmuxAppPath()
+  if (!appPath) return null
+  const panel = findCmuxPanel(rec, target)
+  if (!await openAppPath(appPath)) return null
+  const panelMatched = Boolean(panel)
+  const method = 'open cmux app'
+  logJump(method, {
+    session: target?.sessionId || '',
+    reason,
+    appPath,
+    panelMatched,
+    panelId: panel?.panelId || '',
+    tty: rec?.tty || '',
+  })
+  return {
+    ok: true,
+    method: 'open cmux app',
+    appPath,
+    reason,
+    panelMatched,
+    panel: panel || null,
+  }
+}
+
 // Append-only, self-trimming jump log so a misfire can be diagnosed without
 // knowing the internals: each line records which path won (cmux focus / Terminal
 // tty / open host app / failed) and how cmux matched (surface vs tty fallback).
@@ -917,12 +1095,13 @@ async function openTerminalSessionTarget(target) {
     workspace: cached?.workspace || '',
     pane: cached?.pane || '',
     window: cached?.window || '',
+    panelId: cached?.panelId || '',
   }
 
   // Prefer cmux: focus the exact surface/pane rather than re-opening the app
   // (which used to spawn a stray cmux instead of jumping).
-  if ((rec.surface || rec.tty) && cmuxBinPath()) {
-    const cmux = await focusCmuxForSession(rec)
+  if ((rec.surface || rec.tty || rec.panelId || target?.cwd) && cmuxBinPath()) {
+    const cmux = await focusCmuxForSession(rec, target)
     if (cmux) {
       await openAppPath(found?.appPath || cmuxBinPath().replace(/\/Contents\/.*$/, ''))
       logJump('cmux focus', { session: target?.sessionId || '', ...cmux })
@@ -934,19 +1113,24 @@ async function openTerminalSessionTarget(target) {
     logJump('Terminal tty', { session: target?.sessionId || '', tty: rec.tty })
     return { ok: true, method: 'Terminal tty', tty: rec.tty, pid: found?.pid || null }
   }
-  if (found?.appPath && await openAppPath(found.appPath)) {
+
+  const foundAppPath = String(found?.appPath || '')
+  if (foundAppPath && !/\/cmux\.app$/i.test(foundAppPath) && await openAppPath(foundAppPath)) {
     logJump('open host app', { session: target?.sessionId || '', appPath: found.appPath })
     return { ok: true, method: 'open host app', appPath: found.appPath, tty: rec.tty, pid: found.pid }
   }
-  const fallbackPath = String(target?.fallbackPath || target?.transcriptPath || '').trim()
-  if (fallbackPath) {
-    const local = await openLocalTarget({ path: fallbackPath })
-    if (local.ok) {
-      logJump('fallback transcript', { session: target?.sessionId || '', path: local.path })
-      return { ok: true, method: 'fallback transcript', path: local.path }
-    }
+
+  const cmux = await openCmuxFallback(target, rec, rec.tty ? 'focus-unavailable' : 'session-not-live')
+  if (cmux) {
+    return cmux
   }
-  const error = found ? 'terminal-tab-not-found' : 'agent-process-not-found'
+
+  if (foundAppPath && await openAppPath(foundAppPath)) {
+    logJump('open host app', { session: target?.sessionId || '', appPath: foundAppPath })
+    return { ok: true, method: 'open host app', appPath: foundAppPath, tty: rec.tty, pid: found.pid }
+  }
+
+  const error = found ? 'terminal-target-unavailable' : 'agent-process-not-found'
   logJump('failed', { session: target?.sessionId || '', error })
   return { ok: false, error }
 }
@@ -1195,7 +1379,7 @@ ipcMain.handle('pet:get-state', () => {
 })
 ipcMain.on('pet:save-state', (_e, state) => {
   try {
-    fs.writeFileSync(stateFile(), JSON.stringify(state))
+    writeJsonAtomic(stateFile(), state)
   } catch (err) {
     console.error(`[kodama] save state failed: ${err.message}`)
   }
@@ -1263,7 +1447,7 @@ function loadPomodoroSettings() {
 
 function savePomodoroSettings(settings) {
   try {
-    fs.writeFileSync(pomodoroSettingsFile(), JSON.stringify(settings))
+    writeJsonAtomic(pomodoroSettingsFile(), settings)
   } catch (err) {
     console.error(`[kodama] save pomodoro settings failed: ${err.message}`)
   }
@@ -1434,7 +1618,7 @@ ipcMain.on('pet:add-lark-tokens', (_e, tokens) => {
   const led = loadLarkLedger()
   led[day] = (led[day] || 0) + n
   try {
-    fs.writeFileSync(larkTokensFile(), JSON.stringify(led))
+    writeJsonAtomic(larkTokensFile(), led)
     updateLarkTokenStatsCache()
     refreshTray()
     refreshTokenStats({ force: true })

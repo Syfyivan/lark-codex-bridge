@@ -57,3 +57,13 @@ test('configure updates future durations and caps current remaining time', () =>
   assert.equal(p.state().phase, 'short_break')
   assert.equal(p.state().remaining, 2)
 })
+
+test('configure re-clamps remaining while in a break phase', () => {
+  const p = createPomodoro({ focus: 1, short: 10, longEvery: 4 })
+  p.start()
+  p.tick() // focus done -> short_break, remaining 10
+  assert.equal(p.state().phase, 'short_break')
+  assert.equal(p.state().remaining, 10)
+  p.configure({ short: 4 }) // phase name short_break must map to the `short` duration key
+  assert.equal(p.state().remaining, 4)
+})

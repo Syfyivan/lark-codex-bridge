@@ -25,7 +25,11 @@ test('probeBridgeState maps the bridge state endpoint to connected/offline', asy
     onStatus: status => statuses.push(status),
     fetchImpl: async (url, init) => {
       assert.equal(url, 'http://127.0.0.1:8787/pet/state?token=secret')
-      assert.deepEqual(init, { cache: 'no-store' })
+      assert.equal(init.cache, 'no-store')
+      // probe carries an abort signal so a half-open bridge can't pile up requests
+      if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        assert.ok(init.signal instanceof AbortSignal)
+      }
       return {
         ok: true,
         json: async () => ({ ok: true }),

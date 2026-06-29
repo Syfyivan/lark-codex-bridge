@@ -87,12 +87,19 @@ function createPomodoro(opts = {}) {
       emitTick()
     },
     configure(next = {}) {
-      const before = durations[phase] || 0
+      // Phase names (short_break/long_break) differ from the duration keys
+      // (short/long), so map before reading — otherwise a break-phase reconfigure
+      // never re-clamps `remaining`.
+      const durationForPhase = (ph) => ph === 'focus' ? durations.focus
+        : ph === 'short_break' ? durations.short
+          : ph === 'long_break' ? durations.long
+            : 0
+      const before = durationForPhase(phase)
       if (next.focus) durations.focus = positiveInt(next.focus, durations.focus)
       if (next.short) durations.short = positiveInt(next.short, durations.short)
       if (next.long) durations.long = positiveInt(next.long, durations.long)
       if (next.longEvery) durations.longEvery = positiveInt(next.longEvery, durations.longEvery)
-      const after = durations[phase] || 0
+      const after = durationForPhase(phase)
       if (phase !== 'idle' && before > 0 && after > 0) remaining = Math.min(remaining, after)
       emitTick()
     },

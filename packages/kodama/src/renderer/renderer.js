@@ -72,6 +72,7 @@ let accessoryLayer = null
 let panelVisible = false
 let agentSyncStatus = 'offline'
 let activeAgentConfig = { bridgeUrl: DEFAULT_BRIDGE_URL }
+let disposeAgentSync = null
 let activeAccessorySlots = ACCESSORY_SLOTS
 let activeAccessories = ACCESSORIES
 let activeBubbleEvent = null
@@ -387,7 +388,8 @@ async function init() {
     // source 'lark' arrives via the configured bridge SSE adapter.
     const agentCfg = (await importLocal('./config/agent.local.js'))?.AGENT || {}
     activeAgentConfig = { bridgeUrl: agentCfg.bridgeUrl || DEFAULT_BRIDGE_URL, token: agentCfg.token || '' }
-    connectAgentSync(handleAgentEvent, { ...agentCfg, onStatus: hooks.onStatus })
+    disposeAgentSync?.() // tear down a prior SSE connection + probe timer if init re-runs
+    disposeAgentSync = connectAgentSync(handleAgentEvent, { ...agentCfg, onStatus: hooks.onStatus })
     window.pet.onAgentEvent?.(handleAgentEvent) // source 'local'
     window.pet.onTogglePanel?.(() => togglePanel())
     window.pet.onEnterMoveMode?.(() => enterMoveMode())

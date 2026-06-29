@@ -504,8 +504,10 @@ ipcMain.on('pet:speak', (_e, text) => {
   if (!line) return
   try {
     if (sayProc && !sayProc.killed) sayProc.kill() // interrupt the previous line
-    sayProc = spawn('say', [line], { stdio: 'ignore' }) // array args = no shell injection
-    sayProc.on('error', () => {})
+    const proc = spawn('say', [line], { stdio: 'ignore' }) // array args = no shell injection
+    sayProc = proc
+    proc.on('error', () => {})
+    proc.once('close', () => { if (sayProc === proc) sayProc = null }) // release the dead handle
   } catch { /* TTS is best-effort */ }
 })
 
@@ -1652,6 +1654,18 @@ function tokenOk(req) {
   return header === HOOK_TOKEN || bearer === HOOK_TOKEN
 }
 
+// A browser on any site can hit our loopback port (<img src>, fetch no-cors) and
+// trigger side-effecting control endpoints. Native callers (curl, the tray, our
+// CLI) send neither Sec-Fetch-Site nor a cross-origin Origin, so reject anything
+// that looks like a cross-site browser request.
+function isCrossSiteBrowserRequest(req) {
+  const site = String(req.headers['sec-fetch-site'] || '')
+  if (site && site !== 'same-origin' && site !== 'none') return true
+  const origin = String(req.headers['origin'] || '')
+  if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin)) return true
+  return false
+}
+
 function writeJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(body))
@@ -1722,6 +1736,11 @@ function startLocalAgentServer() {
     }
     const controlMatch = url.pathname.match(/^\/pet\/(show|hide|toggle|panel|bridge-tasks|manage)$/)
     if (controlMatch && (req.method === 'GET' || req.method === 'POST')) {
+      if (isCrossSiteBrowserRequest(req)) {
+        res.writeHead(403)
+        res.end()
+        return
+      }
       writeJson(res, 200, controlPet(controlMatch[1]))
       return
     }

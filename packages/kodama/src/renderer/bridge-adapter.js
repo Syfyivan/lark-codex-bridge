@@ -18,9 +18,16 @@ export async function probeBridgeState(baseUrl, {
   token = '',
   fetchImpl = globalThis.fetch,
   onStatus,
+  timeoutMs = 8000,
 } = {}) {
   try {
-    const res = await fetchImpl(bridgeEventUrl(baseUrl, '/pet/state', token).toString(), { cache: 'no-store' })
+    const opts = { cache: 'no-store' }
+    // A half-open bridge (accepts the connection but never responds) would leave the
+    // 10s-interval probe piling up never-settling requests; cap each probe.
+    if (timeoutMs > 0 && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      opts.signal = AbortSignal.timeout(timeoutMs)
+    }
+    const res = await fetchImpl(bridgeEventUrl(baseUrl, '/pet/state', token).toString(), opts)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const state = await res.json()
     const status = state?.ok ? 'connected' : 'offline'
@@ -63,6 +70,12 @@ export function connectBridgeEvents(onEvent, {
       clearTimeoutImpl(offlineTimer)
       offlineTimer = setTimeoutImpl(() => {
         probeBridgeState(base, { token, fetchImpl, onStatus: setStatus })
+        // EventSource auto-reconnects while CONNECTING; once it gives up (CLOSED === 2)
+        // it stays silent forever, so rebuild it ourselves.
+        if (es && es.readyState === 2) {
+          try { es.close() } catch { /* already closed */ }
+          connect()
+        }
       }, 1500)
     }
 

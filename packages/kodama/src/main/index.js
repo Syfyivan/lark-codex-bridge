@@ -6,6 +6,7 @@ const { spawn } = require('child_process')
 const tokenUsage = require('./token-usage')
 const { createPomodoro } = require('./pomodoro')
 const { mapHookToEvent } = require('./hook-events')
+const { HOOK_AGENTS } = require('./agents/registry')
 const {
   registerAutoUpdater,
   checkForUpdates,
@@ -390,24 +391,16 @@ function setPetScale(scale) {
 // tray — never written silently.
 const KODAMA_HOOK_CURL =
   `curl -s -m 1 --noproxy 127.0.0.1 -X POST http://127.0.0.1:${LOCAL_AGENT_PORT} -H 'Content-Type: application/json' -d "$(cat)" >/dev/null 2>&1 || true`
-// Mirror the richer event surface Flux Island listens to, but Kodama still keeps
-// its renderer-side filtering narrow so we don't spam every tool call.
-const KODAMA_HOOK_EVENTS = [
-  'SessionStart',
-  'UserPromptSubmit',
-  'PermissionRequest',
-  'Notification',
-  'PreToolUse',
-  'PostToolUse',
-  'PostToolUseFailure',
-  'SubagentStart',
-  'SubagentStop',
-  'Stop',
-  'StopFailure',
-  'SessionEnd',
-]
+// The canonical Claude event surface, kept for any external reference. The
+// registry (src/main/agents/*) now owns per-agent event lists; this is just a
+// convenience alias to the Claude descriptor's events.
+const KODAMA_HOOK_EVENTS = HOOK_AGENTS.find(agent => agent.id === 'claude')?.hookConfig.events || []
 
-function registerHookFile(file, label, { dryRun = false, allowCreate = false } = {}) {
+// Safely merge the Kodama hook into one agent's JSON `hooks` map. `events` comes
+// from the agent descriptor so this stays agent-agnostic. SAFE: backs up first,
+// only APPENDS the 7766 curl to events that don't already have it (never touches
+// existing hooks), idempotent, atomic write.
+function registerHookFile(file, label, events, { dryRun = false, allowCreate = false } = {}) {
   let json
   try {
     json = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -420,7 +413,7 @@ function registerHookFile(file, label, { dryRun = false, allowCreate = false } =
   json.hooks = json.hooks || {}
   const added = []
   const next = { ...json, hooks: { ...json.hooks } }
-  for (const ev of KODAMA_HOOK_EVENTS) {
+  for (const ev of events) {
     const list = Array.isArray(next.hooks[ev]) ? next.hooks[ev].slice() : []
     if (JSON.stringify(list).includes(`:${LOCAL_AGENT_PORT}`)) continue // already wired
     list.push({ hooks: [{ type: 'command', command: KODAMA_HOOK_CURL }] })
@@ -438,17 +431,17 @@ function registerHookFile(file, label, { dryRun = false, allowCreate = false } =
   return { ok: true, added }
 }
 
+// Iterate the agent registry instead of hard-coding Claude/Codex. Each descriptor
+// supplies its settings path, event list and whether the file may be created.
 function registerLocalCliHooks(options = {}) {
   const home = app.getPath('home')
-  const targets = [
-    { key: 'claude', label: 'Claude Code settings.json', file: path.join(home, '.claude', 'settings.json'), allowCreate: false },
-    { key: 'codex', label: 'Codex hooks.json', file: path.join(home, '.codex', 'hooks.json'), allowCreate: true },
-  ]
   const summary = {}
   let ok = true
-  for (const target of targets) {
-    const result = registerHookFile(target.file, target.label, { ...options, allowCreate: target.allowCreate })
-    summary[target.key] = result
+  for (const agent of HOOK_AGENTS) {
+    const cfg = agent.hookConfig
+    const file = cfg.settingsPath(home)
+    const result = registerHookFile(file, agent.label, cfg.events, { ...options, allowCreate: cfg.allowCreate })
+    summary[agent.id] = result
     if (!result.ok) ok = false
   }
   return { ok, summary }
@@ -1792,6 +1785,26 @@ function startLocalAgentServer() {
         }
         emitRendererAgentEvent(larkEvent)
         writeJson(res, 200, { ok: true, event: larkEvent })
+        return
+      }
+      if (url.pathname === '/pet/mcp-state') {
+        // MCP set_state tool (src/mcp/) → drive an arbitrary pet status from an
+        // agent. Maps the five lifecycle states to local reaction events.
+        const STATE_EVENTS = {
+          thinking: { type: 'task_progress', text: 'Agent 思考中…' },
+          working: { type: 'task_progress', text: 'Agent 工作中…' },
+          done: { type: 'task_done', text: '' },
+          waiting: { type: 'task_waiting', text: '需要你确认' },
+          failed: { type: 'task_failed', text: 'Agent 出错了' },
+        }
+        const def = STATE_EVENTS[String(data.state || '').trim()]
+        if (!def) {
+          writeJson(res, 400, { ok: false, error: 'unknown state' })
+          return
+        }
+        const mcpEvent = { type: def.type, source: 'local', text: clampEventText(data.text || def.text) }
+        emitRendererAgentEvent(mcpEvent)
+        writeJson(res, 200, { ok: true, event: mcpEvent })
         return
       }
       if (event) {

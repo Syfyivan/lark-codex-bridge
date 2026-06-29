@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { mapHookToEvent } from '../src/main/hook-events.js'
+import { HOOK_AGENTS, HOOK_AGENTS_BY_ID } from '../src/main/agents/registry.js'
 
 test('codex notify completion maps to a local task_done event', () => {
   const event = mapHookToEvent({ type: 'agent-turn-complete', 'last-assistant-message': '已经完成测试' })
@@ -155,6 +156,69 @@ test('failed bash commands map to failed build or test events', () => {
     source: 'local',
     text: '构建失败：pnpm run build',
   })
+})
+
+test('context compaction maps to progress bubbles', () => {
+  assert.deepEqual(mapHookToEvent({ hook_event_name: 'PreCompact' }), {
+    type: 'task_progress',
+    source: 'local',
+    text: '正在压缩上下文…',
+  })
+  assert.deepEqual(mapHookToEvent({ hook_event_name: 'PostCompact' }), {
+    type: 'task_progress',
+    source: 'local',
+    text: '上下文压缩完成',
+  })
+})
+
+test('compaction events still carry local jump context', () => {
+  assert.deepEqual(mapHookToEvent({ hook_event_name: 'PreCompact', session_id: 'sess-1', cwd: '/Users/bytedance/code/kodama' }), {
+    type: 'task_progress',
+    source: 'local',
+    text: '正在压缩上下文…',
+    sessionId: 'sess-1',
+    cwd: '/Users/bytedance/code/kodama',
+  })
+})
+
+test('permission denial maps to a waiting event and keeps agent name', () => {
+  assert.deepEqual(mapHookToEvent({ hook_event_name: 'PermissionDenied', agent_name: 'executor' }), {
+    type: 'task_waiting',
+    source: 'local',
+    text: '权限被拒绝',
+    agent: 'executor',
+  })
+  // snake/camel field aliases both resolve the reason text.
+  assert.deepEqual(mapHookToEvent({ hook_event_name: 'PermissionDenied', reason: '无写入权限' }), {
+    type: 'task_waiting',
+    source: 'local',
+    text: '无写入权限',
+  })
+})
+
+test('hook agent registry exposes claude and codex descriptors', () => {
+  const ids = HOOK_AGENTS.map(agent => agent.id).sort()
+  assert.deepEqual(ids, ['claude', 'codex'])
+  assert.equal(HOOK_AGENTS_BY_ID.get('claude'), HOOK_AGENTS.find(a => a.id === 'claude'))
+
+  for (const agent of HOOK_AGENTS) {
+    assert.equal(typeof agent.id, 'string')
+    assert.ok(agent.label, `${agent.id} has a label`)
+    const cfg = agent.hookConfig
+    assert.ok(cfg, `${agent.id} has hookConfig`)
+    assert.equal(typeof cfg.configFormat, 'string')
+    assert.equal(typeof cfg.settingsPath, 'function')
+    assert.equal(typeof cfg.allowCreate, 'boolean')
+    assert.ok(Array.isArray(cfg.events) && cfg.events.length > 0, `${agent.id} has events`)
+    const resolved = cfg.settingsPath('/home/test')
+    assert.ok(resolved.startsWith('/home/test/'), `${agent.id} settingsPath honors home`)
+  }
+
+  // The new Claude events must be wired into the registry surface.
+  const claudeEvents = HOOK_AGENTS_BY_ID.get('claude').hookConfig.events
+  for (const ev of ['PreCompact', 'PostCompact', 'PermissionDenied']) {
+    assert.ok(claudeEvents.includes(ev), `claude events include ${ev}`)
+  }
 })
 
 test('unknown hook payloads are ignored', () => {

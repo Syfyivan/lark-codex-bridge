@@ -181,6 +181,13 @@ function mapHookToEvent(data) {
       return withLocalContext({ type: 'task_started', source: 'local', text: clampText(data.prompt || data.cwd || '') }, data)
     case 'PermissionRequest':
       return withAgent({ type: 'task_waiting', source: 'local', text: clampText(data.message || data.reason || 'Agent 需要你确认') }, data)
+    case 'PermissionDenied':
+    case 'PermissionDenial':
+      return withAgent({ type: 'task_waiting', source: 'local', text: clampText(data.message || data.reason || '权限被拒绝') }, data)
+    case 'PreCompact':
+      return withLocalContext({ type: 'task_progress', source: 'local', text: '正在压缩上下文…' }, data)
+    case 'PostCompact':
+      return withLocalContext({ type: 'task_progress', source: 'local', text: '上下文压缩完成' }, data)
     case 'PreToolUse': {
       const name = toolName(data)
       if (/AskUserQuestion/i.test(name)) {

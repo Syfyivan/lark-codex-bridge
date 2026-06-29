@@ -326,7 +326,7 @@ async function init() {
     })
     // 管理窗口的「摸摸」按钮
     window.pet.onDoPet?.(() => {
-      backend?.playMotion('Tap')
+      backend?.playMotion('Tap', 'force') // user-initiated: interrupt whatever is playing
       say('摸摸~ 🐾', 1600)
     })
     // 管理窗口的「投喂」按钮:食物→经验,升级可能变大 → 重排
@@ -350,7 +350,7 @@ async function init() {
     // One pet, two sources — both flow through the same handler (reaction + growth).
     const hooks = {
       say,
-      playMotion: (g) => backend?.playMotion?.(g),
+      playMotion: (g, p) => backend?.playMotion?.(g, p),
       onStatus: (s) => {
         agentSyncStatus = s
         console.log('[kodama] status:', s)
@@ -414,7 +414,7 @@ async function init() {
         return
       }
       if (!result.already) {
-        backend?.playMotion?.('Tap')
+        backend?.playMotion?.('Tap', 'force') // user-initiated purchase: celebrate now
         say(`🛒 解锁 ${result.accessory.label} ${result.accessory.icon || ''} -${result.cost}⭐`, 2800)
       }
       equipAccessory({ slot: result.accessory.slot, id: result.accessory.id })
@@ -473,7 +473,7 @@ function syncAccessories() {
 
 // ---------- Live2D backend ----------
 async function initLive2D() {
-  const { Live2DModel } = PIXI.live2d
+  const { Live2DModel, MotionPriority } = PIXI.live2d
   const app = new PIXI.Application({
     view: canvas,
     resizeTo: window,
@@ -540,11 +540,32 @@ async function initLive2D() {
     return motionGroups.find((g) => !/idle/i.test(g)) || motionGroups[0] || 'Idle'
   }
 
+  // Map a reaction/group hint to a Cubism MotionPriority so motions queue through
+  // the library's MotionManager instead of cutting each other off. Idle motions
+  // ride at IDLE (the same lane the built-in idle loop uses, so they never fight a
+  // reaction); everything else defaults to NORMAL (reactions wait their turn).
+  function priorityForGroup(pref) {
+    return /idle/i.test(pref) ? MotionPriority.IDLE : MotionPriority.NORMAL
+  }
+
+  // Translate a caller hint into a MotionPriority. Callers stay decoupled from the
+  // PIXI enum: pass 'force' for user-initiated taps (interrupts the current motion),
+  // 'idle'/'normal' to be explicit, a raw number, or nothing to derive from the group.
+  function resolvePriority(hint, pref) {
+    if (typeof hint === 'number') return hint
+    if (hint === 'force') return MotionPriority.FORCE
+    if (hint === 'normal') return MotionPriority.NORMAL
+    if (hint === 'idle') return MotionPriority.IDLE
+    return priorityForGroup(pref)
+  }
+
   return {
     getBounds: () => model.getBounds(),
-    playMotion(pref) {
+    playMotion(pref, priority) {
       try {
-        model.motion(resolveGroup(pref))
+        // Omit the index so MotionManager picks a random motion in the group and
+        // honors the priority for queueing (vs. a bare model.motion() that cut in).
+        model.motion(resolveGroup(pref), undefined, resolvePriority(priority, pref))
       } catch (_) {
         /* ignore */
       }
@@ -801,7 +822,7 @@ function setupInteraction() {
   window.addEventListener('dblclick', (e) => {
     if (!uiSettings.pettingEnabled || panelVisible || !overPet(e.clientX, e.clientY)) return
     e.preventDefault()
-    backend?.playMotion('Tap')
+    backend?.playMotion('Tap', 'force') // double-click petting is a user tap: interrupt
     say('摸摸~', 1600)
   })
 
@@ -869,7 +890,7 @@ function setupInteraction() {
 }
 
 function onTap() {
-  backend?.playMotion('Tap')
+  backend?.playMotion('Tap', 'force') // user tap: interrupt the current motion
   const lark = tokenStats.lark?.today || 0
   const larkPart = lark > 0 ? `（飞书 ${fmtTokens(lark)}）` : ''
   say(`🐾 ${statusText()} · 今日 ${fmtTokens(tokenStats.today)} tok${larkPart}`, 3000)

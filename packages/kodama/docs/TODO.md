@@ -5,6 +5,31 @@
 
 ---
 
+## 0. 📌 下次接手 / 续接说明（给 Cici 或 Codex 看）
+
+> **这是 2026-06-29 那一大轮没干完的活。** 下次想接着做，不管是问 Cici(Claude Code)
+> 还是 Codex，把这份文件指给它、说一句「**接着上次 Kodama 的活干，先看 docs/TODO.md**」即可。
+
+**让接手的 agent 先做这三步，建立上下文：**
+1. 读这份 `docs/TODO.md`（尤其下面第 1~5 组）
+2. 读 `docs/ROADMAP.md`
+3. 跑 `git log --oneline -25` 看上次都改了啥（feature wave 1 的 4 个提交 + 一串修复）
+
+**上次（2026-06-29）干了啥，一句话：** 修了 10 个真 bug（含 2 个高危：原子写、子进程超时）；
+做了一整轮"向开源学习"调研；并行实现了 **feature wave 1** 四项——token 成本估算、Live2D
+动作状态机(MotionPriority)、MCP stdio server、hook descriptor 注册表 + 新事件。全部本地提交、
+**未推送**，76 测试全绿。
+
+**下次最该先干（按优先级）：**
+- 先把第 1 组的**人工验证**做掉（动作状态机肉眼验 + MCP 在 Claude Code 配置端到端跑）——代码已合，就差真机确认
+- 然后决定要不要 **push**（第 2 组）
+- 想继续追开源差距 → 上 **第二梯队**（第 3 组：插件 SDK / 上下文感知 / 语音管线 / lease）
+
+**铁律：** monorepo（`~/code/lark-codex-bridge/packages/kodama`）是唯一事实源；改完跑
+`node packages/kodama/scripts/sync-standalone.mjs` 同步到 standalone，别手动 copy。
+
+---
+
 ## 1. 本轮功能待人工验证（代码已合并、测试已过，但有几项无法自动验）
 
 - [ ] **Live2D 动作状态机**（commit `1eae0b7`）：启动桌宠肉眼验——

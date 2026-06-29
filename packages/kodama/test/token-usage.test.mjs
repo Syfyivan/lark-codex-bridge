@@ -43,6 +43,38 @@ test('missing dirs yield empty totals, no throw', () => {
   assert.equal(s.total, 0)
 })
 
+test('claude dedupes a replayed message across files (message.id + requestId)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'kodama-claude-dedup-'))
+  const proj = join(root, 'projY')
+  mkdirSync(proj, { recursive: true })
+  // Same message.id + requestId appears in two files (resume replay).
+  const dup = {
+    timestamp: '2026-06-15T01:00:00Z',
+    requestId: 'req_1',
+    message: { id: 'msg_1', usage: { input_tokens: 100, output_tokens: 50 } },
+  }
+  writeFileSync(join(proj, 'a.jsonl'), JSON.stringify(dup) + '\n')
+  writeFileSync(join(proj, 'b.jsonl'), JSON.stringify(dup) + '\n')
+  const byDay = usageByDay({ claudeRoot: root, codexRoot: '/nonexistent' })
+  assert.equal(byDay['2026-06-15'], 150) // counted once, not 300
+})
+
+test('codex attributes cumulative deltas to each turn day', () => {
+  const root = mkdtempSync(join(tmpdir(), 'kodama-codex-'))
+  const sess = join(root, 'sessX')
+  mkdirSync(sess, { recursive: true })
+  const lines = [
+    { timestamp: '2026-06-14T10:00:00Z', total_token_usage: { total_tokens: 100 } },
+    { timestamp: '2026-06-15T10:00:00Z', total_token_usage: { total_tokens: 300 } },
+    { timestamp: '2026-06-15T11:00:00Z', total_token_usage: { total_tokens: 300 } },
+  ]
+  writeFileSync(join(sess, 's.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+  const byDay = usageByDay({ claudeRoot: '/nonexistent', codexRoot: root })
+  assert.equal(byDay['2026-06-14'], 100) // first turn delta
+  assert.equal(byDay['2026-06-15'], 200) // 300 - 100, then 0
+  assert.equal(byDay['2026-06-14'] + byDay['2026-06-15'], 300) // sum == last cumulative
+})
+
 test('summarizeByDay rolls a day map into today/last7/total (used for the lark ledger)', () => {
   const byDay = { '2026-06-15': 100, '2026-06-12': 30, '2026-06-01': 999 }
   const s = summarizeByDay(byDay, new Date('2026-06-15T12:00:00Z'))

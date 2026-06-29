@@ -175,12 +175,12 @@ export function feedTokens(totalTokens) {
   }
   const delta = totalTokens - state.lastTokens
   if (delta <= 0) return
-  state.lastTokens = totalTokens
   const food = Math.floor(delta / TOKENS_PER_FOOD)
-  if (food <= 0) {
-    persist()
-    return
-  }
+  // Keep the sub-threshold remainder: advance the baseline only by what we actually
+  // converted, so many small (<2000-token) refreshes still add up to a food point
+  // instead of each one resetting the baseline and dropping its remainder.
+  if (food <= 0) return
+  state.lastTokens += food * TOKENS_PER_FOOD
   applyGains(food, food * 2)
 }
 

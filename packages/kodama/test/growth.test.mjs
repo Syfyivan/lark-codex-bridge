@@ -52,6 +52,15 @@ test('feedTokens feeds the delta afterwards (2000 tok = 1 food)', () => {
   assert.equal(getState().food, before + 2)
 })
 
+test('feedTokens carries the sub-2000 remainder across refreshes', () => {
+  const start = getState().lastTokens // 14000 from the previous test
+  const before = getState().food
+  feedTokens(start + 1500) // +1500 (<2000) => no food, remainder must be kept
+  assert.equal(getState().food, before)
+  feedTokens(start + 3000) // +1500 more => cumulative 3000 since last food => +1 food
+  assert.equal(getState().food, before + 1)
+})
+
 test('old growth state is migrated with level-based accessory unlocks', async () => {
   setLoadedState({ level: 3, exp: 0, food: 0, totalFed: 0 })
   await initGrowth({ say() {}, playMotion() {} })

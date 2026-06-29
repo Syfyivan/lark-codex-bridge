@@ -68,6 +68,35 @@ test('shareSession sends the current share endpoint and resolves the share URL',
   assert.equal(result.url, 'https://example.com/share')
 })
 
+test('shareSession forwards the local transcript path when available', async () => {
+  const calls = []
+  await shareSession({
+    provider: 'codex',
+    sessionId: '019efc14-7f2a-7ab2-9b9f-4a1f8282e05e',
+    transcriptPath: '/Users/test/.codex/sessions/2026/06/25/rollout-019efc14-7f2a-7ab2-9b9f-4a1f8282e05e.jsonl',
+    title: '软件测试 · 完成',
+    bridgeUrl: 'http://127.0.0.1:8787',
+  }, {
+    homeDir: '/Users/test',
+    readFileSync: () => 'secret-token\n',
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init })
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ ok: true, share: { url: 'https://example.com/share' } }),
+      }
+    },
+  })
+
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    provider: 'codex',
+    session_id: '019efc14-7f2a-7ab2-9b9f-4a1f8282e05e',
+    transcript_path: '/Users/test/.codex/sessions/2026/06/25/rollout-019efc14-7f2a-7ab2-9b9f-4a1f8282e05e.jsonl',
+    title: '软件测试 · 完成',
+  })
+})
+
 test('bridge task helpers normalize scope and current task viewer endpoints', async () => {
   assert.deepEqual(normalizeBridgeTaskScope({
     taskId: 'task-1',

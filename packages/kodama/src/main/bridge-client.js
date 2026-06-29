@@ -129,10 +129,15 @@ async function shareSession(request = {}, options = {}) {
     const sessionId = String(request.sessionId || request.threadId || '').trim()
     if (!sessionId) return { ok: false, error: 'missing-session-id' }
     const { baseUrl, token } = resolveBridgeRequest(request, options)
-    const result = await postBridgeJson(baseUrl, '/v1/sessions/session-shares', {
+    const body = {
       provider,
       session_id: sessionId,
-    }, {
+    }
+    const transcriptPath = String(request.transcriptPath || request.agentTranscriptPath || '').trim()
+    const title = String(request.title || '').trim()
+    if (transcriptPath) body.transcript_path = transcriptPath
+    if (title) body.title = title
+    const result = await postBridgeJson(baseUrl, '/v1/sessions/session-shares', body, {
       ...options,
       token,
     })

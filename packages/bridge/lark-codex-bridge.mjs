@@ -1858,6 +1858,137 @@ function findSessionJsonlById(root, id) {
   return '';
 }
 
+function isPathInside(candidate, root) {
+  const file = resolve(candidate);
+  const base = resolve(root);
+  return file === base || file.startsWith(`${base}/`);
+}
+
+function sessionTranscriptRoots(provider) {
+  if (provider === 'claude') return [config.claudeProjectsRoot];
+  return [join(config.codexHome, 'sessions'), join(config.codexHome, 'archived_sessions')];
+}
+
+function resolveSessionTranscriptFile(provider, value) {
+  const rawPath = String(value || '').trim();
+  if (!rawPath) return { ok: false, error: 'missing transcript path' };
+
+  const file = resolve(expandHomePath(rawPath));
+  if (!file.endsWith('.jsonl')) return { ok: false, error: 'session transcript must be a jsonl file' };
+
+  const roots = sessionTranscriptRoots(provider)
+    .map(root => resolve(expandHomePath(root)))
+    .filter(Boolean);
+  if (!roots.some(root => isPathInside(file, root))) {
+    return { ok: false, error: 'session transcript path is outside session roots' };
+  }
+
+  let stat;
+  try {
+    stat = statSync(file);
+  } catch {
+    return { ok: false, error: 'session transcript file not found' };
+  }
+  if (!stat.isFile()) return { ok: false, error: 'session transcript path is not a file' };
+
+  return { ok: true, file, stat };
+}
+
+function sessionIdFromTranscriptFile(file) {
+  const name = String(file || '').split('/').pop() || '';
+  const match = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.exec(name);
+  return match?.[0] || name.replace(/\.jsonl$/i, '');
+}
+
+function sessionTitleFromFirstText(text, id, provider) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized) return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+  return `${sessionProviderLabel(provider)} session ${String(id || '').slice(0, 8) || 'unknown'}`;
+}
+
+function summarizeCodexSessionTranscriptFile(file, stat, fallbackTitle = '') {
+  const lines = readFileSync(file, 'utf8').split(/\r?\n/);
+  let id = sessionIdFromTranscriptFile(file);
+  let updatedAt = stat.mtime.toISOString();
+  let projectPath = '';
+  let model = '';
+  let firstUserText = '';
+  let visibleTurnCount = 0;
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const item = tryJson(line);
+    if (!item || typeof item !== 'object') continue;
+
+    if (item.type === 'session_meta' && item.payload && typeof item.payload === 'object') {
+      id = String(item.payload.id || id).trim();
+      updatedAt = String(item.payload.timestamp || updatedAt).trim();
+      projectPath = String(item.payload.cwd || projectPath).trim();
+      model = String(item.payload.model || item.payload.model_provider || model).trim();
+      continue;
+    }
+
+    if (item.timestamp) updatedAt = String(item.timestamp);
+    if (item.type !== 'response_item') continue;
+    const payload = item.payload || {};
+    if (payload.type !== 'message') continue;
+    if (!['user', 'assistant'].includes(payload.role)) continue;
+
+    const parts = stripLeadingCodexContextParts(
+      redactSessionMessageParts(extractCodexMessageParts(payload.content)),
+      payload.role,
+    );
+    const text = sessionMessagePartsToCopyText(parts).trim();
+    if (!text) continue;
+
+    visibleTurnCount += 1;
+    if (payload.role === 'user' && !firstUserText) firstUserText = text;
+  }
+
+  return {
+    provider: 'codex',
+    id,
+    threadName: sessionTitleFromFirstText(firstUserText || fallbackTitle, id, 'codex'),
+    updatedAt,
+    projectPath,
+    model,
+    visibleTurnCount,
+    file,
+  };
+}
+
+function summarizeClaudeSessionTranscriptFile(file, stat, fallbackTitle = '') {
+  const id = sessionIdFromTranscriptFile(file);
+  const transcript = parseClaudeSessionTranscript(file);
+  const firstUserText = transcript.turns.find(turn => turn.role === 'user')?.text || fallbackTitle;
+  const lastTurnAt = [...transcript.turns].reverse().find(turn => turn.timestamp)?.timestamp || '';
+  return {
+    provider: 'claude',
+    id,
+    threadName: sessionTitleFromFirstText(firstUserText, id, 'claude'),
+    updatedAt: lastTurnAt || stat.mtime.toISOString(),
+    projectPath: '',
+    model: '',
+    visibleTurnCount: transcript.turns.length,
+    file,
+  };
+}
+
+function findSessionFromTranscriptPath(provider, transcriptPath, options = {}) {
+  const resolved = resolveSessionTranscriptFile(provider, transcriptPath);
+  if (!resolved.ok) return { status: 'not_found', error: resolved.error, matches: [] };
+
+  const session = provider === 'claude'
+    ? summarizeClaudeSessionTranscriptFile(resolved.file, resolved.stat, options.title)
+    : summarizeCodexSessionTranscriptFile(resolved.file, resolved.stat, options.title);
+
+  return {
+    status: 'ok',
+    session,
+    matchType: 'transcript-path',
+  };
+}
+
 function findCodexSessionFile(session) {
   const roots = [join(config.codexHome, 'sessions'), join(config.codexHome, 'archived_sessions')];
   for (const root of roots) {
@@ -1917,6 +2048,7 @@ function findSessionForProvider(provider, query) {
 }
 
 function findSessionFileForProvider(session) {
+  if (session?.file) return session.file;
   if (sessionProvider(session) === 'claude') return session.file;
   return findCodexSessionFile(session);
 }
@@ -2025,7 +2157,7 @@ function redactSessionMessageParts(parts) {
 
 function stripLeadingCodexContextText(text) {
   return String(text || '')
-    .replace(/^# AGENTS\.md instructions for [^\n]*\n\n<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/i, '')
+    .replace(/^# AGENTS\.md instructions(?: for [^\n]*)?\s+<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/i, '')
     .replace(/^<environment_context>[\s\S]*?<\/environment_context>\s*/i, '')
     .trim();
 }
@@ -3389,7 +3521,7 @@ function sessionShareEnhancementScript() {
           '',
         );
         return (
-          withoutLegacyTime.startsWith('# AGENTS.md instructions for ') &&
+          withoutLegacyTime.startsWith('# AGENTS.md instructions') &&
           withoutLegacyTime.includes('<INSTRUCTIONS>') &&
           !withoutLegacyTime.includes('My request for Codex:')
         );
@@ -4385,11 +4517,22 @@ async function createSessionShareFromQuery(query, options = {}) {
 
   const provider = options.provider || 'codex';
   const cleanedQuery = cleanSessionTitleQuery(query);
-  if (!cleanedQuery && provider !== 'claude') {
-    return { ok: false, status: 400, error: 'missing session query' };
+
+  const pathResult = options.transcriptPath
+    ? findSessionFromTranscriptPath(provider, options.transcriptPath, { title: options.title })
+    : null;
+  if (!cleanedQuery && provider !== 'claude' && pathResult?.status !== 'ok') {
+    return {
+      ok: false,
+      status: pathResult ? 404 : 400,
+      error: pathResult?.error || 'missing session query',
+      matches: publicSessionMatches(pathResult?.matches),
+    };
   }
 
-  const result = findSessionForProvider(provider, cleanedQuery);
+  const result = pathResult?.status === 'ok'
+    ? pathResult
+    : findSessionForProvider(provider, cleanedQuery);
   if (result.status === 'ambiguous') {
     return {
       ok: false,
@@ -5778,6 +5921,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     cardProgress,
     createBridgeTaskProgressSink(taskRun?.id, petContext),
   );
+  const shouldSendFinalReply = config.progressCardFinalReply || !cardProgress;
   emitPet('task_started', { ...petContext, text: prompt || stripBridgeTraceText(rawText) });
   const usageRef = {};
   try {
@@ -5798,7 +5942,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     finishBridgeTaskRun(taskRun?.id, { finalText: visibleReply, tokens: usageRef.tokens || 0 });
     recordThreadMemoryIfEnabled(event, rawText, visibleReply, executionOptions);
     recordMemoryCandidatesIfEnabled(event, rawText, visibleReply);
-    if (config.progressCardFinalReply || !progress) {
+    if (shouldSendFinalReply) {
       if (relayPayload) {
         await replyRelayToLark(
           event,
@@ -7145,6 +7289,8 @@ async function handleHttpRequest(request, response) {
       const result = await createSessionShareFromQuery(query, {
         provider: provider === 'claude' ? 'claude' : 'codex',
         findOnly: Boolean(body.find_only || body.findOnly),
+        title: String(body.title || '').trim(),
+        transcriptPath: String(body.transcript_path || body.transcriptPath || '').trim(),
       });
       jsonResponse(response, result.ok ? 200 : result.status || 500, result);
       return;
@@ -7491,7 +7637,8 @@ function extractSentMessageId(stdout) {
 
 async function sendCardToLark(event, card, idempotencyKey) {
   const messageId = extractMessageId(event);
-  if (messageId) {
+  const chatType = extractChatType(event);
+  if (messageId && chatType !== 'p2p') {
     const stdout = await runCli([
       'im',
       '+messages-reply',
@@ -7511,8 +7658,8 @@ async function sendCardToLark(event, card, idempotencyKey) {
   }
 
   const chatId = extractChatId(event);
-  if (!chatId) throw new Error('event has neither message_id nor chat_id');
-  if (config.delegateReplyInThread && extractChatType(event) !== 'p2p') {
+  if (!chatId) throw new Error('event has neither usable message_id nor chat_id');
+  if (config.delegateReplyInThread && chatType !== 'p2p') {
     throw new Error('refusing to send group card without original message_id for thread reply');
   }
   const stdout = await runCli([
@@ -7632,7 +7779,8 @@ async function replyToLark(event, text, options = {}) {
   };
 
   const messageId = extractMessageId(event);
-  if (messageId) {
+  const chatType = extractChatType(event);
+  if (messageId && chatType !== 'p2p') {
     await sendReply([
       'im',
       '+messages-reply',
@@ -7649,8 +7797,8 @@ async function replyToLark(event, text, options = {}) {
   }
 
   const chatId = extractChatId(event);
-  if (!chatId) throw new Error('event has neither message_id nor chat_id');
-  if (config.delegateReplyInThread && extractChatType(event) !== 'p2p') {
+  if (!chatId) throw new Error('event has neither usable message_id nor chat_id');
+  if (config.delegateReplyInThread && chatType !== 'p2p') {
     throw new Error('refusing to send group reply without original message_id for thread reply');
   }
   await sendReply([

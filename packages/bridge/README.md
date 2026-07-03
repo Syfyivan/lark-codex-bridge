@@ -716,6 +716,7 @@ The delegated flow is optional and disabled by default.
 
 ```text
 DELEGATE_MENTION_ENABLED=1
+DELEGATE_DRAFT_APPROVAL_ENABLED=1
 DELEGATE_USER_OPEN_ID=ou_xxx
 DELEGATE_USER_NAMES=Alice
 DELEGATE_APPROVER_OPEN_ID=ou_xxx
@@ -758,6 +759,10 @@ as a normal main-stream group reply. `DELEGATE_ALLOW_BOT_SENDERS=1` allows
 app/bot-authored messages to trigger the delegated workflow when they explicitly
 mention the delegated user.
 
+Set `DELEGATE_DRAFT_APPROVAL_ENABLED=0` to suppress ordinary delegated-reply
+approval cards while keeping the MR review automation classifier available for
+matching review requests.
+
 `DELEGATE_WATCH_CHAT_IDS` is the low-latency fallback for specific high-value
 groups where people often mention the delegated user instead of the bridge bot.
 `DELEGATE_GLOBAL_SEARCH_POLL_ENABLED=1` adds a broader compensation path: it
@@ -786,6 +791,14 @@ Codebase MR URL and a configured review keyword can bypass the normal approval
 draft and run a constrained MR review automation prompt. Auto-approve is still
 separately gated by `DELEGATE_REVIEW_AUTO_APPROVE_ENABLED=1` and the prompt's CI
 and confidence checks.
+
+The review automation prompt requires Codex to finish a full pass across all
+MRs, key diffs, existing comments, checks, and cross-repo semantics before it
+writes any MR comment or approve. If a MR cannot be approved, Codex must post one
+final blocker list for that latest commit, excluding stale or accepted comments,
+and should not report only the first blocker or keep adding new blockers across
+multiple replies. The intended contract is: fix the listed blockers, push a new
+commit, then the next review can approve if no new blocker appears.
 
 When `REVIEW_FOLLOWUP_ENABLED=1`, polling can watch replies under previous
 bridge-authored MR review requests. If a reviewer bot replies with required

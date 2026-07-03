@@ -17,6 +17,10 @@ test('shouldSkipSenderPolicy filters self, ignored, and non-allowed senders', ()
     'self_sender',
   );
   assert.equal(
+    shouldSkipSenderPolicy({ senderId: 'cli_self', botAppId: 'cli_self' }),
+    'self_sender',
+  );
+  assert.equal(
     shouldSkipSenderPolicy({ senderId: 'ou_ignored', loopIgnoreSenderIds: ['ou_ignored'] }),
     'ignored_sender',
   );

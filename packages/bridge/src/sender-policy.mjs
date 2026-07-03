@@ -13,6 +13,7 @@ export function shouldSkipSenderPolicy(input) {
     senderType = '',
     trace = null,
     botOpenId = '',
+    botAppId = '',
     loopIgnoreSenderIds = [],
     loopAllowSenderIds = [],
     loopBotSenderIds = [],
@@ -30,6 +31,7 @@ export function shouldSkipSenderPolicy(input) {
   } = input || {};
 
   if (botOpenId && senderId === botOpenId) return 'self_sender';
+  if (botAppId && senderId === botAppId) return 'self_sender';
   if (senderId && loopIgnoreSenderIds.includes(senderId)) return 'ignored_sender';
   if (loopAllowSenderIds.length && !loopAllowSenderIds.includes(senderId)) {
     return 'sender_not_allowed';

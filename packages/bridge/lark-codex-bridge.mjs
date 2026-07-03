@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
@@ -27,6 +27,10 @@ import {
   parseReactionRules,
   splitCsv,
 } from './src/env.mjs';
+import {
+  isDeletedLarkMessage,
+  shouldSkipBridgeGeneratedMessage,
+} from './src/approval-message-policy.mjs';
 import {
   createNonOwnerCodexExecutionContext,
   nonOwnerGuardNotice,
@@ -454,6 +458,7 @@ const config = {
   taskViewerGoofyExpiryDays: Math.max(1, Number(env.TASK_VIEWER_GOOFY_EXPIRY_DAYS || 365)),
   taskViewerGoofyTimeoutMs: Math.max(60_000, Number(env.TASK_VIEWER_GOOFY_TIMEOUT_MS || 180_000)),
   delegateMentionEnabled: envFlag('DELEGATE_MENTION_ENABLED', false),
+  delegateDraftApprovalEnabled: envFlag('DELEGATE_DRAFT_APPROVAL_ENABLED', true),
   delegateUserOpenId: env.DELEGATE_USER_OPEN_ID || '',
   delegateUserNames: splitCsv(env.DELEGATE_USER_NAMES || ''),
   delegateApproverOpenId: env.DELEGATE_APPROVER_OPEN_ID || env.DELEGATE_USER_OPEN_ID || '',
@@ -849,6 +854,10 @@ function extractMessageId(event) {
 
 function extractEventType(event) {
   return findStringDeep(event, ['event_type', 'eventType', 'type']).toLowerCase();
+}
+
+function extractMessageType(event) {
+  return findStringDeep(event, ['msg_type', 'msgType', 'message_type', 'messageType']).toLowerCase();
 }
 
 function extractEventId(event) {
@@ -1288,6 +1297,7 @@ function shouldSkipSender(event, rawText) {
     senderType: extractSenderType(event),
     trace: extractBridgeTrace(rawText),
     botOpenId: config.botOpenId,
+    botAppId: config.botAppId,
     loopIgnoreSenderIds: config.loopIgnoreSenderIds,
     loopAllowSenderIds: config.loopAllowSenderIds,
     loopBotSenderIds: config.loopBotSenderIds,
@@ -4977,13 +4987,14 @@ function buildDelegateDraftPrompt(event, rawText) {
   ].join('\n');
 }
 
-function buildDelegateReviewAutomationPrompt(event, rawText, mrUrls) {
+function buildDelegateReviewAutomationPrompt(event, rawText, mrUrls, options = {}) {
   const chatId = extractChatId(event);
   const messageId = extractMessageId(event);
   const requesterId = extractSenderId(event);
   const requesterName = extractSenderName(event) || requesterId || '对方';
-  const autoApprove = config.delegateReviewAutoApproveEnabled ? '开启' : '关闭';
-  const commentOnIssues = config.delegateReviewCommentOnIssues ? '开启' : '关闭';
+  const readOnly = Boolean(options.readOnly);
+  const autoApprove = !readOnly && config.delegateReviewAutoApproveEnabled ? '开启' : '关闭';
+  const commentOnIssues = !readOnly && config.delegateReviewCommentOnIssues ? '开启' : '关闭';
   const requireCiPass = config.delegateReviewRequireCiPass ? '是' : '否';
 
   return [
@@ -4998,6 +5009,10 @@ function buildDelegateReviewAutomationPrompt(event, rawText, mrUrls) {
     `自动 approve 开关：${autoApprove}`,
     `有问题时发 MR comment 开关：${commentOnIssues}`,
     `approve 前是否要求 CI/检查无失败：${requireCiPass}`,
+    `只读模式：${readOnly ? '是' : '否'}`,
+    readOnly
+      ? '只读模式硬性限制：请求人不是本机 owner，本次禁止任何代码平台写操作，包括 MR comment、approve、disapprove、request changes、merge；只能查询、分析，并在最终输出里给结论。'
+      : '',
     '',
     '原始群消息：',
     rawText,
@@ -5008,9 +5023,11 @@ function buildDelegateReviewAutomationPrompt(event, rawText, mrUrls) {
     '请按顺序完成：',
     '1. 对每个 MR 使用 bytedcli codebase 查询 MR 详情、diff 文件、关键 diff、现有评论和检查状态；优先用 --json。',
     '2. 做真实代码评审：重点看逻辑 bug、线上风险、兼容性、权限/数据安全、并发/超时、错误处理和测试缺口。不要只看标题。',
-    '3. 如果发现问题：若“有问题时发 MR comment 开关”为开启，使用 bytedcli codebase mr review <MR_URL> --comment --body-file <file> 留 MR 级普通评论；只有位置很确定时再使用 draft/publish 行内评论。若开关为关闭，只回复问题摘要，不写代码平台评论。有问题时绝对不要 approve，也不要 disapprove / request changes / 反向审批。',
-    '4. 如果没有发现问题：只有在“自动 approve 开关”为开启、置信度 high、MR 未关闭、没有未处理阻塞评论、且检查状态没有失败时，才执行 bytedcli codebase mr review <MR_URL> --approve --body "LGTM，已检查 diff/评论/检查状态。"。如果 CI 无法确认且要求 CI 无失败，则不要 approve，也不要 disapprove / request changes，只回复需要人工确认 CI。',
-    '5. 操作完成后，只在最终输出里说明逐个 MR 已评论/已 approve/未操作的原因、评审依据和剩余风险；不要自己回复飞书消息，不要泄露 token/secret/JWT/cookie。',
+    '3. 在写任何 MR comment 或 approve 前，必须先完成所有 MR 的全量复核，包括跨 MR/跨仓语义一致性检查；不要发现第一个问题就停止，也不要分多轮追加问题。',
+    '4. 如果发现问题：先汇总每个 MR 当前仍有效的全部阻塞项，去掉已过期、已修复、已被业务明确接受的评论，再形成一次性的“最终阻塞清单”；若“有问题时发 MR comment 开关”为开启，使用 bytedcli codebase mr review <MR_URL> --comment --body-file <file> 留 MR 级普通评论。只有位置很确定时再使用 draft/publish 行内评论。若开关为关闭或只读模式开启，只回复问题摘要，不写代码平台评论。有问题时绝对不要 approve，也不要 disapprove / request changes / 反向审批。',
+    '5. 同一轮 review 中，不能只报告首个 blocker；不能对同一 latest commit 先报一部分问题、之后再补新的阻塞项。若确实需要后续复审，只能针对新 commit 或作者新说明重新评估。',
+    '6. 如果没有发现问题：只有在“自动 approve 开关”为开启、置信度 high、MR 未关闭、没有未处理阻塞评论、且检查状态没有失败时，才执行 bytedcli codebase mr review <MR_URL> --approve --body "LGTM，已检查 diff/评论/检查状态。"。如果 CI 无法确认且要求 CI 无失败，则不要 approve，也不要 disapprove / request changes，只回复需要人工确认 CI。',
+    '7. 操作完成后，只在最终输出里说明逐个 MR 已评论/已 approve/未操作的原因、评审依据和剩余风险；对未 approve 的 MR 明确写出“修完这些即可 A”的最终阻塞清单；不要自己回复飞书消息，不要泄露 token/secret/JWT/cookie。',
   ].join('\n');
 }
 
@@ -5554,7 +5571,7 @@ function shouldAutoSendDelegateReply(approval) {
 async function sendApprovalRequest(approval) {
   const card = buildApprovalCard(approval);
   try {
-    await runCli([
+    const stdout = await runCli([
       'im',
       '+messages-send',
       '--as',
@@ -5568,12 +5585,17 @@ async function sendApprovalRequest(approval) {
       '--idempotency-key',
       `delegate-card-${approval.id}`,
     ]);
+    updateApproval(approval.id, {
+      approvalDelivery: 'card',
+      approvalMessageId: extractSentMessageId(stdout),
+      approvalSentAt: new Date().toISOString(),
+    });
     return;
   } catch (error) {
     console.error(`[bridge] failed to send approval card, falling back to text: ${error.message}`);
   }
 
-  await runCli([
+  const stdout = await runCli([
     'im',
     '+messages-send',
     '--as',
@@ -5602,10 +5624,17 @@ async function sendApprovalRequest(approval) {
     '--idempotency-key',
     `delegate-text-${approval.id}`,
   ]);
+  updateApproval(approval.id, {
+    approvalDelivery: 'text',
+    approvalMessageId: extractSentMessageId(stdout),
+    approvalSentAt: new Date().toISOString(),
+  });
 }
 
 async function shouldHandleDelegateMention(event, rawText) {
   if (!config.delegateMentionEnabled) return false;
+  const reviewAutomationCandidate = shouldHandleDelegateReviewAutomation(rawText);
+  if (!config.delegateDraftApprovalEnabled && !reviewAutomationCandidate) return false;
   if (!config.delegateUserOpenId && !config.delegateUserNames.length) return false;
   if (!config.delegateApproverOpenId) return false;
   if (extractChatType(event) === 'p2p') return false;
@@ -5677,13 +5706,15 @@ async function createDelegateDraft(event, rawText) {
   console.error(`[bridge] delegate draft ${id} approval request sent`);
 }
 
-async function createDelegateReviewAutomation(event, rawText) {
+async function createDelegateReviewAutomation(event, rawText, options = {}) {
   const id = `rev-${shortApprovalId()}`;
   const mrUrls = extractCodebaseMrUrls(rawText);
+  const readOnly = Boolean(options.readOnly);
   const record = {
     id,
     kind: 'mr_review_automation',
     status: 'running',
+    mode: readOnly ? 'read_only' : 'write_capable',
     createdAt: new Date().toISOString(),
     chatId: extractChatId(event),
     originalMessageId: extractMessageId(event),
@@ -5696,7 +5727,7 @@ async function createDelegateReviewAutomation(event, rawText) {
   saveApproval(record);
   console.error(`[bridge] delegate review automation ${id} starting for message ${record.originalMessageId}`);
 
-  const prompt = buildDelegateReviewAutomationPrompt(event, rawText, mrUrls);
+  const prompt = buildDelegateReviewAutomationPrompt(event, rawText, mrUrls, { readOnly });
   const progress = config.delegateReviewProgressCardEnabled
     ? await createProgressReporter(event, ['MR review 自动化', ...mrUrls].join('\n'))
     : null;
@@ -5710,7 +5741,14 @@ async function createDelegateReviewAutomation(event, rawText) {
     console.error(`[bridge] delegate review automation ${id} completed`);
     if (progress) await progress.finish(output);
     if (config.delegateReviewReplyToGroup) {
-      await replyToLark(event, output || '已完成 review 自动化，但 Codex 没有返回文本。');
+      try {
+        await replyToLark(event, output || '已完成 review 自动化，但 Codex 没有返回文本。');
+      } catch (replyError) {
+        updateApproval(id, {
+          replyError: String(replyError?.stack || replyError?.message || replyError),
+        });
+        console.error(`[bridge] delegate review automation ${id} completed but failed to reply: ${replyError.stack || replyError.message}`);
+      }
     }
   } catch (error) {
     updateApproval(id, {
@@ -5746,19 +5784,25 @@ async function handleDelegateMention(event, rawText, options = {}) {
 
     if (shouldHandleDelegateReviewAutomation(rawText)) {
       const reviewClassification = classifyDirectExecution(rawText, { reviewAutomation: true });
+      const canRunReviewDirectly =
+        isReviewAutomationOnlySensitive(reviewClassification) &&
+        canExecuteReviewAutomationDirectly(event, rawText);
       if (
         !allowDirectReviewAutomation ||
-        !isReviewAutomationOnlySensitive(reviewClassification) ||
-        !canExecuteReviewAutomationDirectly(event, rawText)
+        !isReviewAutomationOnlySensitive(reviewClassification)
       ) {
         await createSensitiveOperationApproval(
           event,
           rawText,
           reviewClassification,
         );
+      } else if (!canRunReviewDirectly) {
+        await createDelegateReviewAutomation(event, rawText, { readOnly: true });
       } else {
         await createDelegateReviewAutomation(event, rawText);
       }
+    } else if (!config.delegateDraftApprovalEnabled) {
+      console.error(`[bridge] ${source} skipped delegate draft for ${messageId || '(unknown)'}: delegate draft approvals disabled`);
     } else {
       await createDelegateDraft(event, rawText);
     }
@@ -6357,6 +6401,14 @@ async function executeApprovedSensitiveOperation(approval, operatorOpenId) {
   });
 }
 
+async function respondApprovalBestEffort(respond, message, context) {
+  try {
+    await respond(message);
+  } catch (error) {
+    console.error(`[bridge] failed to notify ${context}: ${error.stack || error.message}`);
+  }
+}
+
 async function handleSensitiveOperationDecision(approval, command, operatorOpenId, respond) {
   if (command.action === 'cancel') {
     updateApproval(command.id, {
@@ -6371,7 +6423,7 @@ async function handleSensitiveOperationDecision(approval, command, operatorOpenI
     ).catch(error => {
       console.error(`[bridge] failed to notify sensitive cancellation: ${error.message}`);
     });
-    await respond(`已拒绝执行：${command.id}`);
+    await respondApprovalBestEffort(respond, `已拒绝执行：${command.id}`, `sensitive cancellation ${command.id}`);
     return;
   }
 
@@ -6380,7 +6432,7 @@ async function handleSensitiveOperationDecision(approval, command, operatorOpenI
     decidedAt: new Date().toISOString(),
     decidedBy: operatorOpenId,
   });
-  await respond(`已同意执行：${command.id}，开始处理。`);
+  await respondApprovalBestEffort(respond, `已同意执行：${command.id}，开始处理。`, `sensitive approval start ${command.id}`);
   const result = await executeApprovedSensitiveOperation(approval, operatorOpenId);
   updateApproval(command.id, {
     status: result.ok ? 'done' : 'failed',
@@ -6388,22 +6440,30 @@ async function handleSensitiveOperationDecision(approval, command, operatorOpenI
     decidedBy: operatorOpenId,
     error: result.error || '',
   });
-  await respond(result.ok ? `执行完成：${command.id}` : `执行失败：${command.id}`);
+  await respondApprovalBestEffort(
+    respond,
+    result.ok ? `执行完成：${command.id}` : `执行失败：${command.id}`,
+    `sensitive approval final ${command.id}`,
+  );
 }
 
 async function handleApprovalDecision(command, operatorOpenId, respond) {
   if (!operatorOpenId || operatorOpenId !== config.delegateApproverOpenId) {
-    await respond('这个确认只能由被代理用户本人操作。');
+    await respondApprovalBestEffort(respond, '这个确认只能由被代理用户本人操作。', `approval owner check ${command.id}`);
     return;
   }
 
   const approval = getApproval(command.id);
   if (!approval) {
-    await respond(`没有找到待确认请求：${command.id}`);
+    await respondApprovalBestEffort(respond, `没有找到待确认请求：${command.id}`, `missing approval ${command.id}`);
     return;
   }
   if (approval.status !== 'pending') {
-    await respond(`请求 ${command.id} 已经是 ${approval.status} 状态，不会重复发送。`);
+    await respondApprovalBestEffort(
+      respond,
+      `请求 ${command.id} 已经是 ${approval.status} 状态，不会重复发送。`,
+      `approval already decided ${command.id}`,
+    );
     return;
   }
 
@@ -6418,7 +6478,7 @@ async function handleApprovalDecision(command, operatorOpenId, respond) {
       decidedAt: new Date().toISOString(),
       decidedBy: operatorOpenId,
     });
-    await respond(`已取消发送：${command.id}`);
+    await respondApprovalBestEffort(respond, `已取消发送：${command.id}`, `delegate cancellation ${command.id}`);
     return;
   }
 
@@ -6431,10 +6491,12 @@ async function handleApprovalDecision(command, operatorOpenId, respond) {
     sentThreadId: sent.threadId || '',
     sentInThread: config.delegateReplyInThread,
   });
-  await respond(
+  await respondApprovalBestEffort(
+    respond,
     config.delegateReplyInThread
       ? `已发送到原消息话题：${command.id}`
       : `已发送到原群并回复原消息：${command.id}`,
+    `delegate approval final ${command.id}`,
   );
 }
 
@@ -6493,6 +6555,7 @@ async function handleCardActionEvent(event) {
   }
 
   const operatorOpenId = extractCardOperatorOpenId(event);
+  let responseCount = 0;
   await handleApprovalDecision(
     {
       id,
@@ -6500,6 +6563,19 @@ async function handleCardActionEvent(event) {
     },
     operatorOpenId,
     async message => {
+      responseCount += 1;
+      const approval = getApproval(id);
+      if (approval) {
+        try {
+          await replyToLark(eventFromApproval(approval), message, {
+            idempotencyKey: `delegate-action-thread-${id}-${action}-${responseCount}-${randomUUID()}`,
+          });
+          return;
+        } catch (error) {
+          console.error(`[bridge] failed to notify approval action in original thread: ${error.message}`);
+        }
+      }
+
       const targetOpenId = operatorOpenId || config.delegateApproverOpenId;
       if (targetOpenId) {
         await runCli([
@@ -6564,6 +6640,26 @@ function messageSenderType(message) {
   return String(message?.sender?.sender_type || message?.sender_type || '').toLowerCase();
 }
 
+function messageSenderId(message) {
+  const sender = message?.sender || {};
+  return String(sender.id || sender.open_id || sender.openId || message?.sender_id || message?.senderId || '');
+}
+
+function messageType(message) {
+  return String(message?.msg_type || message?.msgType || message?.message_type || message?.messageType || '').toLowerCase();
+}
+
+function skipReasonForListedMessage(message, rawText = message?.content || '') {
+  return shouldSkipBridgeGeneratedMessage({
+    rawText,
+    messageType: messageType(message),
+    deleted: isDeletedLarkMessage(message),
+    senderId: messageSenderId(message),
+    botOpenId: config.botOpenId,
+    botAppId: config.botAppId,
+  });
+}
+
 function textContainsAnyKeyword(text, keywords = []) {
   const source = String(text || '').toLowerCase();
   return keywords.some(keyword => {
@@ -6575,6 +6671,7 @@ function textContainsAnyKeyword(text, keywords = []) {
 function globalSearchAllowsMessage(message) {
   const chatId = message?.chat_id || message?.chatId || '';
   if (!chatId) return false;
+  if (skipReasonForListedMessage(message)) return false;
   if (
     config.delegateGlobalSearchAllowedChatIds.length &&
     !config.delegateGlobalSearchAllowedChatIds.includes(chatId)
@@ -6650,10 +6747,26 @@ async function handlePolledMessage(chatId, message, now = Date.now(), options = 
   } = options;
   const messageId = message?.message_id || '';
   if (!messageId || seenMessages.has(messageId) || approvalExistsForMessage(messageId)) return false;
+  const listedSkipReason = skipReasonForListedMessage(message);
+  if (listedSkipReason) {
+    if (config.debug) console.error(`[bridge] skipped polled message ${messageId}: ${listedSkipReason}`);
+    return false;
+  }
 
   const event = listedMessageToEvent(chatId, message);
   const rawText = extractText(event).trim();
   if (!rawText) return false;
+  const eventSkipReason = shouldSkipBridgeGeneratedMessage({
+    rawText,
+    messageType: extractMessageType(event) || messageType(message),
+    senderId: extractSenderId(event),
+    botOpenId: config.botOpenId,
+    botAppId: config.botAppId,
+  });
+  if (eventSkipReason) {
+    if (config.debug) console.error(`[bridge] skipped polled message ${messageId}: ${eventSkipReason}`);
+    return false;
+  }
 
   const createdAt = parseMessageTimeMs(message);
   if (createdAt && now - createdAt > config.delegatePollMaxAgeMs) return false;
@@ -6835,7 +6948,22 @@ async function buildReply(prompt, options = {}) {
 }
 
 function runCli(args, stdin = '', options = {}) {
-  return runProcess(config.larkCliBin, args, { stdin, ...options }).then(({ stdout }) => stdout);
+  return runProcess(config.larkCliBin, normalizeLarkCliArgs(args), { stdin, ...options }).then(({ stdout }) => stdout);
+}
+
+function normalizeLarkCliArgs(args) {
+  return args.map((arg, index) => (
+    args[index - 1] === '--idempotency-key' ? safeIdempotencyKey(arg) : arg
+  ));
+}
+
+function safeIdempotencyKey(value) {
+  const raw = String(value || `bridge-${randomUUID()}`)
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, '-');
+  if (raw.length <= 60) return raw;
+  const digest = createHash('sha256').update(raw).digest('hex').slice(0, 12);
+  return `${raw.slice(0, 47)}-${digest}`;
 }
 
 function bridgeVersion() {
@@ -7930,6 +8058,19 @@ async function handleEvent(event) {
 
   const rawText = extractText(event).trim();
   if (!rawText) return;
+  const generatedSkipReason = shouldSkipBridgeGeneratedMessage({
+    rawText,
+    messageType: extractMessageType(event),
+    senderId: extractSenderId(event),
+    botOpenId: config.botOpenId,
+    botAppId: config.botAppId,
+  });
+  if (generatedSkipReason) {
+    if (config.debug && messageId) {
+      console.error(`[bridge] skipped message ${messageId}: ${generatedSkipReason}`);
+    }
+    return;
+  }
   const skipReason = shouldSkipSender(event, rawText);
   if (skipReason) {
     if (config.debug && messageId) {
@@ -8081,6 +8222,10 @@ async function handleEvent(event) {
     );
 
   if (classification.sensitive && !canRunSensitiveDirectly) {
+    if (reviewAutomation && isReviewAutomationOnlySensitive(classification)) {
+      await createDelegateReviewAutomation(event, rawText, { readOnly: true });
+      return;
+    }
     await createSensitiveOperationApproval(event, rawText, classification);
     return;
   }

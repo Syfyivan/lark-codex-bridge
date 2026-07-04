@@ -55,25 +55,39 @@ jobs:
 
       - name: Build package
         shell: bash
-        env:
-          TAG_BUILD: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || 'false' }}
         run: |
-          publish=never
-          if [[ "$TAG_BUILD" == "true" ]]; then
-            publish=always
-          fi
-
           if [[ "$RUNNER_OS" == "macOS" && -z "${CSC_LINK:-}" ]]; then
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER
             export CSC_IDENTITY_AUTO_DISCOVERY=false
-            publish=never
           fi
 
           if [[ "$RUNNER_OS" == "Windows" && -z "${WIN_CSC_LINK:-}" ]]; then
             unset WIN_CSC_LINK WIN_CSC_KEY_PASSWORD
           fi
 
-          pnpm --dir packages/kodama exec electron-builder --publish "$publish"
+          pnpm --dir packages/kodama exec electron-builder --publish never
+
+      - name: Publish mac release assets
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        run: |
+          version="$(node -p "require('./packages/kodama/package.json').version")"
+          tag="${GITHUB_REF_NAME}"
+          title="Kodama v${version}"
+          notes="Kodama ${version} release built from ${GITHUB_SHA}."
+          assets=(
+            "packages/kodama/dist/Kodama-${version}-arm64-mac.zip"
+            "packages/kodama/dist/Kodama-${version}-arm64-mac.zip.blockmap"
+            "packages/kodama/dist/Kodama-${version}-arm64.dmg"
+            "packages/kodama/dist/Kodama-${version}-arm64.dmg.blockmap"
+            "packages/kodama/dist/latest-mac.yml"
+          )
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" --verify-tag --title "$title" --notes "$notes" --latest
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

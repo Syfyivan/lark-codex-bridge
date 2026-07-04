@@ -10,8 +10,11 @@ separate source of release truth.
 - Pushing `main` only syncs code. It does not ship a user update.
 - A public Kodama release is created by bumping `packages/kodama/package.json`
   and pushing an annotated tag named `kodama-vX.Y.Z`.
-- The GitHub Actions workflow for `kodama-v*` builds the app and publishes
-  release assets to `Syfyivan/lark-codex-bridge`.
+- The GitHub Actions workflow for `kodama-v*` builds the app. The macOS job
+  publishes the canonical auto-update assets to `Syfyivan/lark-codex-bridge`
+  under the same `kodama-vX.Y.Z` tag.
+- `electron-builder --publish` stays disabled in CI. This avoids its default
+  `vX.Y.Z` draft releases, which do not match Kodama's tag namespace.
 - Packaged apps read that GitHub Release metadata. Development runs
   (`pnpm start`) deliberately do not check remote updates.
 
@@ -47,8 +50,8 @@ Before tagging:
 6. Commit the version/documentation/sync changes.
 7. Push `main`, tag `kodama-vX.Y.Z`, then push the tag.
 
-After tagging, wait for the GitHub Action to finish and confirm the release has
-the macOS auto-update assets:
+After tagging, wait for the GitHub Action to finish and confirm the
+`kodama-vX.Y.Z` release has the macOS auto-update assets:
 
 - `Kodama-X.Y.Z-arm64-mac.zip`
 - `Kodama-X.Y.Z-arm64-mac.zip.blockmap`

@@ -314,7 +314,7 @@ test('hook agent registry exposes claude and codex descriptors', () => {
   }
 
   const traeEvents = HOOK_AGENTS_BY_ID.get('trae').hookConfig.events
-  for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']) {
+  for (const ev of ['SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']) {
     assert.ok(traeEvents.includes(ev), `trae events include ${ev}`)
   }
   assert.equal(HOOK_AGENTS_BY_ID.get('trae-cli').hookConfig.configFormat, 'trae-cli-toml')

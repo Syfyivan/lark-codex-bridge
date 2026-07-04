@@ -6,9 +6,14 @@ const path = require('path')
 const TRAE_CORE_HOOK_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
+  'PermissionRequest',
+  'Notification',
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'Stop',
+  'StopFailure',
+  'SessionEnd',
 ]
 
 const TRAE_CLI_HOOK_EVENTS = [

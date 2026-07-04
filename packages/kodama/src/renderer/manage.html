@@ -40,6 +40,13 @@
     .num input { width: 72px; padding: 4px 6px; border: 1px solid rgba(111,125,145,.3); border-radius: 6px; font: inherit; }
     .btn { border: 1px solid #5d6ee8; background: #5d6ee8; color: #fff; border-radius: 8px; padding: 5px 14px; font: inherit; cursor: pointer; }
     .btn:hover { background: #4d5ed8; }
+    .btn.secondary { background: #fff; color: #5d6ee8; }
+    .btn.secondary:hover { background: #eef0fe; }
+    .btn:disabled { border-color: #cfd6e0; background: #f2f4f8; color: #aab3c0; cursor: not-allowed; }
+    .update-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: start; }
+    .update-row strong { display: block; color: #3a4658; font-size: 13px; }
+    .update-row .muted { margin-top: 4px; }
+    .update-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     .stat { background: #f6f8fb; border-radius: 8px; padding: 8px 10px; }
     .stat b { display: block; font-size: 16px; }
@@ -94,6 +101,20 @@
     <div class="toggle"><span>声音</span><button class="switch" id="soundEnabled"></button></div>
     <div class="toggle"><span>系统通知</span><button class="switch" id="notificationsEnabled"></button></div>
     <div class="toggle"><span>语音播报 (TTS · macOS say)</span><button class="switch" id="ttsEnabled"></button></div>
+  </section>
+
+  <section class="card">
+    <h2>更新</h2>
+    <div class="update-row">
+      <div>
+        <strong id="updateStatusText">正在读取更新状态...</strong>
+        <p class="muted">安装版启动后会自动检查；这里也可以手动检查和安装。本地 dev 版不走安装版更新器。</p>
+      </div>
+      <div class="update-actions">
+        <button id="checkUpdate" class="btn secondary" type="button">检查更新</button>
+        <button id="installUpdate" class="btn" type="button" hidden>安装更新</button>
+      </div>
+    </div>
   </section>
 
   <section class="card">

@@ -59,6 +59,9 @@ const settingBubbleGap = document.getElementById('setting-bubble-gap')
 const settingBubbleGapValue = document.getElementById('setting-bubble-gap-value')
 const settingExportConfig = document.getElementById('setting-export-config')
 const settingImportConfig = document.getElementById('setting-import-config')
+const settingUpdateStatus = document.getElementById('setting-update-status')
+const settingCheckUpdate = document.getElementById('setting-check-update')
+const settingInstallUpdate = document.getElementById('setting-install-update')
 const settingMovePet = document.getElementById('setting-move-pet')
 const settingHidePet = document.getElementById('setting-hide-pet')
 const bubbleHoverTip = document.createElement('div')
@@ -144,6 +147,7 @@ let refreshMouseInteractivity = () => {}
 let bubbleActionCooldownUntil = 0
 let bubbleActionCooldownTimer = 0
 let activeViewedTarget = { key: '', at: 0 }
+let updateStatus = null
 
 function clampNumber(value, min, max, fallback) {
   const n = Number(value)
@@ -401,6 +405,7 @@ async function init() {
     window.pet.onEnterMoveMode?.(() => enterMoveMode())
     window.pet.onSetDndMode?.((enabled) => setDndMode(enabled === true))
     setupEventPanel()
+    setupUpdateStatus()
     window.pet.onEquipAccessory?.((request) => {
       const result = equipAccessory(request)
       if (!result.ok) {
@@ -1705,6 +1710,8 @@ function setupEventPanel() {
   })
   settingExportConfig?.addEventListener('click', exportConfigToClipboard)
   settingImportConfig?.addEventListener('click', importConfigFromClipboard)
+  settingCheckUpdate?.addEventListener('click', checkUpdatesFromSettings)
+  settingInstallUpdate?.addEventListener('click', installUpdateFromSettings)
   settingMovePet?.addEventListener('click', () => enterMoveMode())
   settingHidePet?.addEventListener('click', () => window.pet.setHidden?.(true))
   eventPanel?.addEventListener('click', (e) => {
@@ -1734,6 +1741,102 @@ function setupEventPanel() {
     if (bridgeItem) openBridgeTasksWindow()
   })
   syncEventPanel()
+}
+
+function setupUpdateStatus() {
+  syncUpdateControls()
+  window.pet.onUpdateStatus?.((status) => {
+    updateStatus = status || null
+    syncUpdateControls()
+  })
+  window.pet.getUpdateStatus?.()
+    .then((status) => {
+      updateStatus = status || null
+      syncUpdateControls()
+    })
+    .catch((error) => {
+      updateStatus = { error: error?.message || String(error) }
+      syncUpdateControls()
+    })
+}
+
+function updateProgressText(status) {
+  const percent = status?.progress && Number.isFinite(status.progress.percent)
+    ? `${Math.round(status.progress.percent)}%`
+    : ''
+  return percent ? `下载中 ${percent}` : '正在下载'
+}
+
+function formatUpdateStatus(status) {
+  if (!status) return '正在读取更新状态...'
+  const current = status.currentVersion ? `当前 ${status.currentVersion}` : '当前版本未知'
+  if (status.checking) return `${current} · 正在检查更新...`
+  if (status.downloaded) {
+    const version = status.version ? ` ${status.version}` : ''
+    return `已下载${version} · 点击安装会重启`
+  }
+  if (status.available) {
+    const version = status.version ? ` ${status.version}` : ''
+    return `发现更新${version} · ${updateProgressText(status)}`
+  }
+  if (status.error) return `${current} · 更新失败：${shortText(status.error, 42)}`
+  if (!status.supported) {
+    return status.disabledReason === 'development mode'
+      ? `${current} · 开发模式不支持自动更新`
+      : `${current} · 更新不可用`
+  }
+  return status.lastCheckedAt ? `${current} · 已是最新` : `${current} · 可手动检查`
+}
+
+function syncUpdateControls() {
+  if (settingUpdateStatus) settingUpdateStatus.textContent = formatUpdateStatus(updateStatus)
+  const checking = updateStatus?.checking === true
+  const downloading = updateStatus?.available === true && updateStatus?.downloaded !== true && Boolean(updateStatus?.progress)
+  const downloaded = updateStatus?.downloaded === true
+  if (settingCheckUpdate) {
+    settingCheckUpdate.disabled = checking || downloading || downloaded
+    settingCheckUpdate.textContent = checking ? '检查中...' : downloaded ? '已下载' : '检查更新'
+    settingCheckUpdate.title = updateStatus?.supported === false
+      ? '本地 dev 版不能用安装版更新器；打包安装版可检查 GitHub Releases'
+      : '检查 GitHub Releases 更新'
+  }
+  if (settingInstallUpdate) {
+    settingInstallUpdate.hidden = !downloaded
+    settingInstallUpdate.disabled = !downloaded
+  }
+}
+
+async function checkUpdatesFromSettings() {
+  try {
+    updateStatus = await window.pet.checkForUpdates?.()
+    syncUpdateControls()
+    if (updateStatus?.supported === false) {
+      say('开发模式不会检查安装版更新；打包安装版可在这里手动检查', 3200)
+    } else if (updateStatus?.downloaded) {
+      say('更新已下载，可以安装', 2200)
+    } else if (updateStatus?.available) {
+      say('发现新版本，正在下载', 2200)
+    } else if (updateStatus?.lastCheckedAt) {
+      say('已经是最新版本', 1800)
+    }
+  } catch (error) {
+    updateStatus = { ...(updateStatus || {}), checking: false, error: error?.message || String(error) }
+    syncUpdateControls()
+    say(`检查更新失败：${error?.message || error}`, 3200)
+  }
+}
+
+async function installUpdateFromSettings() {
+  try {
+    const result = await window.pet.installUpdate?.()
+    if (!result?.ok) {
+      say(`安装更新失败：${result?.error || '还没有下载完成'}`, 3200)
+      return
+    }
+    say('正在安装更新，Kodama 会重启', 2200)
+  } catch (error) {
+    say(`安装更新失败：${error?.message || error}`, 3200)
+  }
 }
 
 async function exportConfigToClipboard() {

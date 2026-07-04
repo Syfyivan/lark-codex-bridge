@@ -776,6 +776,33 @@ body.move-mode:active {
   gap: 6px;
 }
 
+.update-setting {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.update-copy {
+  min-width: 0;
+}
+
+.update-copy small {
+  display: block;
+  min-height: 16px;
+  color: #68778b;
+  font-size: 11px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.update-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+
 .settings-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -783,7 +810,8 @@ body.move-mode:active {
 }
 
 .window-size-buttons button,
-.config-buttons button {
+.config-buttons button,
+.update-buttons button {
   height: 28px;
   border: 1px solid rgba(111, 125, 145, 0.22);
   border-radius: 7px;
@@ -805,9 +833,16 @@ body.move-mode:active {
 
 .settings-action:hover,
 .window-size-buttons button:hover,
-.config-buttons button:hover {
+.config-buttons button:hover,
+.update-buttons button:hover {
   background: #eef5ff;
   color: #23549a;
+}
+
+.update-buttons button:disabled {
+  cursor: not-allowed;
+  background: #f2f4f8;
+  color: #9aa6b5;
 }
 
 .settings-action.active {

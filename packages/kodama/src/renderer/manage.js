@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id)
 const setStatus = (t) => { const el = $('status'); if (el) el.textContent = t }
+let currentUpdateStatus = null
 
 // patch a single ui setting → main → pet renderer (applies + saves + reports back)
 function patch(key, value) {
@@ -69,6 +70,114 @@ function bindPomodoro() {
       setStatus('番茄钟设置已更新')
     })
   }
+}
+
+function shortText(text, max = 64) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized
+}
+
+function updateProgressText(status) {
+  const percent = status?.progress && Number.isFinite(status.progress.percent)
+    ? `${Math.round(status.progress.percent)}%`
+    : ''
+  return percent ? `下载中 ${percent}` : '正在下载'
+}
+
+function formatUpdateStatus(status) {
+  if (!status) return '正在读取更新状态...'
+  const current = status.currentVersion ? `当前 ${status.currentVersion}` : '当前版本未知'
+  if (status.checking) return `${current} · 正在检查更新...`
+  if (status.downloaded) {
+    const version = status.version ? ` ${status.version}` : ''
+    return `已下载${version} · 点击安装会重启`
+  }
+  if (status.available) {
+    const version = status.version ? ` ${status.version}` : ''
+    return `发现更新${version} · ${updateProgressText(status)}`
+  }
+  if (status.error) return `${current} · 更新失败：${shortText(status.error, 56)}`
+  if (!status.supported) {
+    return status.disabledReason === 'development mode'
+      ? `${current} · 开发模式不支持自动更新`
+      : `${current} · 更新不可用`
+  }
+  return status.lastCheckedAt ? `${current} · 已是最新` : `${current} · 可手动检查`
+}
+
+function syncUpdateControls() {
+  const checking = currentUpdateStatus?.checking === true
+  const downloading = currentUpdateStatus?.available === true
+    && currentUpdateStatus?.downloaded !== true
+    && Boolean(currentUpdateStatus?.progress)
+  const downloaded = currentUpdateStatus?.downloaded === true
+  const text = $('updateStatusText')
+  const check = $('checkUpdate')
+  const install = $('installUpdate')
+  if (text) text.textContent = formatUpdateStatus(currentUpdateStatus)
+  if (check) {
+    check.disabled = checking || downloading || downloaded
+    check.textContent = checking ? '检查中...' : downloaded ? '已下载' : '检查更新'
+    check.title = currentUpdateStatus?.supported === false
+      ? '本地 dev 版不能用安装版更新器；打包安装版可检查 GitHub Releases'
+      : '检查 GitHub Releases 更新'
+  }
+  if (install) {
+    install.hidden = !downloaded
+    install.disabled = !downloaded
+  }
+}
+
+async function checkUpdates() {
+  try {
+    currentUpdateStatus = await window.pet.checkForUpdates?.()
+    syncUpdateControls()
+    if (currentUpdateStatus?.supported === false) {
+      setStatus('开发模式不会检查安装版更新')
+    } else if (currentUpdateStatus?.downloaded) {
+      setStatus('更新已下载，可以安装')
+    } else if (currentUpdateStatus?.available) {
+      setStatus('发现新版本，正在下载')
+    } else if (currentUpdateStatus?.lastCheckedAt) {
+      setStatus('已经是最新版本')
+    }
+  } catch (error) {
+    currentUpdateStatus = { ...(currentUpdateStatus || {}), checking: false, error: error?.message || String(error) }
+    syncUpdateControls()
+    setStatus(`检查更新失败：${error?.message || error}`)
+  }
+}
+
+async function installUpdate() {
+  try {
+    const result = await window.pet.installUpdate?.()
+    if (!result?.ok) {
+      setStatus(`安装更新失败：${result?.error || '还没有下载完成'}`)
+      return
+    }
+    setStatus('正在安装更新，Kodama 会重启')
+  } catch (error) {
+    setStatus(`安装更新失败：${error?.message || error}`)
+  }
+}
+
+function bindUpdateControls() {
+  $('checkUpdate')?.addEventListener('click', checkUpdates)
+  $('installUpdate')?.addEventListener('click', installUpdate)
+  window.pet.onUpdateStatus?.((status) => {
+    currentUpdateStatus = status || null
+    syncUpdateControls()
+  })
+  window.pet.getUpdateStatus?.()
+    .then((status) => {
+      currentUpdateStatus = status || null
+      syncUpdateControls()
+    })
+    .catch((error) => {
+      currentUpdateStatus = { error: error?.message || String(error) }
+      syncUpdateControls()
+    })
+  syncUpdateControls()
 }
 
 // ---- apply current state into the controls ----
@@ -253,6 +362,7 @@ async function init() {
   bindSegments()
   bindSwitches()
   bindPomodoro()
+  bindUpdateControls()
   $('petAction')?.addEventListener('click', () => { window.pet.petAction?.(); setStatus('摸了摸桌宠~') })
   $('feedPet')?.addEventListener('click', () => { window.pet.feedPet?.(); setStatus('投喂了桌宠~'); setTimeout(refreshStats, 600) })
 

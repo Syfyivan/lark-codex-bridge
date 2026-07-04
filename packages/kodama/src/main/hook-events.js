@@ -179,7 +179,17 @@ function isCodexTitleGenerationNotify(data) {
     && hasOnlyTitleJson(data['last-assistant-message'])
 }
 
+function isCodexInternalMemoryPath(value) {
+  const normalized = String(value || '').replace(/\\/g, '/')
+  return /(^|\/)\.codex\/memories(\/|$)/.test(normalized)
+}
+
+function isCodexInternalMemoryNotify(data) {
+  return isCodexInternalMemoryPath(localContext(data).cwd)
+}
+
 function codexNotifyToEvent(data) {
+  if (isCodexInternalMemoryNotify(data)) return null
   if (data.type === 'agent-turn-complete') {
     if (isCodexTitleGenerationNotify(data)) return null
     const event = withLocalContext({ type: 'task_done', source: 'local', text: clampText(data['last-assistant-message']) }, data)

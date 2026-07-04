@@ -38,6 +38,37 @@ test('codex internal title-generation notify is ignored', () => {
   assert.equal(event, null)
 })
 
+test('codex internal memory maintenance notify is ignored', () => {
+  const event = mapHookToEvent({
+    type: 'agent-turn-complete',
+    'last-assistant-message': '完成',
+    'input-messages': ['update memories'],
+    session_id: 'memory-session',
+    'thread-id': 'memory-thread',
+    client: 'Codex Desktop',
+    cwd: '/Users/bytedance/.codex/memories',
+  })
+  assert.equal(event, null)
+})
+
+test('ordinary projects named memories are still surfaced', () => {
+  const event = mapHookToEvent({
+    type: 'agent-turn-complete',
+    'last-assistant-message': '完成',
+    session_id: 'normal-session',
+    client: 'Codex Desktop',
+    cwd: '/Users/bytedance/code/memories',
+  })
+  assert.deepEqual(event, {
+    type: 'task_done',
+    source: 'local',
+    text: '完成',
+    sessionId: 'normal-session',
+    client: 'Codex Desktop',
+    cwd: '/Users/bytedance/code/memories',
+  })
+})
+
 test('claude subagent lifecycle maps to local progress bubbles', () => {
   assert.deepEqual(mapHookToEvent({ hook_event_name: 'SubagentStart', subagent_name: 'verifier' }), {
     type: 'task_progress',

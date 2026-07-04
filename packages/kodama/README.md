@@ -223,6 +223,7 @@ pnpm start
 - **开发态启动**：`pnpm start` 或 `pnpm run start:detached`。
 - **开机自启**：菜单栏 Kodama →「开机自启」。开发态会用当前 Electron + app 路径注册；打包后用应用自身注册。
 - **自动更新**：打包版本会在启动后检查 GitHub Releases，托盘菜单提供「检查更新 / 安装更新」。本地开发态不会检查远端更新。
+- **发版规则**：只有打 `kodama-v*` tag 才发布用户更新；普通 push 只是同步代码。具体门槛和检查清单见 [`docs/release-policy.md`](docs/release-policy.md)。
 - **macOS 包**：`pnpm run pack` 生成目录包，`pnpm run dist:mac` 生成 `.dmg` + `.zip`；`.zip` 是 macOS 自动更新所需。公开分发前需要 Developer ID 签名和 notarization（CI 通过 `MAC_CSC_LINK` / `MAC_CSC_KEY_PASSWORD` / `APPLE_*` secrets 注入）。
 - **Windows/Linux**：`dist:win` 产出 NSIS，`dist:linux` 产出 AppImage，并通过 GitHub Releases 发布更新 metadata；置顶、托盘、穿透和安装器仍需要对应平台实机验证。
 

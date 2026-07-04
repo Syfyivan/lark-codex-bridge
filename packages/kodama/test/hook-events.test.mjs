@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { test } from 'node:test'
 
 import { mapHookToEvent } from '../src/main/hook-events.js'
@@ -233,8 +234,9 @@ test('hook agent registry exposes claude and codex descriptors', () => {
     assert.equal(typeof cfg.settingsPath, 'function')
     assert.equal(typeof cfg.allowCreate, 'boolean')
     assert.ok(Array.isArray(cfg.events) && cfg.events.length > 0, `${agent.id} has events`)
-    const resolved = cfg.settingsPath('/home/test')
-    assert.ok(resolved.startsWith('/home/test/'), `${agent.id} settingsPath honors home`)
+    const fakeHome = path.join(path.sep, 'home', 'test')
+    const resolved = cfg.settingsPath(fakeHome)
+    assert.ok(resolved.startsWith(`${fakeHome}${path.sep}`), `${agent.id} settingsPath honors home`)
   }
 
   // The new Claude events must be wired into the registry surface.

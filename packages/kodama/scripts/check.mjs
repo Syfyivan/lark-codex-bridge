@@ -16,6 +16,7 @@ const CJS = [
   'src/main/index.js',
   'src/main/preload.js',
   'src/main/hook-events.js',
+  'src/main/terminal-launcher.js',
   'src/main/agents/claude.js',
   'src/main/agents/codex.js',
   'src/main/agents/registry.js',

@@ -719,6 +719,10 @@ body.move-mode:active {
   background: #eef3f8;
 }
 
+.segmented-control-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .segmented-control button {
   height: 24px;
   border: 0;

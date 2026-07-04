@@ -38,6 +38,7 @@ const settingPetOpacityValue = document.getElementById('setting-pet-opacity-valu
 const settingHitboxScale = document.getElementById('setting-hitbox-scale')
 const settingHitboxScaleValue = document.getElementById('setting-hitbox-scale-value')
 const settingTriggerMode = document.getElementById('setting-trigger-mode')
+const settingTerminalLauncher = document.getElementById('setting-terminal-launcher')
 const settingEdgeMode = document.getElementById('setting-edge-mode')
 const settingPettingEnabled = document.getElementById('setting-petting-enabled')
 const settingWanderEnabled = document.getElementById('setting-wander-enabled')
@@ -103,6 +104,7 @@ let bridgeTasksState = {
 }
 const UI_SETTINGS_VERSION = 3
 const CORNERS = new Set(['auto', 'near', 'top-left', 'top-right', 'bottom-left', 'bottom-right'])
+const TERMINAL_LAUNCHERS = new Set(['auto', 'cmux', 'orca'])
 const MOVE_MODE_MS = 15000
 const DEFAULT_UI_SETTINGS = {
   version: UI_SETTINGS_VERSION,
@@ -110,6 +112,7 @@ const DEFAULT_UI_SETTINGS = {
   petOpacity: 0.82,
   hitboxScale: 0.35,
   triggerMode: 'right',
+  terminalLauncher: 'auto',
   edgeMode: 'half',
   pettingEnabled: true,
   wanderEnabled: false,
@@ -155,6 +158,7 @@ function normalizeUiSettings(source = {}) {
     petOpacity: clampNumber(source.petOpacity, 0.25, 1, DEFAULT_UI_SETTINGS.petOpacity),
     hitboxScale: clampNumber(source.hitboxScale, 0.25, 1, DEFAULT_UI_SETTINGS.hitboxScale),
     triggerMode: source.triggerMode === 'left' ? 'left' : 'right',
+    terminalLauncher: TERMINAL_LAUNCHERS.has(source.terminalLauncher) ? source.terminalLauncher : DEFAULT_UI_SETTINGS.terminalLauncher,
     edgeMode: source.edgeMode === 'inside' ? 'inside' : DEFAULT_UI_SETTINGS.edgeMode,
     pettingEnabled: source.pettingEnabled !== false,
     wanderEnabled: source.wanderEnabled === true,
@@ -1627,6 +1631,21 @@ function setupEventPanel() {
     saveUiSettings()
     applyUiSettings()
   })
+  settingTerminalLauncher?.addEventListener('click', (e) => {
+    const button = e.target.closest?.('[data-terminal-launcher]')
+    if (!button) return
+    uiSettings.terminalLauncher = TERMINAL_LAUNCHERS.has(button.dataset.terminalLauncher)
+      ? button.dataset.terminalLauncher
+      : DEFAULT_UI_SETTINGS.terminalLauncher
+    saveUiSettings()
+    applyUiSettings()
+    const label = uiSettings.terminalLauncher === 'orca'
+      ? 'Orca'
+      : uiSettings.terminalLauncher === 'cmux'
+        ? 'cmux'
+        : '自动'
+    say(`终端跳转：${label}`, 1800)
+  })
   settingEdgeMode?.addEventListener('click', (e) => {
     const button = e.target.closest?.('[data-edge-mode]')
     if (!button) return
@@ -1879,9 +1898,11 @@ async function openTarget(target) {
   const text = target.kind === 'local-path'
     ? '正在打开本地记录'
     : target.kind === 'terminal-session'
-      ? result.method === 'open cmux app' || result.method === 'cmux focus'
-        ? '正在打开 cmux'
-        : '正在打开 Agent 终端'
+      ? result.method === 'open Orca app'
+        ? '正在打开 Orca'
+        : result.method === 'open cmux app' || result.method === 'cmux focus'
+          ? '正在打开 cmux'
+          : '正在打开 Agent 终端'
       : target.kind === 'codex-thread'
         ? '正在打开 Codex 会话'
         : '正在打开飞书会话'
@@ -2025,6 +2046,11 @@ function syncSettingControls() {
   if (settingTriggerMode) {
     settingTriggerMode.querySelectorAll('[data-trigger-mode]').forEach((button) => {
       button.classList.toggle('active', button.dataset.triggerMode === uiSettings.triggerMode)
+    })
+  }
+  if (settingTerminalLauncher) {
+    settingTerminalLauncher.querySelectorAll('[data-terminal-launcher]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.terminalLauncher === uiSettings.terminalLauncher)
     })
   }
   if (settingEdgeMode) {

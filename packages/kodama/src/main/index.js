@@ -8,6 +8,13 @@ const { createPomodoro } = require('./pomodoro')
 const { mapHookToEvent } = require('./hook-events')
 const { HOOK_AGENTS } = require('./agents/registry')
 const {
+  normalizeTerminalLauncher,
+  isCmuxAppPath,
+  isOrcaAppPath,
+  shouldPreferOrca,
+  shouldTryCmux,
+} = require('./terminal-launcher')
+const {
   registerAutoUpdater,
   checkForUpdates,
   installDownloadedUpdate,
@@ -776,6 +783,10 @@ function appPathFromCommand(command) {
 
 const isAgentCommand = (command) => /(^|\/|\s)(claude|codex)(\s|$)/i.test(String(command || ''))
 
+function terminalLauncherPreference() {
+  return normalizeTerminalLauncher(lastUiSettings?.terminalLauncher)
+}
+
 // Working directory of a pid via lsof (used to locate an agent session whose id
 // isn't on its argv — e.g. Claude Code, where we only know the cwd).
 async function processCwd(pid) {
@@ -835,6 +846,14 @@ function cmuxBinPath() {
 function cmuxAppPath() {
   const bin = cmuxBinPath()
   return bin ? bin.replace(/\/Contents\/.*$/, '') : ''
+}
+
+function orcaAppPath() {
+  for (const base of ['/Applications', path.join(app.getPath('home'), 'Applications')]) {
+    const p = path.join(base, 'Orca.app')
+    if (fs.existsSync(p)) return p
+  }
+  return ''
 }
 
 function bareTty(value) {
@@ -1146,6 +1165,25 @@ async function openCmuxFallback(target, rec, reason) {
   }
 }
 
+async function openOrcaFallback(target, rec, foundAppPath, reason) {
+  const appPath = isOrcaAppPath(foundAppPath) ? foundAppPath : orcaAppPath()
+  if (!appPath) return null
+  if (!await openAppPath(appPath)) return null
+  logJump('open Orca app', {
+    session: target?.sessionId || '',
+    reason,
+    appPath,
+    tty: rec?.tty || '',
+  })
+  return {
+    ok: true,
+    method: 'open Orca app',
+    appPath,
+    reason,
+    tty: rec?.tty || '',
+  }
+}
+
 // Append-only, self-trimming jump log so a misfire can be diagnosed without
 // knowing the internals: each line records which path won (cmux focus / Terminal
 // tty / open host app / failed) and how cmux matched (surface vs tty fallback).
@@ -1175,13 +1213,27 @@ async function openTerminalSessionTarget(target) {
     window: cached?.window || '',
     panelId: cached?.panelId || '',
   }
+  const foundAppPath = String(found?.appPath || '')
+  const launcher = terminalLauncherPreference()
+
+  // If Claude is running inside Orca, opening Orca is more faithful than cmux.
+  // Explicit cmux preference still wins for users who want cmux as the launcher.
+  if (shouldPreferOrca(launcher, foundAppPath)) {
+    const orca = await openOrcaFallback(target, rec, foundAppPath, launcher === 'orca' ? 'preference' : 'detected-host-app')
+    if (orca) return { ...orca, pid: found?.pid || null }
+    if (launcher === 'orca') {
+      const error = found ? 'orca-unavailable' : 'agent-process-not-found'
+      logJump('failed', { session: target?.sessionId || '', error, preference: 'orca' })
+      return { ok: false, error }
+    }
+  }
 
   // Prefer cmux: focus the exact surface/pane rather than re-opening the app
   // (which used to spawn a stray cmux instead of jumping).
-  if ((rec.surface || rec.tty || rec.panelId || target?.cwd) && cmuxBinPath()) {
+  if (shouldTryCmux(launcher) && (rec.surface || rec.tty || rec.panelId || target?.cwd) && cmuxBinPath()) {
     const cmux = await focusCmuxForSession(rec, target)
     if (cmux) {
-      await openAppPath(found?.appPath || cmuxBinPath().replace(/\/Contents\/.*$/, ''))
+      await openAppPath(isCmuxAppPath(foundAppPath) ? foundAppPath : cmuxAppPath())
       logJump('cmux focus', { session: target?.sessionId || '', ...cmux })
       return { ok: true, method: 'cmux focus', tty: rec.tty, pid: found?.pid || null, ...cmux }
     }
@@ -1192,15 +1244,16 @@ async function openTerminalSessionTarget(target) {
     return { ok: true, method: 'Terminal tty', tty: rec.tty, pid: found?.pid || null }
   }
 
-  const foundAppPath = String(found?.appPath || '')
-  if (foundAppPath && !/\/cmux\.app$/i.test(foundAppPath) && await openAppPath(foundAppPath)) {
+  if (foundAppPath && !isCmuxAppPath(foundAppPath) && await openAppPath(foundAppPath)) {
     logJump('open host app', { session: target?.sessionId || '', appPath: found.appPath })
     return { ok: true, method: 'open host app', appPath: found.appPath, tty: rec.tty, pid: found.pid }
   }
 
-  const cmux = await openCmuxFallback(target, rec, rec.tty ? 'focus-unavailable' : 'session-not-live')
-  if (cmux) {
-    return cmux
+  if (shouldTryCmux(launcher)) {
+    const cmux = await openCmuxFallback(target, rec, rec.tty ? 'focus-unavailable' : 'session-not-live')
+    if (cmux) {
+      return cmux
+    }
   }
 
   if (foundAppPath && await openAppPath(foundAppPath)) {

@@ -23,6 +23,20 @@ test('codex notify captures input-messages as the task prompt (bubble headline)'
   })
 })
 
+test('codex internal title-generation notify is ignored', () => {
+  const event = mapHookToEvent({
+    type: 'agent-turn-complete',
+    'last-assistant-message': '{"title":"审阅简历问题"}',
+    'input-messages': [
+      'Generate a concise UI title (up to 36 characters) for this task.',
+      'Do NOT respond to the user, answer questions, or attempt to solve the problem.',
+    ],
+    cwd: '/Users/bytedance/code',
+    client: 'Codex Desktop',
+  })
+  assert.equal(event, null)
+})
+
 test('claude subagent lifecycle maps to local progress bubbles', () => {
   assert.deepEqual(mapHookToEvent({ hook_event_name: 'SubagentStart', subagent_name: 'verifier' }), {
     type: 'task_progress',

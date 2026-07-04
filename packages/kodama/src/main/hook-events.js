@@ -151,14 +151,37 @@ function withSubagent(event, data) {
 
 // Codex notify carries the turn's user input as `input-messages` (array or string).
 // It's the closest thing to a task title, so we surface it for the bubble headline.
-function codexInputPrompt(data) {
+function codexInputText(data) {
   const raw = data['input-messages'] || data.input_messages || data.inputMessages
-  if (Array.isArray(raw)) return clampText(raw.filter(Boolean).join(' '), 80)
-  return clampText(raw, 80)
+  if (Array.isArray(raw)) return raw.filter(Boolean).join(' ')
+  return String(raw || '')
+}
+
+function codexInputPrompt(data) {
+  return clampText(codexInputText(data), 80)
+}
+
+function hasOnlyTitleJson(value) {
+  try {
+    const parsed = JSON.parse(String(value || '').trim())
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+    const keys = Object.keys(parsed)
+    return keys.length === 1 && keys[0] === 'title' && typeof parsed.title === 'string'
+  } catch {
+    return false
+  }
+}
+
+function isCodexTitleGenerationNotify(data) {
+  const input = codexInputText(data)
+  return /Generate a concise UI title/i.test(input)
+    && /Do NOT respond to the user/i.test(input)
+    && hasOnlyTitleJson(data['last-assistant-message'])
 }
 
 function codexNotifyToEvent(data) {
   if (data.type === 'agent-turn-complete') {
+    if (isCodexTitleGenerationNotify(data)) return null
     const event = withLocalContext({ type: 'task_done', source: 'local', text: clampText(data['last-assistant-message']) }, data)
     const prompt = codexInputPrompt(data)
     return prompt ? { ...event, prompt } : event

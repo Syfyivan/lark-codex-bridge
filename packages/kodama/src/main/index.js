@@ -11,6 +11,7 @@ const {
   normalizeTerminalLauncher,
   isCmuxAppPath,
   isOrcaAppPath,
+  selectOrcaTerminal,
   shouldPreferOrca,
   shouldTryCmux,
 } = require('./terminal-launcher')
@@ -856,6 +857,17 @@ function orcaAppPath() {
   return ''
 }
 
+function orcaCliPath() {
+  const appPath = orcaAppPath()
+  if (!appPath) return ''
+  const cli = path.join(appPath, 'Contents', 'Resources', 'bin', 'orca')
+  return fs.existsSync(cli) ? cli : ''
+}
+
+function orcaAgentHookStatusFile() {
+  return path.join(app.getPath('home'), 'Library', 'Application Support', 'orca', 'agent-hooks', 'last-status.json')
+}
+
 function bareTty(value) {
   return String(value || '').replace(/^\/dev\//, '').trim()
 }
@@ -1184,6 +1196,70 @@ async function openOrcaFallback(target, rec, foundAppPath, reason) {
   }
 }
 
+function readOrcaAgentHookStatuses() {
+  try {
+    const data = JSON.parse(fs.readFileSync(orcaAgentHookStatusFile(), 'utf8'))
+    return Object.values(data?.entries || {}).filter((entry) => entry && typeof entry === 'object')
+  } catch {
+    return []
+  }
+}
+
+async function listOrcaTerminals() {
+  const cli = orcaCliPath()
+  if (!cli) return []
+  const raw = await runCommand(cli, ['terminal', 'list', '--json'])
+  const data = JSON.parse(raw)
+  return Array.isArray(data?.result?.terminals) ? data.result.terminals : []
+}
+
+async function focusOrcaTerminal(target, rec, foundAppPath, reason) {
+  const cli = orcaCliPath()
+  if (!cli) return null
+
+  let terminals = []
+  try {
+    terminals = await listOrcaTerminals()
+  } catch (err) {
+    console.error(`[kodama] orca terminal list failed: ${err.message}`)
+    return null
+  }
+
+  const match = selectOrcaTerminal(target, terminals, readOrcaAgentHookStatuses())
+  const handle = match?.terminal?.handle
+  if (!handle) return null
+
+  try {
+    const raw = await runCommand(cli, ['terminal', 'focus', '--terminal', handle, '--json'])
+    const result = JSON.parse(raw || '{}')
+    if (result?.ok === false) throw new Error(result?.error?.message || result?.error || 'orca terminal focus failed')
+    await openAppPath(isOrcaAppPath(foundAppPath) ? foundAppPath : orcaAppPath())
+    logJump('orca terminal focus', {
+      session: target?.sessionId || '',
+      reason,
+      matchReason: match.reason,
+      handle,
+      tabId: match.terminal.tabId || '',
+      leafId: match.terminal.leafId || '',
+      worktreePath: match.terminal.worktreePath || '',
+      tty: rec?.tty || '',
+    })
+    return {
+      ok: true,
+      method: 'orca terminal focus',
+      appPath: isOrcaAppPath(foundAppPath) ? foundAppPath : orcaAppPath(),
+      handle,
+      tabId: match.terminal.tabId || '',
+      leafId: match.terminal.leafId || '',
+      matchReason: match.reason,
+      tty: rec?.tty || '',
+    }
+  } catch (err) {
+    console.error(`[kodama] orca terminal focus failed: ${err.message}`)
+    return null
+  }
+}
+
 // Append-only, self-trimming jump log so a misfire can be diagnosed without
 // knowing the internals: each line records which path won (cmux focus / Terminal
 // tty / open host app / failed) and how cmux matched (surface vs tty fallback).
@@ -1219,7 +1295,9 @@ async function openTerminalSessionTarget(target) {
   // If Claude is running inside Orca, opening Orca is more faithful than cmux.
   // Explicit cmux preference still wins for users who want cmux as the launcher.
   if (shouldPreferOrca(launcher, foundAppPath)) {
-    const orca = await openOrcaFallback(target, rec, foundAppPath, launcher === 'orca' ? 'preference' : 'detected-host-app')
+    const reason = launcher === 'orca' ? 'preference' : 'detected-host-app'
+    const orca = await focusOrcaTerminal(target, rec, foundAppPath, reason) ||
+      await openOrcaFallback(target, rec, foundAppPath, reason)
     if (orca) return { ...orca, pid: found?.pid || null }
     if (launcher === 'orca') {
       const error = found ? 'orca-unavailable' : 'agent-process-not-found'

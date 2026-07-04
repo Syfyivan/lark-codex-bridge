@@ -1898,7 +1898,7 @@ async function openTarget(target) {
   const text = target.kind === 'local-path'
     ? '正在打开本地记录'
     : target.kind === 'terminal-session'
-      ? result.method === 'open Orca app'
+      ? result.method === 'open Orca app' || result.method === 'orca terminal focus'
         ? '正在打开 Orca'
         : result.method === 'open cmux app' || result.method === 'cmux focus'
           ? '正在打开 cmux'

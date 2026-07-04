@@ -373,7 +373,9 @@ async function init() {
       // 子 Agent / team-worker 事件只进详情统计和 session 列表,不冒泡/不 TTS。
       const isSubagent = event?.subagent === true
         || Boolean(event?.agentTranscriptPath || event?.agent_transcript_path || event?.agentId || event?.agent_id)
-      if (!uiSettings.dndMode && !isSubagent && !shouldSuppressForegroundBubble(event)) {
+      const suppressForegroundBubble = shouldSuppressForegroundBubble(event)
+      if (suppressForegroundBubble) clearSupersededTaskBubbles(event)
+      if (!uiSettings.dndMode && !isSubagent && !suppressForegroundBubble) {
         reactToEvent(event, hooks, {
           sound: uiSettings.soundEnabled,
           notifications: uiSettings.notificationsEnabled,
@@ -1347,11 +1349,21 @@ function bubbleMergeKey(event) {
 }
 
 function clearSupersededTaskBubbles(event) {
-  if (!event || !new Set(['task_done', 'task_failed']).has(event.type)) return
+  if (!event || !new Set(['task_done', 'task_failed', 'agent_done']).has(event.type)) return
+  const supersededTypes = event.type === 'task_failed'
+    ? new Set(['task_started', 'task_progress'])
+    : new Set(['task_started', 'task_progress', 'task_failed'])
+  const eventMergeKey = bubbleMergeKey(event)
   const cwd = String(event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || '').trim()
-  if (!cwd) return
+  if (!eventMergeKey && !cwd) return
   for (let i = bubbleLog.length - 1; i >= 0; i -= 1) {
     const item = bubbleLog[i]
+    if (!supersededTypes.has(item?.event?.type)) continue
+    if (eventMergeKey && item?.mergeKey === eventMergeKey) {
+      bubbleLog.splice(i, 1)
+      continue
+    }
+    if (!cwd) continue
     const itemCwd = String(
       item?.event?.cwd
       || item?.event?.projectDir
@@ -1361,7 +1373,6 @@ function clearSupersededTaskBubbles(event) {
       || '',
     ).trim()
     if (itemCwd !== cwd) continue
-    if (!new Set(['task_started', 'task_progress']).has(item?.event?.type)) continue
     bubbleLog.splice(i, 1)
   }
 }

@@ -218,7 +218,7 @@ function mapHookToEvent(data) {
     case 'SessionEnd':
       return withLocalContext({ type: 'task_done', source: 'local', text: '' }, data)
     case 'PostToolUseFailure':
-      return commandEvent(data, { failed: true }) || withLocalContext({ type: 'task_failed', source: 'local', text: clampText(data.error || data.message || '本地 Agent 失败') }, data)
+      return commandEvent(data, { failed: true })
     case 'StopFailure':
       return withLocalContext({ type: 'task_failed', source: 'local', text: clampText(data.error || data.message || '本地 Agent 失败') }, data)
     case 'Notification':

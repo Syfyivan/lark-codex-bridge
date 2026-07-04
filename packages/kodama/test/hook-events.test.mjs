@@ -158,6 +158,15 @@ test('failed bash commands map to failed build or test events', () => {
   })
 })
 
+test('generic failed bash commands do not mark the whole task failed', () => {
+  assert.equal(mapHookToEvent({
+    hook_event_name: 'PostToolUseFailure',
+    tool_name: 'Bash',
+    tool_input: { command: 'python3 inspect_doc.py' },
+    error: 'exit 1',
+  }), null)
+})
+
 test('context compaction maps to progress bubbles', () => {
   assert.deepEqual(mapHookToEvent({ hook_event_name: 'PreCompact' }), {
     type: 'task_progress',

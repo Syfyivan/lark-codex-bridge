@@ -1,11 +1,12 @@
 const { claudeAgent } = require('./claude')
 const { codexAgent } = require('./codex')
+const { traeAgent, traeCnAgent, traeCliAgent } = require('./trae')
 
 // Single source of truth for which local coding agents Kodama knows how to wire
 // hooks into. registerLocalCliHooks iterates this list instead of hard-coding
-// Claude/Codex. Add a new agent by dropping a descriptor file in ./agents and
+// Claude/Codex/Trae. Add a new agent by dropping a descriptor file in ./agents and
 // appending it here.
-const HOOK_AGENTS = [claudeAgent, codexAgent]
+const HOOK_AGENTS = [claudeAgent, codexAgent, traeAgent, traeCnAgent, traeCliAgent]
 
 // Convenience lookup by agent id (e.g. 'claude', 'codex').
 const HOOK_AGENTS_BY_ID = new Map(HOOK_AGENTS.map(agent => [agent.id, agent]))

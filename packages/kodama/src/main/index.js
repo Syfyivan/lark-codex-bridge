@@ -396,19 +396,31 @@ const KODAMA_HOOK_CURL =
 // convenience alias to the Claude descriptor's events.
 const KODAMA_HOOK_EVENTS = HOOK_AGENTS.find(agent => agent.id === 'claude')?.hookConfig.events || []
 
+function shouldSkipOptionalHookFile(file, optional) {
+  return optional && !fs.existsSync(path.dirname(file))
+}
+
 // Safely merge the Kodama hook into one agent's JSON `hooks` map. `events` comes
 // from the agent descriptor so this stays agent-agnostic. SAFE: backs up first,
 // only APPENDS the 7766 curl to events that don't already have it (never touches
 // existing hooks), idempotent, atomic write.
-function registerHookFile(file, label, events, { dryRun = false, allowCreate = false } = {}) {
+function registerJsonHookFile(file, label, events, { dryRun = false, allowCreate = false, optional = false, matcherForEvent = null } = {}) {
   let json
+  let created = false
   try {
     json = JSON.parse(fs.readFileSync(file, 'utf8'))
   } catch (err) {
+    if (err?.code === 'ENOENT' && shouldSkipOptionalHookFile(file, optional)) {
+      return { ok: true, added: [], skipped: true, message: `${label} 未安装，已跳过` }
+    }
     if (!allowCreate || err?.code !== 'ENOENT') {
+      if (optional && err?.code === 'ENOENT') {
+        return { ok: true, added: [], skipped: true, message: `${label} 未安装，已跳过` }
+      }
       return { ok: false, error: `读取 ${label} 失败: ${err.message}` }
     }
-    json = { hooks: {} }
+    json = { version: 1, hooks: {} }
+    created = true
   }
   json.hooks = json.hooks || {}
   const added = []
@@ -416,19 +428,78 @@ function registerHookFile(file, label, events, { dryRun = false, allowCreate = f
   for (const ev of events) {
     const list = Array.isArray(next.hooks[ev]) ? next.hooks[ev].slice() : []
     if (JSON.stringify(list).includes(`:${LOCAL_AGENT_PORT}`)) continue // already wired
-    list.push({ hooks: [{ type: 'command', command: KODAMA_HOOK_CURL }] })
+    const entry = { hooks: [{ type: 'command', command: KODAMA_HOOK_CURL }] }
+    const matcher = typeof matcherForEvent === 'function' ? matcherForEvent(ev) : ''
+    if (matcher) entry.matcher = matcher
+    list.push(entry)
     next.hooks[ev] = list
     added.push(ev)
   }
   if (dryRun) return { ok: true, added, dryRun: true }
   if (!added.length) return { ok: true, added: [], message: `${label} 已是最新，无需改动` }
   try {
-    fs.copyFileSync(file, `${file}.bak-kodama-${Date.now()}`)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    if (!created) fs.copyFileSync(file, `${file}.bak-kodama-${Date.now()}`)
     writeJsonAtomic(file, next, { pretty: true })
   } catch (err) {
     return { ok: false, error: `写入 ${label} 失败: ${err.message}` }
   }
   return { ok: true, added }
+}
+
+function tomlEventHasKodamaHook(text, event) {
+  const escaped = event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const section = new RegExp(`\\[\\[hooks\\.${escaped}(?:\\.hooks)?\\]\\]([\\s\\S]*?)(?=\\n\\[\\[hooks\\.|$)`, 'g')
+  let match
+  while ((match = section.exec(text))) {
+    if (match[0].includes(`:${LOCAL_AGENT_PORT}`)) return true
+  }
+  return false
+}
+
+function registerTomlHookFile(file, label, events, { dryRun = false, optional = false } = {}) {
+  let text
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch (err) {
+    if (optional && err?.code === 'ENOENT') {
+      return { ok: true, added: [], skipped: true, message: `${label} 未安装，已跳过` }
+    }
+    return { ok: false, error: `读取 ${label} 失败: ${err.message}` }
+  }
+  const added = events.filter(ev => !tomlEventHasKodamaHook(text, ev))
+  if (dryRun) return { ok: true, added, dryRun: true }
+  if (!added.length) return { ok: true, added: [], message: `${label} 已是最新，无需改动` }
+
+  const chunks = []
+  if (!/^\s*\[features\]\s*$/m.test(text)) {
+    chunks.push('[features]\nhooks = true')
+  } else if (!/^\s*hooks\s*=\s*true\s*$/m.test(text)) {
+    chunks.push('hooks = true')
+  }
+  for (const ev of added) {
+    chunks.push([
+      `[[hooks.${ev}]]`,
+      `[[hooks.${ev}.hooks]]`,
+      'type = "command"',
+      `command = ${JSON.stringify(KODAMA_HOOK_CURL)}`,
+    ].join('\n'))
+  }
+  const next = `${text.replace(/\s*$/, '')}\n\n${chunks.join('\n\n')}\n`
+  try {
+    fs.copyFileSync(file, `${file}.bak-kodama-${Date.now()}`)
+    writeTextAtomic(file, next)
+  } catch (err) {
+    return { ok: false, error: `写入 ${label} 失败: ${err.message}` }
+  }
+  return { ok: true, added }
+}
+
+function registerHookFile(file, label, events, options = {}) {
+  if (options.configFormat === 'trae-cli-toml') {
+    return registerTomlHookFile(file, label, events, options)
+  }
+  return registerJsonHookFile(file, label, events, options)
 }
 
 // Iterate the agent registry instead of hard-coding Claude/Codex. Each descriptor
@@ -440,7 +511,13 @@ function registerLocalCliHooks(options = {}) {
   for (const agent of HOOK_AGENTS) {
     const cfg = agent.hookConfig
     const file = cfg.settingsPath(home)
-    const result = registerHookFile(file, agent.label, cfg.events, { ...options, allowCreate: cfg.allowCreate })
+    const result = registerHookFile(file, agent.label, cfg.events, {
+      ...options,
+      allowCreate: cfg.allowCreate,
+      optional: cfg.optional,
+      configFormat: cfg.configFormat,
+      matcherForEvent: cfg.matcherForEvent,
+    })
     summary[agent.id] = result
     if (!result.ok) ok = false
   }
@@ -669,6 +746,12 @@ function runCommand(command, args, { timeout = 8000 } = {}) {
 function writeJsonAtomic(file, value, { pretty = false } = {}) {
   const tmp = `${file}.tmp`
   fs.writeFileSync(tmp, JSON.stringify(value, null, pretty ? 2 : undefined))
+  fs.renameSync(tmp, file)
+}
+
+function writeTextAtomic(file, text) {
+  const tmp = `${file}.tmp`
+  fs.writeFileSync(tmp, text)
   fs.renameSync(tmp, file)
 }
 
@@ -1634,7 +1717,7 @@ ipcMain.handle('pet:token-stats', () => {
   }
 })
 
-// Local receiver for Claude Code / Codex hooks. They POST lifecycle events here;
+// Local receiver for Claude Code / Codex / Trae hooks. They POST lifecycle events here;
 // we map them to pet events (source:'local') and forward to the renderer, so
 // local sessions and the Feishu bot share one pet.
 const HOOK_TOKEN = process.env.KODAMA_HOOK_TOKEN || '' // optional shared secret
@@ -1896,7 +1979,7 @@ function refreshTray() {
   items.push({ label: '移动桌宠  ⌘⌥M', click: () => showPetAndEnterMoveMode() })
   items.push({ label: '管理 / 设置中心…', click: () => openManageWindow() })
   items.push({
-    label: '补齐 Claude / Codex Hooks → Kodama',
+    label: '补齐 Claude / Codex / Trae Hooks → Kodama',
     click: () => {
       const result = registerLocalCliHooks()
       const parts = []
@@ -1908,7 +1991,7 @@ function refreshTray() {
         if (value.added?.length) parts.push(`${key} 已补齐：${value.added.join(', ')}`)
         else parts.push(`${key} 已是最新`)
       }
-      const body = `${parts.join('\n')}\n重启对应的 Claude / Codex 会话后生效`
+      const body = `${parts.join('\n')}\n重启对应的 Claude / Codex / Trae 会话后生效`
       try { new Notification({ title: 'Kodama · Local Hooks', body }).show() } catch { /* ignore */ }
       console.error(`[kodama] register local hooks: ${JSON.stringify(result)}`)
     },

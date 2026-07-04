@@ -130,6 +130,42 @@ test('codex notify payloads preserve local cwd and session id', () => {
   })
 })
 
+test('trae hook aliases preserve work session context', () => {
+  assert.deepEqual(mapHookToEvent({
+    hookEventName: 'UserPromptSubmit',
+    prompt: '继续改首页',
+    conversationId: 'trae-session',
+    operationId: 'trae-turn',
+    repoWorkingDir: '/Users/bytedance/code/project',
+    agent: 'trae-work',
+  }), {
+    type: 'task_started',
+    source: 'local',
+    text: '继续改首页',
+    prompt: '继续改首页',
+    sessionId: 'trae-session',
+    cwd: '/Users/bytedance/code/project',
+    turnId: 'trae-turn',
+    client: 'trae-work',
+  })
+})
+
+test('trae RunCommand payload aliases map to command progress', () => {
+  assert.deepEqual(mapHookToEvent({
+    hookEventName: 'PreToolUse',
+    toolName: 'RunCommand',
+    toolInput: { command: 'pnpm test' },
+    conversationId: 'trae-session',
+    repoWorkingDir: '/Users/bytedance/code/project',
+  }), {
+    type: 'task_progress',
+    source: 'local',
+    text: '正在跑测试：pnpm test',
+    sessionId: 'trae-session',
+    cwd: '/Users/bytedance/code/project',
+  })
+})
+
 test('ask-user tool requests map to a waiting event', () => {
   const event = mapHookToEvent({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' })
   assert.deepEqual(event, { type: 'task_waiting', source: 'local', text: 'Agent 在问你问题' })
@@ -253,8 +289,9 @@ test('permission denial maps to a waiting event and keeps agent name', () => {
 
 test('hook agent registry exposes claude and codex descriptors', () => {
   const ids = HOOK_AGENTS.map(agent => agent.id).sort()
-  assert.deepEqual(ids, ['claude', 'codex'])
+  assert.deepEqual(ids, ['claude', 'codex', 'trae', 'trae-cli', 'trae-cn'])
   assert.equal(HOOK_AGENTS_BY_ID.get('claude'), HOOK_AGENTS.find(a => a.id === 'claude'))
+  assert.equal(HOOK_AGENTS_BY_ID.get('trae-cn'), HOOK_AGENTS.find(a => a.id === 'trae-cn'))
 
   for (const agent of HOOK_AGENTS) {
     assert.equal(typeof agent.id, 'string')
@@ -275,6 +312,12 @@ test('hook agent registry exposes claude and codex descriptors', () => {
   for (const ev of ['PreCompact', 'PostCompact', 'PermissionDenied']) {
     assert.ok(claudeEvents.includes(ev), `claude events include ${ev}`)
   }
+
+  const traeEvents = HOOK_AGENTS_BY_ID.get('trae').hookConfig.events
+  for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']) {
+    assert.ok(traeEvents.includes(ev), `trae events include ${ev}`)
+  }
+  assert.equal(HOOK_AGENTS_BY_ID.get('trae-cli').hookConfig.configFormat, 'trae-cli-toml')
 })
 
 test('unknown hook payloads are ignored', () => {

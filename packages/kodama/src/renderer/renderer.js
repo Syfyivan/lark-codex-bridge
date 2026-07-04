@@ -1306,6 +1306,11 @@ function sessionRequestForEvent(event) {
   const sessionId = event.sessionId || event.session_id || inferSessionIdFromTranscriptPath(transcriptPath)
   const threadId = event.threadId || event.thread_id || event['thread-id'] || ''
   const client = String(event.client || event.originator || '').toLowerCase()
+  // Trae/Coco hook payloads carry conversation ids, but Kodama does not have a
+  // reliable deep link or terminal jump for Trae Work sessions yet. Do not fall
+  // through to the generic "sessionId means Codex" branch, or Trae bubbles get
+  // the same unopenable Codex target that internal Codex tasks used to get.
+  if (client.includes('trae') || client.includes('coco')) return null
   const provider = isClaudeTranscriptPath(transcriptPath) || isClaudeTranscriptPath(agentTranscriptPath) || client.includes('claude')
     ? 'claude'
     : isCodexTranscriptPath(transcriptPath) || client.includes('codex') || threadId || sessionId

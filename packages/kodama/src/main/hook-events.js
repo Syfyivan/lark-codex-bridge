@@ -3,7 +3,7 @@ function clampText(value, max = 80) {
 }
 
 function toolName(data) {
-  return clampText(data.tool_name || data.toolName || data.tool?.name || data.tool_input?.name || data.toolInput?.name || '')
+  return clampText(data.tool_name || data.toolName || data.tool_id || data.toolId || data.tool?.name || data.tool_input?.name || data.toolInput?.name || '')
 }
 
 function commandText(data) {
@@ -98,29 +98,33 @@ function commandEvent(data, { done = false, failed = false } = {}) {
 function localContext(data) {
   const task = data?.task && typeof data.task === 'object' ? data.task : {}
   const toolInput = data?.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {}
+  const camelToolInput = data?.toolInput && typeof data.toolInput === 'object' ? data.toolInput : {}
   const context = {}
-  const sessionId = firstString(data?.session_id, data?.sessionId, data?.session)
+  const sessionId = firstString(data?.session_id, data?.sessionId, data?.session, data?.conversation_id, data?.conversationId)
   const cwd = firstString(
     data?.cwd,
     data?.current_dir,
     data?.currentDir,
     data?.project_dir,
     data?.projectDir,
+    data?.repo_working_dir,
+    data?.repoWorkingDir,
     data?.workspace,
     data?.workspace_path,
     task.cwd,
     task.project_dir,
     task.projectDir,
     toolInput.cwd,
+    camelToolInput.cwd,
   )
   const transcriptPath = firstString(data?.transcript_path, data?.transcriptPath)
   const agentTranscriptPath = firstString(data?.agent_transcript_path, data?.agentTranscriptPath)
   const agentId = firstString(data?.agent_id, data?.agentId, task.agent_id, task.agentId)
   const threadId = firstString(data?.['thread-id'], data?.thread_id, data?.threadId)
-  const turnId = firstString(data?.['turn-id'], data?.turn_id, data?.turnId)
-  const client = firstString(data?.client, data?.originator, data?.source_app, data?.sourceApp)
+  const turnId = firstString(data?.['turn-id'], data?.turn_id, data?.turnId, data?.operation_id, data?.operationId)
+  const client = firstString(data?.client, data?.originator, data?.source_app, data?.sourceApp, data?.agent)
   const tty = firstString(data?.tty, data?.terminal_tty, data?.terminalTty)
-  const prompt = firstString(data?.prompt)
+  const prompt = firstString(data?.prompt, data?.user_prompt, data?.userPrompt)
   if (prompt) context.prompt = clampText(prompt, 80)
   if (sessionId) context.sessionId = sessionId
   if (cwd) context.cwd = cwd
@@ -132,6 +136,10 @@ function localContext(data) {
   if (client) context.client = client
   if (tty) context.tty = tty
   return context
+}
+
+function hookEventName(data) {
+  return firstString(data?.hook_event_name, data?.hookEventName, data?.event_name, data?.eventName)
 }
 
 function withLocalContext(event, data) {
@@ -206,12 +214,13 @@ function mapHookToEvent(data) {
   if (!data || typeof data !== 'object') return null
 
   // Codex `notify` payloads use `type` (no hook_event_name).
-  if (!data.hook_event_name && data.type) return codexNotifyToEvent(data)
+  const eventName = hookEventName(data)
+  if (!eventName && data.type) return codexNotifyToEvent(data)
 
-  switch (data.hook_event_name) {
+  switch (eventName) {
     case 'SessionStart':
     case 'UserPromptSubmit':
-      return withLocalContext({ type: 'task_started', source: 'local', text: clampText(data.prompt || data.cwd || '') }, data)
+      return withLocalContext({ type: 'task_started', source: 'local', text: clampText(data.prompt || data.userPrompt || data.user_prompt || localContext(data).cwd || '') }, data)
     case 'PermissionRequest':
       return withAgent({ type: 'task_waiting', source: 'local', text: clampText(data.message || data.reason || 'Agent 需要你确认') }, data)
     case 'PermissionDenied':

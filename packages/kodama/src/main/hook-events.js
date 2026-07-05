@@ -153,7 +153,17 @@ function localContext(data) {
 }
 
 function hookEventName(data) {
-  return firstString(data?.hook_event_name, data?.hookEventName, data?.event_name, data?.eventName)
+  return firstString(
+    data?.hook_event_name,
+    data?.hookEventName,
+    data?.event_name,
+    data?.eventName,
+    data?.hook_event,
+    data?.hookEvent,
+    data?.event_type,
+    data?.eventType,
+    data?.event,
+  )
 }
 
 function withLocalContext(event, data) {
@@ -224,11 +234,102 @@ function codexNotifyToEvent(data) {
   return null
 }
 
+function normalizedToken(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '')
+}
+
+function isTraeLikePayload(data) {
+  const context = localContext(data)
+  const source = [
+    data?.client,
+    data?.originator,
+    data?.source_app,
+    data?.sourceApp,
+    data?.app,
+    data?.appName,
+    data?.agent,
+    context.client,
+  ].map(value => String(value || '').toLowerCase()).join(' ')
+  if (/(^|\W)(trae|coco)(\W|$)/i.test(source)) return true
+
+  const cwd = String(context.cwd || '').replace(/\\/g, '/')
+  if (/(^|\/)\.trae(?:-cn)?(\/|$)/i.test(cwd)) return true
+  if (/(^|\/)TRAE SOLO(?: CN)?(\/|$)/i.test(cwd)) return true
+
+  // Trae Work uses conversationId/operationId/repoWorkingDir aliases even when
+  // the desktop hook omits a formal hook event name.
+  return Boolean((data?.conversationId || data?.conversation_id) && (data?.repoWorkingDir || data?.repo_working_dir || data?.operationId || data?.operation_id))
+}
+
+function inferredTraeLifecycleEvent(data) {
+  if (!isTraeLikePayload(data)) return null
+  const tokens = [
+    data?.hook_event,
+    data?.hookEvent,
+    data?.event_name,
+    data?.eventName,
+    data?.event_type,
+    data?.eventType,
+    data?.event,
+    data?.type,
+    data?.status,
+    data?.state,
+    data?.phase,
+    data?.result,
+    data?.notification_type,
+    data?.notificationType,
+    data?.message_type,
+    data?.messageType,
+  ].map(normalizedToken).filter(Boolean)
+
+  const has = (values) => tokens.some(token => values.includes(token))
+  if (has([
+    'done',
+    'complete',
+    'completed',
+    'finish',
+    'finished',
+    'success',
+    'succeeded',
+    'taskdone',
+    'taskcompleted',
+    'sessionend',
+    'sessionended',
+    'stop',
+    'idleprompt',
+  ])) {
+    return withAgent({ type: 'task_done', source: 'local', text: clampText(data.message || data.reason || '') }, data)
+  }
+  if (has([
+    'fail',
+    'failed',
+    'failure',
+    'error',
+    'errored',
+    'taskfailed',
+    'sessionfailed',
+    'stopfailure',
+  ])) {
+    return withAgent({ type: 'task_failed', source: 'local', text: clampText(data.error || data.message || data.reason || 'Trae Work 失败') }, data)
+  }
+  if (tokens.some(token => /permission|approval|confirm|ask/.test(token))) {
+    return withAgent({ type: 'task_waiting', source: 'local', text: clampText(data.message || data.reason || 'Trae Work 需要你确认') }, data)
+  }
+
+  // Trae emits queue/status notifications while a model request is waiting.
+  // They are not task completion and can be noisy, so keep them diagnostic-only.
+  return null
+}
+
 function mapHookToEvent(data) {
   if (!data || typeof data !== 'object') return null
 
   // Codex `notify` payloads use `type` (no hook_event_name).
   const eventName = hookEventName(data)
+  if (!eventName) {
+    const inferredTrae = inferredTraeLifecycleEvent(data)
+    if (inferredTrae) return inferredTrae
+  }
   if (!eventName && data.type) return codexNotifyToEvent(data)
 
   switch (eventName) {
@@ -281,7 +382,7 @@ function mapHookToEvent(data) {
       if (data.notification_type === 'idle_prompt') return withAgent({ type: 'task_done', source: 'local', text: '' }, data)
       return withAgent({ type: 'task_waiting', source: 'local', text: clampText(data.notification_type || '需要你确认') }, data)
     default:
-      return null
+      return inferredTraeLifecycleEvent(data)
   }
 }
 

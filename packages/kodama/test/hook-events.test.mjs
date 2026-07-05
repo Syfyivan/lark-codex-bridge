@@ -170,6 +170,48 @@ test('trae session end keeps agent and internal work context for readable bubble
   })
 })
 
+test('trae lifecycle payloads without hook event names are inferred conservatively', () => {
+  assert.deepEqual(mapHookToEvent({
+    type: 'completed',
+    message: '任务完成',
+    conversationId: 'trae-session',
+    operationId: 'trae-turn',
+    repoWorkingDir: '/Users/bytedance/.trae-cn/work/6a48fd5292c14db1ad4c8657',
+  }), {
+    type: 'task_done',
+    source: 'local',
+    text: '任务完成',
+    sessionId: 'trae-session',
+    cwd: '/Users/bytedance/.trae-cn/work/6a48fd5292c14db1ad4c8657',
+    turnId: 'trae-turn',
+  })
+
+  assert.deepEqual(mapHookToEvent({
+    event: 'task_failed',
+    error: 'quota exceeded',
+    conversationId: 'trae-session',
+    repoWorkingDir: '/Users/bytedance/.trae-cn/work/6a48fd5292c14db1ad4c8657',
+    agent: 'trae-work',
+  }), {
+    type: 'task_failed',
+    source: 'local',
+    text: 'quota exceeded',
+    sessionId: 'trae-session',
+    cwd: '/Users/bytedance/.trae-cn/work/6a48fd5292c14db1ad4c8657',
+    client: 'trae-work',
+    agent: 'trae-work',
+  })
+})
+
+test('trae queue notifications are diagnostic only, not completion bubbles', () => {
+  assert.equal(mapHookToEvent({
+    type: 'queue',
+    message: 'Too many current requests. Your queue position is 60.',
+    conversationId: 'trae-session',
+    repoWorkingDir: '/Users/bytedance/.trae-cn/work/6a48fd5292c14db1ad4c8657',
+  }), null)
+})
+
 test('trae RunCommand payload aliases map to command progress', () => {
   assert.deepEqual(mapHookToEvent({
     hookEventName: 'PreToolUse',

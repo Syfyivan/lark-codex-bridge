@@ -43,6 +43,10 @@ let accessoryMenuState = null
 let petUiMenuState = { dndMode: false, soundEnabled: true, notificationsEnabled: true }
 let localEventCount = 0
 let lastLocalEvent = null
+let lastHookReceipt = null
+let lastIgnoredHookReceipt = null
+let lastTraeHookReceipt = null
+let lastIgnoredTraeHookReceipt = null
 let lastOpenedTarget = null
 let petHidden = false
 let topmostTimers = []
@@ -1853,6 +1857,7 @@ ipcMain.handle('pet:token-stats', () => {
 // local sessions and the Feishu bot share one pet.
 const HOOK_TOKEN = process.env.KODAMA_HOOK_TOKEN || '' // optional shared secret
 const MAX_BODY_BYTES = 64 * 1024
+const HOOK_RECEIPT_LOG_MAX_BYTES = 256 * 1024
 
 function tokenOk(req) {
   if (!HOOK_TOKEN) return true // no token configured -> accept (loopback only)
@@ -1880,6 +1885,148 @@ function writeJson(res, status, body) {
 
 function clampEventText(value, max = 120) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+function hookReceiptLogFile() {
+  return path.join(app.getPath('userData'), 'kodama-hook-events.jsonl')
+}
+
+function hookSummaryValue(value, max = 160) {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'number' || typeof value === 'boolean') return value
+  if (Array.isArray(value)) return value.slice(0, 8).map(item => hookSummaryValue(item, 80)).filter(item => item !== undefined)
+  if (typeof value === 'object') return undefined
+  return clampEventText(value, max)
+}
+
+function hookSummaryFields(data) {
+  if (!data || typeof data !== 'object') return {}
+  const out = {}
+  const names = [
+    'hook_event_name',
+    'hookEventName',
+    'event_name',
+    'eventName',
+    'hook_event',
+    'hookEvent',
+    'event_type',
+    'eventType',
+    'event',
+    'type',
+    'status',
+    'state',
+    'phase',
+    'result',
+    'notification_type',
+    'notificationType',
+    'message_type',
+    'messageType',
+    'session_id',
+    'sessionId',
+    'conversation_id',
+    'conversationId',
+    'operation_id',
+    'operationId',
+    'cwd',
+    'current_dir',
+    'currentDir',
+    'project_dir',
+    'projectDir',
+    'repo_working_dir',
+    'repoWorkingDir',
+    'workspace',
+    'workspace_path',
+    'workspacePath',
+    'project_name',
+    'projectName',
+    'repo_name',
+    'repoName',
+    'client',
+    'originator',
+    'source_app',
+    'sourceApp',
+    'app',
+    'appName',
+    'agent',
+    'agent_name',
+    'agentName',
+    'tool_name',
+    'toolName',
+    'message',
+    'reason',
+    'error',
+    'success',
+  ]
+  for (const name of names) {
+    const value = hookSummaryValue(data[name])
+    if (value !== undefined && value !== '') out[name] = value
+  }
+  return out
+}
+
+function isTraeHookReceipt(receipt) {
+  const fields = receipt?.fields || {}
+  const source = [
+    fields.client,
+    fields.originator,
+    fields.source_app,
+    fields.sourceApp,
+    fields.app,
+    fields.appName,
+    fields.agent,
+    fields.agent_name,
+    fields.agentName,
+  ].map(value => String(value || '').toLowerCase()).join(' ')
+  if (/(^|\W)(trae|coco)(\W|$)/i.test(source)) return true
+
+  const paths = [
+    fields.cwd,
+    fields.current_dir,
+    fields.currentDir,
+    fields.project_dir,
+    fields.projectDir,
+    fields.repo_working_dir,
+    fields.repoWorkingDir,
+    fields.workspace,
+    fields.workspace_path,
+    fields.workspacePath,
+    receipt?.mappedCwd,
+  ].map(value => String(value || '').replace(/\\/g, '/')).join(' ')
+  return /(^|\/)\.trae(?:-cn)?(\/|$)/i.test(paths) || /(^|\/)TRAE SOLO(?: CN)?(\/|$)/i.test(paths)
+}
+
+function recordHookReceipt(data, event, urlPath) {
+  const object = data && typeof data === 'object' ? data : {}
+  const receipt = {
+    receivedAt: new Date().toISOString(),
+    path: urlPath || '/',
+    keys: Object.keys(object).slice(0, 80),
+    fields: hookSummaryFields(object),
+    mappedType: event?.type || '',
+    mappedText: hookSummaryValue(event?.text, 120) || '',
+    mappedSessionId: event?.sessionId || event?.session_id || '',
+    mappedCwd: event?.cwd || '',
+    ignored: !event,
+  }
+  lastHookReceipt = receipt
+  if (!event) lastIgnoredHookReceipt = receipt
+  if (isTraeHookReceipt(receipt)) {
+    lastTraeHookReceipt = receipt
+    if (!event) lastIgnoredTraeHookReceipt = receipt
+  }
+
+  try {
+    const file = hookReceiptLogFile()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    if (fs.existsSync(file) && fs.statSync(file).size > HOOK_RECEIPT_LOG_MAX_BYTES) {
+      fs.copyFileSync(file, `${file}.1`)
+      fs.truncateSync(file, 0)
+    }
+    fs.appendFileSync(file, `${JSON.stringify(receipt)}\n`)
+  } catch (err) {
+    console.error(`[kodama] hook receipt log failed: ${err.message}`)
+  }
+  return receipt
 }
 
 function emitRendererAgentEvent(event) {
@@ -1930,6 +2077,11 @@ function startLocalAgentServer() {
         petHidden,
         localEventCount,
         lastLocalEvent,
+        lastHookReceipt,
+        lastIgnoredHookReceipt,
+        lastTraeHookReceipt,
+        lastIgnoredTraeHookReceipt,
+        hookReceiptLogFile: hookReceiptLogFile(),
         lastOpenedTarget,
         updateStatus: getUpdateStatus(),
         tokenStats: tokenStatsCache,
@@ -1986,7 +2138,6 @@ function startLocalAgentServer() {
       } catch {
         /* ignore malformed body */
       }
-      const event = mapHookToEvent(data)
       if (url.pathname === '/pet/lark-token-test') {
         const tokens = Number(data.tokens || data.usage || data.total_tokens || 0)
         const larkEvent = {
@@ -2021,12 +2172,14 @@ function startLocalAgentServer() {
         writeJson(res, 200, { ok: true, event: mcpEvent })
         return
       }
+      const event = mapHookToEvent(data)
+      const receipt = recordHookReceipt(data, event, url.pathname)
       if (event) {
         const sid = event.sessionId || event.session_id
         if (sid) cacheSessionTty(sid, event.cwd) // pin tty + cmux surface while alive
         emitRendererAgentEvent(event)
       }
-      writeJson(res, 200, { ok: true })
+      writeJson(res, 200, { ok: true, event: event || null, receipt })
     })
   })
   server.on('error', (e) => console.error(`[kodama] local agent receiver error: ${e.message}`))

@@ -1293,6 +1293,10 @@ function isCodexTranscriptPath(value) {
   return /(^|\/)\.codex\/sessions\//.test(String(value || ''))
 }
 
+function isCodexInternalMemoryPath(value) {
+  return /(^|\/)\.codex\/memories(\/|$)/.test(String(value || '').replace(/\\/g, '/'))
+}
+
 function isClaudeTranscriptPath(value) {
   return /(^|\/)\.claude\/projects\//.test(String(value || ''))
 }
@@ -1310,6 +1314,10 @@ function sessionRequestForEvent(event) {
   const sessionId = event.sessionId || event.session_id || inferSessionIdFromTranscriptPath(transcriptPath)
   const threadId = event.threadId || event.thread_id || event['thread-id'] || ''
   const client = String(event.client || event.originator || '').toLowerCase()
+  const cwd = event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || ''
+  if (isCodexInternalMemoryPath(cwd) || isCodexInternalMemoryPath(transcriptPath) || isCodexInternalMemoryPath(agentTranscriptPath)) {
+    return null
+  }
   // Trae/Coco hook payloads carry conversation ids, but Kodama does not have a
   // reliable deep link or terminal jump for Trae Work sessions yet. Do not fall
   // through to the generic "sessionId means Codex" branch, or Trae bubbles get
@@ -1328,7 +1336,7 @@ function sessionRequestForEvent(event) {
     threadId,
     transcriptPath,
     agentTranscriptPath,
-    cwd: event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || '',
+    cwd,
     bridgeUrl: activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL,
     token: activeAgentConfig.token || '',
   }

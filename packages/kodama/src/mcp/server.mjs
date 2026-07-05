@@ -11,7 +11,7 @@ import { petStatus, petSay, petSetState, PET_STATES } from './pet-client.mjs'
 // never crashes the server on failure.
 
 const PROTOCOL_VERSION = '2024-11-05'
-const SERVER_INFO = { name: 'kodama-pet', version: '0.1.12' }
+const SERVER_INFO = { name: 'kodama-pet', version: '0.1.13' }
 
 const TOOLS = [
   {

@@ -51,6 +51,36 @@ test('codex internal memory maintenance notify is ignored', () => {
   assert.equal(event, null)
 })
 
+test('codex internal memory hook sessions are ignored', () => {
+  assert.equal(mapHookToEvent({
+    hook_event_name: 'SessionStart',
+    session_id: 'memory-session',
+    cwd: '/Users/bytedance/.codex/memories',
+  }), null)
+
+  assert.equal(mapHookToEvent({
+    hook_event_name: 'UserPromptSubmit',
+    session_id: 'memory-session',
+    cwd: '/Users/bytedance/.codex/memories',
+    prompt: '## Memory Writing Agent: Phase 2',
+  }), null)
+
+  assert.equal(mapHookToEvent({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: { command: 'git status --short' },
+    session_id: 'memory-session',
+    cwd: '/Users/bytedance/.codex/memories',
+  }), null)
+
+  assert.equal(mapHookToEvent({
+    hook_event_name: 'Stop',
+    session_id: 'memory-session',
+    cwd: '/Users/bytedance/.codex/memories',
+    last_assistant_message: 'Updated memory artifacts',
+  }), null)
+})
+
 test('ordinary projects named memories are still surfaced', () => {
   const event = mapHookToEvent({
     type: 'agent-turn-complete',
@@ -65,6 +95,18 @@ test('ordinary projects named memories are still surfaced', () => {
     text: '完成',
     sessionId: 'normal-session',
     client: 'Codex Desktop',
+    cwd: '/Users/bytedance/code/memories',
+  })
+
+  assert.deepEqual(mapHookToEvent({
+    hook_event_name: 'SessionStart',
+    session_id: 'normal-session',
+    cwd: '/Users/bytedance/code/memories',
+  }), {
+    type: 'task_started',
+    source: 'local',
+    text: '/Users/bytedance/code/memories',
+    sessionId: 'normal-session',
     cwd: '/Users/bytedance/code/memories',
   })
 })

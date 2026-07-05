@@ -255,12 +255,15 @@ function isCodexInternalMemoryPath(value) {
   return /(^|\/)\.codex\/memories(\/|$)/.test(normalized)
 }
 
-function isCodexInternalMemoryNotify(data) {
-  return isCodexInternalMemoryPath(localContext(data).cwd)
+function isCodexInternalMemoryEvent(data) {
+  const context = localContext(data)
+  return isCodexInternalMemoryPath(context.cwd)
+    || isCodexInternalMemoryPath(context.transcriptPath)
+    || isCodexInternalMemoryPath(context.agentTranscriptPath)
 }
 
 function codexNotifyToEvent(data) {
-  if (isCodexInternalMemoryNotify(data)) return null
+  if (isCodexInternalMemoryEvent(data)) return null
   if (data.type === 'agent-turn-complete') {
     if (isCodexTitleGenerationNotify(data)) return null
     const event = withLocalContext({ type: 'task_done', source: 'local', text: clampText(data['last-assistant-message']) }, data)
@@ -486,6 +489,7 @@ function inferredGenericLifecycleEvent(data) {
 
 function mapHookToEvent(data) {
   if (!data || typeof data !== 'object') return null
+  if (isCodexInternalMemoryEvent(data)) return null
 
   // Codex `notify` payloads use `type` (no hook_event_name).
   const eventName = hookEventName(data)

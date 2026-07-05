@@ -66,12 +66,32 @@ export function normalizeAgentLabel(value) {
   if (lower.includes('coco')) return 'CoCo'
   if (lower.includes('claude')) return 'Claude Code'
   if (lower.includes('codex')) return 'Codex'
+  if (lower.includes('cursor')) return 'Cursor'
+  if (lower.includes('windsurf') || lower.includes('cascade')) return 'Windsurf'
+  if (lower.includes('gemini')) return 'Gemini CLI'
+  if (lower.includes('qwen')) return 'Qwen Code'
+  if (lower.includes('opencode') || lower.includes('open code')) return 'OpenCode'
+  if (lower.includes('goose')) return 'Goose'
+  if (/(^|\W)amp(?:\s*code)?(\W|$)/i.test(raw)) return 'Amp'
+  if (lower.includes('aider')) return 'Aider'
+  if (/(^|\W)zed(\W|$)/i.test(raw)) return 'Zed'
+  if (lower.includes('roo')) return 'Roo Code'
+  if (lower.includes('cline')) return 'Cline'
+  if (lower.includes('continue')) return 'Continue'
+  if (lower.includes('copilot')) return 'GitHub Copilot'
+  if (lower.includes('devin')) return 'Devin'
+  if (lower.includes('antigravity')) return 'Antigravity'
+  if (/(^|\W)kiro(\W|$)/i.test(raw)) return 'Kiro'
   if (lower === 'memories' || lower === 'memory') return 'Memory'
   return shortLabel(raw, 24)
 }
 
 export function eventAppLabel(event) {
   const explicit = normalizeAgentLabel(firstString(
+    event?.kodamaAgent,
+    event?.kodama_agent,
+    event?.agentApp,
+    event?.agent_app,
     event?.appName,
     event?.app_name,
     event?.app,

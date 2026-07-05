@@ -212,6 +212,82 @@ test('trae queue notifications are diagnostic only, not completion bubbles', () 
   }), null)
 })
 
+test('known third-party agent payloads can report lifecycle events conservatively', () => {
+  assert.deepEqual(mapHookToEvent({
+    client: 'Gemini CLI',
+    type: 'completed',
+    summary: '重构完成',
+    prompt: '整理 hook 适配',
+    workspacePath: '/Users/bytedance/code/kodama',
+  }), {
+    type: 'task_done',
+    source: 'local',
+    text: '重构完成',
+    prompt: '整理 hook 适配',
+    cwd: '/Users/bytedance/code/kodama',
+    client: 'Gemini CLI',
+  })
+
+  assert.deepEqual(mapHookToEvent({
+    source_app: 'Cursor',
+    status: 'failed',
+    error: 'lint failed',
+    workspacePath: '/Users/bytedance/code/site',
+  }), {
+    type: 'task_failed',
+    source: 'local',
+    text: 'lint failed',
+    cwd: '/Users/bytedance/code/site',
+    client: 'Cursor',
+  })
+
+  assert.deepEqual(mapHookToEvent({
+    agent_app: 'Qwen Code',
+    state: 'needs_input',
+    reason: '需要确认权限',
+  }), {
+    type: 'task_waiting',
+    source: 'local',
+    text: '需要确认权限',
+    client: 'Qwen Code',
+  })
+})
+
+test('generic lifecycle inference ignores unknown or noisy payloads', () => {
+  assert.equal(mapHookToEvent({ type: 'completed', message: 'done' }), null)
+  assert.equal(mapHookToEvent({ client: 'Gemini CLI', type: 'queue', message: 'queue position 3' }), null)
+})
+
+test('gemini and windsurf hook aliases map to useful local events', () => {
+  assert.deepEqual(mapHookToEvent({
+    hook_event_name: 'AfterAgent',
+    client: 'Gemini CLI',
+    summary: 'Agent loop finished',
+    cwd: '/Users/bytedance/code/kodama',
+  }), {
+    type: 'task_done',
+    source: 'local',
+    text: 'Agent loop finished',
+    cwd: '/Users/bytedance/code/kodama',
+    client: 'Gemini CLI',
+  })
+
+  assert.deepEqual(mapHookToEvent({
+    agent_action_name: 'post_run_command',
+    source_app: 'Windsurf Cascade',
+    tool_info: {
+      command_line: 'npm run build',
+      cwd: '/Users/bytedance/code/app',
+    },
+  }), {
+    type: 'task_progress',
+    source: 'local',
+    text: '构建完成：npm run build',
+    cwd: '/Users/bytedance/code/app',
+    client: 'Windsurf Cascade',
+  })
+})
+
 test('trae RunCommand payload aliases map to command progress', () => {
   assert.deepEqual(mapHookToEvent({
     hookEventName: 'PreToolUse',
@@ -351,7 +427,7 @@ test('permission denial maps to a waiting event and keeps agent name', () => {
 
 test('hook agent registry exposes claude and codex descriptors', () => {
   const ids = HOOK_AGENTS.map(agent => agent.id).sort()
-  assert.deepEqual(ids, ['claude', 'codex', 'trae', 'trae-cli', 'trae-cn'])
+  assert.deepEqual(ids, ['claude', 'codex', 'gemini', 'qwen', 'trae', 'trae-cli', 'trae-cn'])
   assert.equal(HOOK_AGENTS_BY_ID.get('claude'), HOOK_AGENTS.find(a => a.id === 'claude'))
   assert.equal(HOOK_AGENTS_BY_ID.get('trae-cn'), HOOK_AGENTS.find(a => a.id === 'trae-cn'))
 
@@ -380,6 +456,11 @@ test('hook agent registry exposes claude and codex descriptors', () => {
     assert.ok(traeEvents.includes(ev), `trae events include ${ev}`)
   }
   assert.equal(HOOK_AGENTS_BY_ID.get('trae-cli').hookConfig.configFormat, 'trae-cli-toml')
+
+  assert.equal(HOOK_AGENTS_BY_ID.get('gemini').hookConfig.endpointPath, '/hooks/gemini')
+  assert.ok(HOOK_AGENTS_BY_ID.get('gemini').hookConfig.events.includes('AfterAgent'))
+  assert.equal(HOOK_AGENTS_BY_ID.get('qwen').hookConfig.endpointPath, '/hooks/qwen')
+  assert.ok(HOOK_AGENTS_BY_ID.get('qwen').hookConfig.events.includes('Stop'))
 })
 
 test('unknown hook payloads are ignored', () => {

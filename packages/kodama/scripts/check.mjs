@@ -19,6 +19,8 @@ const CJS = [
   'src/main/terminal-launcher.js',
   'src/main/agents/claude.js',
   'src/main/agents/codex.js',
+  'src/main/agents/gemini.js',
+  'src/main/agents/qwen.js',
   'src/main/agents/registry.js',
   'src/main/agents/trae.js',
   'src/main/token-usage.js',

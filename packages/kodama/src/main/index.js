@@ -403,7 +403,20 @@ function setPetScale(scale) {
 // have it (never touches existing hooks), idempotent. Triggered manually from the
 // tray — never written silently.
 const KODAMA_HOOK_CURL =
-  `curl -s -m 1 --noproxy 127.0.0.1 -X POST http://127.0.0.1:${LOCAL_AGENT_PORT} -H 'Content-Type: application/json' -d "$(cat)" >/dev/null 2>&1 || true`
+  kodamaHookCurl()
+
+function kodamaHookUrl({ path: hookPath = '/', event = '' } = {}) {
+  const normalizedPath = hookPath && hookPath.startsWith('/') ? hookPath : `/${hookPath || ''}`
+  const pathPart = normalizedPath === '/' ? '' : normalizedPath
+  const query = event ? `?event=${encodeURIComponent(event)}` : ''
+  return `http://127.0.0.1:${LOCAL_AGENT_PORT}${pathPart}${query}`
+}
+
+function kodamaHookCurl(options = {}) {
+  const url = kodamaHookUrl(options)
+  const command = `curl -s -m 1 --noproxy 127.0.0.1 -X POST '${url}' -H 'Content-Type: application/json' -d "$(cat)" >/dev/null 2>&1 || true`
+  return options.jsonAck ? `${command}; printf '{}'` : command
+}
 // The canonical Claude event surface, kept for any external reference. The
 // registry (src/main/agents/*) now owns per-agent event lists; this is just a
 // convenience alias to the Claude descriptor's events.
@@ -417,7 +430,7 @@ function shouldSkipOptionalHookFile(file, optional) {
 // from the agent descriptor so this stays agent-agnostic. SAFE: backs up first,
 // only APPENDS the 7766 curl to events that don't already have it (never touches
 // existing hooks), idempotent, atomic write.
-function registerJsonHookFile(file, label, events, { dryRun = false, allowCreate = false, optional = false, matcherForEvent = null } = {}) {
+function registerJsonHookFile(file, label, events, { dryRun = false, allowCreate = false, optional = false, matcherForEvent = null, commandForEvent = null } = {}) {
   let json
   let created = false
   try {
@@ -441,7 +454,8 @@ function registerJsonHookFile(file, label, events, { dryRun = false, allowCreate
   for (const ev of events) {
     const list = Array.isArray(next.hooks[ev]) ? next.hooks[ev].slice() : []
     if (JSON.stringify(list).includes(`:${LOCAL_AGENT_PORT}`)) continue // already wired
-    const entry = { hooks: [{ type: 'command', command: KODAMA_HOOK_CURL }] }
+    const command = typeof commandForEvent === 'function' ? commandForEvent(ev) : KODAMA_HOOK_CURL
+    const entry = { hooks: [{ type: 'command', command }] }
     const matcher = typeof matcherForEvent === 'function' ? matcherForEvent(ev) : ''
     if (matcher) entry.matcher = matcher
     list.push(entry)
@@ -530,6 +544,11 @@ function registerLocalCliHooks(options = {}) {
       optional: cfg.optional,
       configFormat: cfg.configFormat,
       matcherForEvent: cfg.matcherForEvent,
+      commandForEvent: cfg.commandForEvent || (cfg.endpointPath ? (event) => kodamaHookCurl({
+        path: cfg.endpointPath,
+        event,
+        jsonAck: cfg.jsonAck,
+      }) : null),
     })
     summary[agent.id] = result
     if (!result.ok) ok = false
@@ -1922,6 +1941,10 @@ function hookSummaryFields(data) {
     'notificationType',
     'message_type',
     'messageType',
+    'kodama_agent',
+    'kodamaAgent',
+    'agent_app',
+    'agentApp',
     'session_id',
     'sessionId',
     'conversation_id',
@@ -1938,6 +1961,9 @@ function hookSummaryFields(data) {
     'workspace',
     'workspace_path',
     'workspacePath',
+    'root',
+    'root_dir',
+    'rootDir',
     'project_name',
     'projectName',
     'repo_name',
@@ -1964,6 +1990,8 @@ function hookSummaryFields(data) {
     'app',
     'appName',
     'agent',
+    'agent_action_name',
+    'agentActionName',
     'agent_name',
     'agentName',
     'tool_name',
@@ -1977,7 +2005,58 @@ function hookSummaryFields(data) {
     const value = hookSummaryValue(data[name])
     if (value !== undefined && value !== '') out[name] = value
   }
+  const toolInfo = data.tool_info && typeof data.tool_info === 'object' ? data.tool_info : {}
+  const camelToolInfo = data.toolInfo && typeof data.toolInfo === 'object' ? data.toolInfo : {}
+  const commandLine = hookSummaryValue(toolInfo.command_line || toolInfo.commandLine || camelToolInfo.command_line || camelToolInfo.commandLine)
+  const toolCwd = hookSummaryValue(toolInfo.cwd || camelToolInfo.cwd)
+  if (commandLine !== undefined && commandLine !== '') out.tool_command = commandLine
+  if (toolCwd !== undefined && toolCwd !== '') out.tool_cwd = toolCwd
   return out
+}
+
+const HOOK_ENDPOINT_CLIENTS = new Map([
+  ['gemini', 'Gemini CLI'],
+  ['qwen', 'Qwen Code'],
+  ['cursor', 'Cursor'],
+  ['windsurf', 'Windsurf'],
+  ['cascade', 'Windsurf'],
+  ['opencode', 'OpenCode'],
+  ['goose', 'Goose'],
+  ['amp', 'Amp'],
+  ['aider', 'Aider'],
+  ['zed', 'Zed'],
+  ['roo', 'Roo Code'],
+  ['cline', 'Cline'],
+  ['continue', 'Continue'],
+  ['copilot', 'GitHub Copilot'],
+  ['devin', 'Devin'],
+  ['antigravity', 'Antigravity'],
+  ['kiro', 'Kiro'],
+])
+
+function hasAnyHookField(data, names) {
+  return names.some(name => data[name] !== undefined && data[name] !== null && String(data[name]).trim() !== '')
+}
+
+function hookClientForPath(pathname) {
+  const match = String(pathname || '').match(/^\/hooks\/([^/?#]+)/)
+  if (!match) return ''
+  return HOOK_ENDPOINT_CLIENTS.get(match[1].toLowerCase()) || ''
+}
+
+function decorateHookPayloadForEndpoint(data, url) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data
+  const client = hookClientForPath(url.pathname)
+  const event = url.searchParams.get('event') || ''
+  if (!client && !event) return data
+  const next = { ...data }
+  if (client && !hasAnyHookField(next, ['kodama_agent', 'kodamaAgent', 'agent_app', 'agentApp', 'client', 'originator', 'source_app', 'sourceApp', 'app', 'appName'])) {
+    next.client = client
+  }
+  if (event && !hasAnyHookField(next, ['hook_event_name', 'hookEventName', 'event_name', 'eventName', 'hook_event', 'hookEvent', 'event_type', 'eventType', 'event', 'agent_action_name', 'agentActionName'])) {
+    next.hook_event_name = event
+  }
+  return next
 }
 
 function isTraeHookReceipt(receipt) {
@@ -2099,6 +2178,17 @@ function startLocalAgentServer() {
         lastIgnoredTraeHookReceipt,
         hookReceiptLogFile: hookReceiptLogFile(),
         lastOpenedTarget,
+        uiSettings: {
+          reported: Boolean(lastUiSettings),
+          terminalLauncher: terminalLauncherPreference(),
+          dndMode: Boolean(petUiMenuState.dndMode),
+          soundEnabled: petUiMenuState.soundEnabled !== false,
+          notificationsEnabled: petUiMenuState.notificationsEnabled !== false,
+        },
+        supportedAgentApps: {
+          autoHooks: HOOK_AGENTS.map(agent => ({ id: agent.id, label: agent.label })),
+          hookEndpoints: Array.from(HOOK_ENDPOINT_CLIENTS.entries()).map(([id, label]) => ({ id, label, path: `/hooks/${id}` })),
+        },
         updateStatus: getUpdateStatus(),
         tokenStats: tokenStatsCache,
         loginItemEnabled: isLoginItemEnabled(),
@@ -2188,8 +2278,9 @@ function startLocalAgentServer() {
         writeJson(res, 200, { ok: true, event: mcpEvent })
         return
       }
-      const event = enrichTraeEvent(mapHookToEvent(data), data)
-      const receipt = recordHookReceipt(data, event, url.pathname)
+      const hookData = decorateHookPayloadForEndpoint(data, url)
+      const event = enrichTraeEvent(mapHookToEvent(hookData), hookData)
+      const receipt = recordHookReceipt(hookData, event, url.pathname)
       if (event) {
         const sid = event.sessionId || event.session_id
         if (sid) cacheSessionTty(sid, event.cwd) // pin tty + cmux surface while alive
@@ -2279,7 +2370,7 @@ function refreshTray() {
   items.push({ label: '移动桌宠  ⌘⌥M', click: () => showPetAndEnterMoveMode() })
   items.push({ label: '管理 / 设置中心…', click: () => openManageWindow() })
   items.push({
-    label: '补齐 Claude / Codex / Trae Hooks → Kodama',
+    label: '补齐 Agent Hooks → Kodama',
     click: () => {
       const result = registerLocalCliHooks()
       const parts = []
@@ -2289,9 +2380,10 @@ function refreshTray() {
           continue
         }
         if (value.added?.length) parts.push(`${key} 已补齐：${value.added.join(', ')}`)
+        else if (value.skipped) parts.push(`${key} 已跳过：${value.message || '未安装'}`)
         else parts.push(`${key} 已是最新`)
       }
-      const body = `${parts.join('\n')}\n重启对应的 Claude / Codex / Trae 会话后生效`
+      const body = `${parts.join('\n')}\n重启对应的 Agent 会话后生效`
       try { new Notification({ title: 'Kodama · Local Hooks', body }).show() } catch { /* ignore */ }
       console.error(`[kodama] register local hooks: ${JSON.stringify(result)}`)
     },

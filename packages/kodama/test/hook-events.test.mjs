@@ -147,6 +147,26 @@ test('trae hook aliases preserve work session context', () => {
     cwd: '/Users/bytedance/code/project',
     turnId: 'trae-turn',
     client: 'trae-work',
+    agent: 'trae-work',
+  })
+})
+
+test('trae session end keeps agent and internal work context for readable bubbles', () => {
+  assert.deepEqual(mapHookToEvent({
+    hookEventName: 'SessionEnd',
+    conversationId: 'trae-session',
+    operationId: 'trae-turn',
+    repoWorkingDir: '/Users/bytedance/.trae-cn/work/6a498bdd92c14db1ad4c8bd6',
+    agent: 'trae-work',
+  }), {
+    type: 'task_done',
+    source: 'local',
+    text: '',
+    sessionId: 'trae-session',
+    cwd: '/Users/bytedance/.trae-cn/work/6a498bdd92c14db1ad4c8bd6',
+    turnId: 'trae-turn',
+    client: 'trae-work',
+    agent: 'trae-work',
   })
 })
 

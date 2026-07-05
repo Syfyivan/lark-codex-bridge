@@ -27,6 +27,18 @@ test('local source uses the 💻 prefix', () => {
   assert.match(out.says[0], /💻/)
 })
 
+test('local Trae bubbles name the app instead of the internal work id', () => {
+  const out = collect({
+    type: 'task_done',
+    source: 'local',
+    text: '',
+    client: 'trae-work',
+    cwd: '/Users/bytedance/.trae-cn/work/6a498bdd92c14db1ad4c8bd6',
+  })
+  assert.match(out.says[0], /Trae Work/)
+  assert.doesNotMatch(out.says[0], /6a498bdd/)
+})
+
 test('agent_done renders the completed agent text', () => {
   const out = collect({ type: 'agent_done', source: 'local', text: 'verifier 完成任务' })
   assert.match(out.says[0], /verifier 完成任务/)

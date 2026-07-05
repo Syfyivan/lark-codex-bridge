@@ -5,6 +5,7 @@ import { PET_CONFIG } from './config/pet-config.js'
 import { initAccessoryLayer } from './accessories.js'
 import { ACCESSORIES, ACCESSORY_SLOTS } from './config/accessories.js'
 import { initGrowth, feed as feedGrowth, feedManually, growthScale, feedTokens, statusText, getState as getGrowthState, equipAccessory, unlockWithExp, configureAccessories } from './growth.js'
+import { eventAgentLabel, eventAppLabel, eventBubbleContext, eventProjectLabel, eventTaskLabel, eventWorkId } from './event-labels.js'
 
 // Live2D model is chosen by `pnpm run setup <name>` (writes ./models/current-model.js).
 const FALLBACK_MODEL_URL = './models/wanko/Wanko.model3.json'
@@ -1272,20 +1273,14 @@ function bubbleKind(event) {
   return 'system'
 }
 
-function baseName(p) {
-  return String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
-}
-
 // A per-task headline so stacked bubbles are distinguishable at a glance, instead
-// of every card reading the same "本地 · 完成". Prefer the project folder (always
-// present for Claude Code hooks), then the task prompt (Codex input-messages),
-// then degrade to the generic source label.
+// of every card reading the same "本地 · 完成". Prefer readable app/project
+// context and explicitly skip internal work ids such as Trae's `.trae-cn/work/*`.
 function taskName(event) {
-  const cwd = event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || ''
-  const project = baseName(cwd)
-  if (project) return project
-  const prompt = event.prompt || event.title || ''
-  if (prompt) return shortText(prompt, 28)
+  const context = eventBubbleContext(event)
+  if (context) return context
+  const prompt = eventTaskLabel(event)
+  if (prompt) return prompt
   return sourceLabel(event.source)
 }
 
@@ -1515,7 +1510,14 @@ function bubbleHoverHtml(item) {
     `<div class="bubble-hover-title">${escapeHtml(item.title)}</div>`,
     `<div class="bubble-hover-text">${escapeHtml(shortText(item.text, 74))}</div>`,
   ]
-  if (item.event?.agent) rows.push(`<div class="bubble-hover-meta">Agent：${escapeHtml(item.event.agent)}</div>`)
+  const appLabel = eventAppLabel(item.event)
+  const agentLabel = eventAgentLabel(item.event)
+  const projectLabel = eventProjectLabel(item.event)
+  const workId = eventWorkId(item.event)
+  if (appLabel) rows.push(`<div class="bubble-hover-meta">App：${escapeHtml(appLabel)}</div>`)
+  if (agentLabel && agentLabel !== appLabel) rows.push(`<div class="bubble-hover-meta">Agent：${escapeHtml(agentLabel)}</div>`)
+  if (projectLabel) rows.push(`<div class="bubble-hover-meta">项目：${escapeHtml(projectLabel)}</div>`)
+  if (workId) rows.push(`<div class="bubble-hover-meta">Work ID：${escapeHtml(shortText(workId, 18))}</div>`)
   return rows.join('')
 }
 
@@ -1559,6 +1561,14 @@ function previewKey(request) {
 // no transcript path, so the file-read preview always failed before).
 function localPreviewFromEvent(event) {
   const lines = []
+  const appLabel = eventAppLabel(event)
+  const agentLabel = eventAgentLabel(event)
+  const projectLabel = eventProjectLabel(event)
+  const workId = eventWorkId(event)
+  if (appLabel) lines.push(`App: ${appLabel}`)
+  if (agentLabel && agentLabel !== appLabel) lines.push(`Agent: ${agentLabel}`)
+  if (projectLabel) lines.push(`项目: ${projectLabel}`)
+  if (workId) lines.push(`Work ID: ${shortText(workId, 18)}`)
   if (event?.prompt) lines.push(`你: ${shortText(event.prompt, 74)}`)
   if (event?.text) lines.push(`Agent: ${shortText(event.text, 74)}`)
   if (!lines.length) return { ok: false, error: '这条事件没有可显示的摘要' }

@@ -3,6 +3,7 @@
 // bridge stream (source:'lark') and local Claude Code hooks (source:'local')
 // call reactToEvent — one pet, source-tagged.
 import { PET_CONFIG } from './config/pet-config.js'
+import { eventBubbleContext } from './event-labels.js'
 
 function interpolate(tpl, vars) {
   return tpl
@@ -63,9 +64,11 @@ export function reactToEvent(event, hooks, options = {}) {
   if (!def) return
 
   const src = PET_CONFIG.sources[event.source] || PET_CONFIG.sources.lark
+  const context = eventBubbleContext(event) || src.label
   const text = interpolate(def.bubble, {
     icon: src.icon,
     label: src.label,
+    context,
     text: event.text || '',
   })
 

@@ -26,6 +26,7 @@ function agentName(data) {
   return clampText(
     data.agent_name
       || data.agentName
+      || data.agent
       || data.subagent_name
       || data.subagentName
       || data.teammate_name
@@ -125,7 +126,20 @@ function localContext(data) {
   const client = firstString(data?.client, data?.originator, data?.source_app, data?.sourceApp, data?.agent)
   const tty = firstString(data?.tty, data?.terminal_tty, data?.terminalTty)
   const prompt = firstString(data?.prompt, data?.user_prompt, data?.userPrompt)
+  const title = firstString(data?.title, data?.task_title, data?.taskTitle, task.title)
+  const projectName = firstString(
+    data?.project_name,
+    data?.projectName,
+    data?.repo_name,
+    data?.repoName,
+    data?.workspace_name,
+    data?.workspaceName,
+    task.project_name,
+    task.projectName,
+  )
   if (prompt) context.prompt = clampText(prompt, 80)
+  if (title) context.title = clampText(title, 80)
+  if (projectName) context.projectName = clampText(projectName, 80)
   if (sessionId) context.sessionId = sessionId
   if (cwd) context.cwd = cwd
   if (transcriptPath) context.transcriptPath = transcriptPath
@@ -220,7 +234,7 @@ function mapHookToEvent(data) {
   switch (eventName) {
     case 'SessionStart':
     case 'UserPromptSubmit':
-      return withLocalContext({ type: 'task_started', source: 'local', text: clampText(data.prompt || data.userPrompt || data.user_prompt || localContext(data).cwd || '') }, data)
+      return withAgent({ type: 'task_started', source: 'local', text: clampText(data.prompt || data.userPrompt || data.user_prompt || localContext(data).cwd || '') }, data)
     case 'PermissionRequest':
       return withAgent({ type: 'task_waiting', source: 'local', text: clampText(data.message || data.reason || 'Agent 需要你确认') }, data)
     case 'PermissionDenied':
@@ -258,13 +272,13 @@ function mapHookToEvent(data) {
       return withSubagent({ type: 'agent_done', source: 'local', text: agentName(data) ? `${agentName(data)} 完成任务` : 'Agent Team 任务完成' }, data)
     case 'Stop':
     case 'SessionEnd':
-      return withLocalContext({ type: 'task_done', source: 'local', text: '' }, data)
+      return withAgent({ type: 'task_done', source: 'local', text: '' }, data)
     case 'PostToolUseFailure':
       return commandEvent(data, { failed: true })
     case 'StopFailure':
       return withLocalContext({ type: 'task_failed', source: 'local', text: clampText(data.error || data.message || '本地 Agent 失败') }, data)
     case 'Notification':
-      if (data.notification_type === 'idle_prompt') return withLocalContext({ type: 'task_done', source: 'local', text: '' }, data)
+      if (data.notification_type === 'idle_prompt') return withAgent({ type: 'task_done', source: 'local', text: '' }, data)
       return withAgent({ type: 'task_waiting', source: 'local', text: clampText(data.notification_type || '需要你确认') }, data)
     default:
       return null

@@ -6,6 +6,7 @@ const { spawn } = require('child_process')
 const tokenUsage = require('./token-usage')
 const { createPomodoro } = require('./pomodoro')
 const { mapHookToEvent } = require('./hook-events')
+const { enrichTraeEvent } = require('./trae-context')
 const { HOOK_AGENTS } = require('./agents/registry')
 const {
   normalizeTerminalLauncher,
@@ -1941,6 +1942,21 @@ function hookSummaryFields(data) {
     'projectName',
     'repo_name',
     'repoName',
+    'title',
+    'task_title',
+    'taskTitle',
+    'session_title',
+    'sessionTitle',
+    'summary_title',
+    'summaryTitle',
+    'prompt',
+    'user_prompt',
+    'userPrompt',
+    'summary',
+    'result_summary',
+    'resultSummary',
+    'last_assistant_message',
+    'lastAssistantMessage',
     'client',
     'originator',
     'source_app',
@@ -2172,7 +2188,7 @@ function startLocalAgentServer() {
         writeJson(res, 200, { ok: true, event: mcpEvent })
         return
       }
-      const event = mapHookToEvent(data)
+      const event = enrichTraeEvent(mapHookToEvent(data), data)
       const receipt = recordHookReceipt(data, event, url.pathname)
       if (event) {
         const sid = event.sessionId || event.session_id

@@ -22,6 +22,17 @@ test('trae internal work directories do not become bubble project names', () => 
   assert.equal(eventWorkId(event), '6a498bdd92c14db1ad4c8bd6')
 })
 
+test('trae internal work bubbles use prompt when available', () => {
+  const event = {
+    source: 'local',
+    type: 'task_done',
+    client: 'trae-work',
+    prompt: '完成这道 CTF 趣味竞赛题',
+    cwd: '/Users/bytedance/.trae-cn/work/6a498bdd92c14db1ad4c8bd6',
+  }
+  assert.equal(eventBubbleContext(event), 'Trae Work / 完成这道 CTF 趣味竞赛题')
+})
+
 test('normal local agent events include both app and project', () => {
   const event = {
     source: 'local',

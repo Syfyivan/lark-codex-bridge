@@ -1508,8 +1508,12 @@ function bubbleHoverHtml(item) {
   }
   const rows = [
     `<div class="bubble-hover-title">${escapeHtml(item.title)}</div>`,
-    `<div class="bubble-hover-text">${escapeHtml(shortText(item.text, 74))}</div>`,
   ]
+  if (item.event?.title) rows.push(`<div class="bubble-hover-text">任务：${escapeHtml(shortText(item.event.title, 74))}</div>`)
+  if (item.event?.prompt && item.event.prompt !== item.event?.title) {
+    rows.push(`<div class="bubble-hover-text">你：${escapeHtml(shortText(item.event.prompt, 74))}</div>`)
+  }
+  rows.push(`<div class="bubble-hover-text">${escapeHtml(shortText(item.text, 74))}</div>`)
   const appLabel = eventAppLabel(item.event)
   const agentLabel = eventAgentLabel(item.event)
   const projectLabel = eventProjectLabel(item.event)

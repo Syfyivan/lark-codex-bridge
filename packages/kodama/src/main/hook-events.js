@@ -48,6 +48,17 @@ function firstString(...values) {
   return ''
 }
 
+function queryText(value) {
+  if (!Array.isArray(value)) return ''
+  return value.map((item) => {
+    if (typeof item === 'string') return item
+    if (!item || typeof item !== 'object') return ''
+    if (item.type && String(item.type).toLowerCase() !== 'text') return ''
+    const data = item.data && typeof item.data === 'object' ? item.data : {}
+    return firstString(data.content, data.text, item.content, item.text)
+  }).filter(Boolean).join(' ')
+}
+
 function commandCategory(command) {
   const text = String(command || '')
   if (!text) return ''
@@ -125,8 +136,17 @@ function localContext(data) {
   const turnId = firstString(data?.['turn-id'], data?.turn_id, data?.turnId, data?.operation_id, data?.operationId)
   const client = firstString(data?.client, data?.originator, data?.source_app, data?.sourceApp, data?.agent)
   const tty = firstString(data?.tty, data?.terminal_tty, data?.terminalTty)
-  const prompt = firstString(data?.prompt, data?.user_prompt, data?.userPrompt)
-  const title = firstString(data?.title, data?.task_title, data?.taskTitle, task.title)
+  const userMessage = data?.userMessage && typeof data.userMessage === 'object' ? data.userMessage : {}
+  const snakeUserMessage = data?.user_message && typeof data.user_message === 'object' ? data.user_message : {}
+  const prompt = firstString(
+    data?.prompt,
+    data?.user_prompt,
+    data?.userPrompt,
+    queryText(data?.query),
+    queryText(userMessage.query),
+    queryText(snakeUserMessage.query),
+  )
+  const title = firstString(data?.title, data?.task_title, data?.taskTitle, data?.session_title, data?.sessionTitle, task.title)
   const projectName = firstString(
     data?.project_name,
     data?.projectName,

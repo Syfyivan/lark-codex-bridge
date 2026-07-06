@@ -54,6 +54,7 @@ test('thread progress replies surface as task progress, not Feishu reply bubbles
 
   assert.match(source, /function emitReplyPetEvent/);
   assert.match(source, /petEventType:\s*'task_progress'/);
+  assert.match(source, /taskId:\s*taskRun\?\.id \|\| ''/);
   assert.match(source, /replyChannel:\s*'lark_thread'/);
   assert.match(source, /petEvent:\s*false/);
 });

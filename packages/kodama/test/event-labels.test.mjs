@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  bridgeTaskShareRequestForEvent,
   eventActorLabel,
   eventAppLabel,
   eventBubbleContext,
@@ -98,6 +99,7 @@ test('local agent command progress is robot-labeled without fake Codex link', ()
   assert.equal(eventProjectLabel(event), 'code.byted.org')
   assert.equal(sessionRequestForEvent(event), null)
   assert.equal(targetForEvent(event), null)
+  assert.equal(bridgeTaskShareRequestForEvent(event), null)
 })
 
 test('bridge-invoked local agent progress is labeled as Feishu bot work', () => {
@@ -220,5 +222,57 @@ test('lark reply merge key replaces repeated replies without merging progress', 
   assert.equal(
     eventLarkReplyMergeKey({ source: 'lark', type: 'lark_reply_sent', chatId: 'oc_chat' }),
     '',
+  )
+})
+
+test('bridge task bubbles can share robot process by task or message scope', () => {
+  assert.deepEqual(
+    bridgeTaskShareRequestForEvent({
+      source: 'lark',
+      type: 'task_progress',
+      taskId: 'task-123',
+      contextKey: 'thread:oc_chat:om_message',
+      chatId: 'oc_chat',
+      messageId: 'om_message',
+      text: '仍在处理',
+    }, {
+      bridgeUrl: 'http://127.0.0.1:8787',
+      token: 'bridge-token',
+    }),
+    {
+      bridgeUrl: 'http://127.0.0.1:8787',
+      token: 'bridge-token',
+      limit: 1,
+      taskId: 'task-123',
+    },
+  )
+
+  assert.deepEqual(
+    bridgeTaskShareRequestForEvent({
+      source: 'lark',
+      type: 'lark_reply_sent',
+      contextKey: 'thread:oc_chat:om_message',
+      chatId: 'oc_chat',
+      messageId: 'om_message',
+      text: '仍在处理',
+    }),
+    {
+      bridgeUrl: '',
+      token: '',
+      limit: 20,
+      contextKey: 'thread:oc_chat:om_message',
+      chatId: 'oc_chat',
+      messageId: 'om_message',
+    },
+  )
+
+  assert.equal(
+    bridgeTaskShareRequestForEvent({
+      source: 'lark',
+      type: 'lark_message_received',
+      chatId: 'oc_chat',
+      messageId: 'om_message',
+    }),
+    null,
   )
 })

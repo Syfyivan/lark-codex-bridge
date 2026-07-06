@@ -5363,6 +5363,7 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
     sandbox: config.codexSandbox,
   });
   const petContext = {
+    taskId: taskRun?.id || '',
     contextKey,
     chatId: extractChatId(rootEvent),
     messageId: rootMessageId,
@@ -5929,6 +5930,7 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
     sandbox: config.codexSandbox,
   });
   const petContext = {
+    taskId: taskRun?.id || '',
     contextKey,
     chatId: record.chatId,
     messageId: record.originalMessageId,
@@ -6183,6 +6185,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     sandbox: executionOptions.sandbox || config.codexSandbox,
   });
   const petContext = {
+    taskId: taskRun?.id || '',
     contextKey,
     chatId: extractChatId(event),
     messageId: extractMessageId(event),
@@ -6204,6 +6207,8 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     ? null
     : createThreadProgressMessenger(event, {
         idempotencyKey: taskRun?.id || extractMessageId(event) || randomUUID(),
+        taskId: taskRun?.id || '',
+        contextKey,
       });
   const shouldSendFinalReply = config.progressCardFinalReply || !cardProgress || config.progressMessagesEnabled;
   emitPet('task_started', { ...petContext, text: prompt || stripBridgeTraceText(rawText) });
@@ -8356,6 +8361,7 @@ async function replyProgressToThread(event, text, idempotencySuffix) {
     idempotencyKey: `progress-${idempotencySuffix}-${messageId || randomUUID()}`,
     petEventType: 'task_progress',
     petEventPayload: {
+      contextKey: contextKeyForBridgeEvent(event),
       progressKind: idempotencySuffix,
       replyChannel: 'lark_thread',
     },
@@ -8390,6 +8396,8 @@ function createThreadProgressMessenger(event, options = {}) {
           idempotencyKey: `progress-${suffix}-${baseKey}`,
           petEventType: 'task_progress',
           petEventPayload: {
+            taskId: options.taskId || '',
+            contextKey: options.contextKey || contextKeyForBridgeEvent(event),
             progressKind: suffix,
             replyChannel: 'lark_thread',
           },

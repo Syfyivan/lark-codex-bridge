@@ -6,6 +6,7 @@ import { initAccessoryLayer } from './accessories.js'
 import { ACCESSORIES, ACCESSORY_SLOTS } from './config/accessories.js'
 import { initGrowth, feed as feedGrowth, feedManually, growthScale, feedTokens, statusText, getState as getGrowthState, equipAccessory, unlockWithExp, configureAccessories } from './growth.js'
 import {
+  bridgeTaskShareRequestForEvent as buildBridgeTaskShareRequestForEvent,
   eventActorLabel,
   eventAgentLabel,
   eventAppLabel,
@@ -1357,6 +1358,21 @@ function sessionRequestForEvent(event) {
   })
 }
 
+function bridgeTaskShareRequestForEvent(event) {
+  return buildBridgeTaskShareRequestForEvent(event, {
+    bridgeUrl: activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL,
+    token: activeAgentConfig.token || '',
+  })
+}
+
+function bubbleShareTargetForEvent(event) {
+  const sessionRequest = sessionRequestForEvent(event)
+  if (sessionRequest) return { kind: 'session', request: sessionRequest }
+  const bridgeRequest = bridgeTaskShareRequestForEvent(event)
+  if (bridgeRequest) return { kind: 'bridge-task', request: bridgeRequest }
+  return null
+}
+
 function shouldPersistBubble(event) {
   return Boolean(event?.type)
 }
@@ -1468,11 +1484,15 @@ function renderBubbles() {
 }
 
 function bubbleShareButtonHtml(item, actionsCoolingDown = false) {
-  if (!sessionRequestForEvent(item.event)) return ''
+  const target = bubbleShareTargetForEvent(item.event)
+  if (!target) return ''
   const pending = pendingBubbleShares.has(item.id)
+  const title = target.kind === 'bridge-task'
+    ? '生成机器人过程分享链接'
+    : '生成会话分享链接'
   return [
     `<button type="button" data-share-bubble="${escapeHtml(item.id)}"`,
-    ` title="${pending ? '正在生成会话分享链接' : '生成会话分享链接'}"`,
+    ` title="${pending ? '正在生成分享链接' : title}"`,
     pending || actionsCoolingDown ? ' disabled aria-busy="true"' : '',
     `>${pending ? '分享中...' : '分享'}</button>`,
   ].join('')
@@ -2090,22 +2110,25 @@ async function shareBubbleSession(id) {
   const bubbleId = String(id)
   if (pendingBubbleShares.has(bubbleId)) return
   const item = bubbleLog.find(record => record.id === bubbleId)
-  const request = sessionRequestForEvent(item?.event)
-  if (!request) {
-    say('这条气泡没有可分享的会话信息', 2400)
+  const target = bubbleShareTargetForEvent(item?.event)
+  if (!target) {
+    say('这条气泡没有可分享的过程信息', 2400)
     return
   }
   pendingBubbleShares.add(bubbleId)
   renderBubbles()
-  say('正在生成会话分享链接...', 2200)
+  say(target.kind === 'bridge-task' ? '正在生成机器人过程分享链接...' : '正在生成会话分享链接...', 2200)
   try {
-    const result = await window.pet.shareSession?.(request)
+    const result = target.kind === 'bridge-task'
+      ? await window.pet.shareBridgeTasks?.(target.request)
+      : await window.pet.shareSession?.(target.request)
     if (!result?.ok) {
       say(`分享失败：${result?.error || 'bridge 没返回链接'}`, 4200)
       return
     }
     const url = result.url || result.share?.url
-    notifyShareReady(url ? `分享链接已复制到剪贴板：${url}` : '分享链接已生成，已复制到剪贴板')
+    const label = target.kind === 'bridge-task' ? '机器人过程分享链接' : '分享链接'
+    notifyShareReady(url ? `${label}已复制到剪贴板：${url}` : `${label}已生成，已复制到剪贴板`)
   } catch (error) {
     say(`分享失败：${error?.message || error}`, 4200)
   } finally {

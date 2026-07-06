@@ -217,6 +217,33 @@ export function eventLarkReplyMergeKey(event) {
   return `lark-reply:${chatId}:${messageId}`
 }
 
+export function bridgeTaskShareRequestForEvent(event, options = {}) {
+  if (!event) return null
+  const type = String(event.type || '')
+  if (!new Set(['task_started', 'task_progress', 'task_waiting', 'task_done', 'task_failed', 'lark_reply_sent']).has(type)) {
+    return null
+  }
+  const taskId = firstString(event.taskId, event.task_id)
+  const contextKey = firstString(event.contextKey, event.context_key)
+  const chatId = firstString(event.chatId, event.chat_id)
+  const messageId = firstString(event.messageId, event.message_id)
+  const bridgeLike = event.source === 'lark' || Boolean(taskId || contextKey || chatId || messageId)
+  if (!bridgeLike || (!taskId && !contextKey && !chatId && !messageId)) return null
+
+  const request = {
+    bridgeUrl: options.bridgeUrl || '',
+    token: options.token || '',
+    limit: taskId ? 1 : 20,
+  }
+  if (taskId) request.taskId = taskId
+  else {
+    if (contextKey) request.contextKey = contextKey
+    if (chatId) request.chatId = chatId
+    if (messageId) request.messageId = messageId
+  }
+  return request
+}
+
 export function eventActorLabel(event) {
   if (!event) return ''
   const type = String(event.type || '')

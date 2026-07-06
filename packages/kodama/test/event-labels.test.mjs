@@ -159,6 +159,19 @@ test('session title is extracted from explicit title before prompt', () => {
   }), '修复 BuyTogether 登录状态')
 })
 
+test('session title does not fall back to raw user prompt dumps', () => {
+  assert.equal(eventSessionTitle({
+    source: 'local',
+    type: 'task_started',
+    prompt: '实现家庭采购商品合并逻辑',
+  }), '')
+  assert.equal(eventSessionTitle({
+    source: 'local',
+    type: 'task_progress',
+    title: '# Files mentioned by the user: ## codex-clipboard-f55351e3.png',
+  }), '')
+})
+
 test('session cache keys connect command progress to earlier prompt events', () => {
   const first = {
     source: 'local',
@@ -177,7 +190,7 @@ test('session cache keys connect command progress to earlier prompt events', () 
     threadId: 'thread-1',
     cwd: '/Users/bytedance/code/buy-together',
   }
-  assert.equal(eventSessionTitle(first), '实现家庭采购商品合并逻辑')
+  assert.equal(eventSessionTitle(first), '')
   assert.equal(eventSessionTitle(progress), '')
   assert.ok(eventSessionCacheKeys(first).includes('thread:thread-1'))
   assert.ok(eventSessionCacheKeys(progress).includes('thread:thread-1'))

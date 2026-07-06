@@ -24,7 +24,7 @@ test('codex notify captures input-messages as the task prompt (bubble headline)'
   })
 })
 
-test('codex internal title-generation notify is ignored', () => {
+test('codex internal title-generation notify updates session title metadata', () => {
   const event = mapHookToEvent({
     type: 'agent-turn-complete',
     'last-assistant-message': '{"title":"审阅简历问题"}',
@@ -35,7 +35,13 @@ test('codex internal title-generation notify is ignored', () => {
     cwd: '/Users/bytedance/code',
     client: 'Codex Desktop',
   })
-  assert.equal(event, null)
+  assert.deepEqual(event, {
+    type: 'session_title',
+    source: 'local',
+    title: '审阅简历问题',
+    cwd: '/Users/bytedance/code',
+    client: 'Codex Desktop',
+  })
 })
 
 test('codex internal memory maintenance notify is ignored', () => {

@@ -398,6 +398,7 @@ async function init() {
     backend?.applySettings?.()
     const handleAgentEvent = (event) => {
       recordAgentEvent(event)
+      if (event?.type === 'session_title') return
       // 子 Agent / team-worker 事件只进详情统计和 session 列表,不冒泡/不 TTS。
       const isSubagent = event?.subagent === true
         || Boolean(event?.agentTranscriptPath || event?.agent_transcript_path || event?.agentId || event?.agent_id)

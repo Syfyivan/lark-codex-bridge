@@ -31,6 +31,15 @@ export function isOpaqueInternalName(value) {
   return /^[a-z0-9]{20,}$/i.test(text) && !/[._-]/.test(text)
 }
 
+function isPromptDump(value) {
+  const text = String(value || '').trim()
+  if (!text) return false
+  if (/^#\s*Files mentioned by the user:/i.test(text)) return true
+  if (/^##\s+codex-clipboard-[0-9a-f-]+\./i.test(text)) return true
+  if (/^<image\b/i.test(text)) return true
+  return false
+}
+
 export function eventPath(event) {
   return firstString(
     event?.cwd,
@@ -168,9 +177,8 @@ export function eventSessionTitle(event, max = 48) {
     event?.aiTitle,
     event?.ai_title,
     event?.title,
-    event?.prompt,
   )
-  return title && !isOpaqueInternalName(title) ? shortLabel(title, max) : ''
+  return title && !isOpaqueInternalName(title) && !isPromptDump(title) ? shortLabel(title, max) : ''
 }
 
 export function eventCurrentText(event, fallback = '', max = 96) {

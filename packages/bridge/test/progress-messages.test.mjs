@@ -36,6 +36,29 @@ test('failure summary is structured and redacts sensitive details', () => {
   assert.match(reply, /\[email\]/);
 });
 
+test('failure summary marks dirty worktrees as recoverable', () => {
+  const reply = formatDirectTaskFailureReply(
+    new Error('npm run lint failed at /Users/bytedance/code/buy-together'),
+    {
+      cwd: '/Users/bytedance/code/buy-together',
+      gitStatus: [
+        '## main...origin/main',
+        ' M TODO.md',
+        '?? src/app/page.tsx',
+      ].join('\n'),
+      changedCount: 2,
+      hasWorktreeChanges: true,
+    },
+  );
+
+  assert.match(reply, /当前状态：失败（可恢复）/);
+  assert.match(reply, /是否修改了代码：是，检测到 2 条未提交变更/);
+  assert.match(reply, /当前 git 状态/);
+  assert.match(reply, /M TODO\.md/);
+  assert.match(reply, /不要重写整个任务/);
+  assert.doesNotMatch(reply, /\/Users\/bytedance/);
+});
+
 test('stopped summary is structured as blocked', () => {
   const reply = formatDirectTaskStoppedReply();
 

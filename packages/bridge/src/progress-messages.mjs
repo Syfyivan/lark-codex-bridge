@@ -31,12 +31,42 @@ export function sanitizeBridgeStatusText(value, maxLength = 800) {
   );
 }
 
-export function formatDirectTaskFailureReply(error) {
-  const detail = sanitizeBridgeStatusText(error?.message || error || '未知错误');
+function statusChangeLines(gitStatus) {
+  return String(gitStatus || '')
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(line => line && !line.startsWith('##'));
+}
+
+export function formatDirectTaskFailureReply(error, recovery = {}) {
+  const detail = sanitizeBridgeStatusText(error?.message || error || '未知错误', 500);
+  const gitStatus = sanitizeBridgeStatusText(recovery.gitStatus || '', 1200);
+  const changeLines = statusChangeLines(recovery.gitStatus);
+  const hasChanges = Boolean(recovery.hasWorktreeChanges || changeLines.length);
+  const changedCount = Number(recovery.changedCount || changeLines.length || 0);
+  const cwd = recovery.cwd ? sanitizeBridgeStatusText(recovery.cwd, 240) : '';
+
+  if (hasChanges) {
+    return [
+      '当前状态：失败（可恢复）',
+      '做了什么：Codex run 已启动，但执行过程中有命令失败；bridge 已检测到本地工作区存在未提交改动。',
+      `是否修改了代码：是，检测到 ${changedCount} 条未提交变更。`,
+      '验证结果：未完成；需要修复失败命令后重新验证。',
+      `失败摘要：${detail || '请查看 bridge 本地日志定位原因。'}`,
+      cwd ? `工作目录：${cwd}` : '',
+      gitStatus ? `当前 git 状态：\n${gitStatus}` : '',
+      '剩余风险或下一步：不要重写整个任务；从当前本地改动继续，先修复失败命令，重跑必要验证，通过后再 commit + push。',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
   return [
     '当前状态：失败',
     '做了什么：Codex run 已启动，但执行过程中出错。',
-    '是否修改了代码：未知；bridge 不在失败摘要中展开完整工具日志。',
+    recovery.gitStatus
+      ? '是否修改了代码：未检测到未提交变更。'
+      : '是否修改了代码：未知；bridge 未能确认工作区状态。',
     '验证结果：未完成。',
     `剩余风险或下一步：${detail || '请查看 bridge 本地日志定位原因。'}`,
   ].join('\n');

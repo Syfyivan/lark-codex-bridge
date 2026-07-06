@@ -6154,6 +6154,39 @@ function buildDirectCodexPrompt(event, rawText, options = {}) {
   };
 }
 
+async function inspectFailedTaskWorktree(cwd) {
+  const targetCwd = cwd || config.codexCwd || process.cwd();
+  try {
+    await runProcess('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: targetCwd,
+      timeoutMs: 5000,
+    });
+    const { stdout } = await runProcess('git', ['status', '--short', '--branch'], {
+      cwd: targetCwd,
+      timeoutMs: 5000,
+    });
+    const gitStatus = String(stdout || '').trim();
+    const changedCount = gitStatus
+      .split('\n')
+      .filter(line => line.trim() && !line.startsWith('##'))
+      .length;
+    return {
+      cwd: targetCwd,
+      gitStatus,
+      changedCount,
+      hasWorktreeChanges: changedCount > 0,
+    };
+  } catch (error) {
+    return {
+      cwd: targetCwd,
+      gitStatus: '',
+      changedCount: 0,
+      hasWorktreeChanges: false,
+      statusError: String(error?.message || error),
+    };
+  }
+}
+
 async function executeDirectCodexTask(event, rawText, options = {}) {
   let nonOwnerContext = null;
   const executionOptions = { ...options };
@@ -6275,13 +6308,20 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       return { ok: false, error: 'stopped' };
     }
     console.error(`[bridge] ${error.stack || error.message}`);
-    if (progress) await progress.fail(error.message || error);
-    emitPet('task_failed', { ...petContext, text: String(error?.message || error), reason: 'error' });
-    recordBridgeTaskEvent(taskRun?.id, 'task_failed', { text: String(error?.message || error), reason: 'error' });
-    failBridgeTaskRun(taskRun?.id, { errorText: String(error?.message || error) });
+    const recovery = await inspectFailedTaskWorktree(executionOptions.cwd || config.codexCwd);
+    const failureReply = formatDirectTaskFailureReply(error, recovery);
+    if (progress) await progress.fail(failureReply);
+    emitPet('task_failed', { ...petContext, text: failureReply, reason: 'error' });
+    recordBridgeTaskEvent(taskRun?.id, 'task_failed', {
+      text: failureReply,
+      rawError: String(error?.message || error),
+      recovery,
+      reason: 'error',
+    });
+    failBridgeTaskRun(taskRun?.id, { errorText: failureReply });
     await replyToLark(
       event,
-      formatDirectTaskFailureReply(error),
+      failureReply,
       {
         ...(options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-failed` } : {}),
         petEvent: false,

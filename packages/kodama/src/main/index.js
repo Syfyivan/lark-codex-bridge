@@ -53,6 +53,22 @@ let petHidden = false
 let topmostTimers = []
 let topmostInterval = null
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  console.error('[kodama] another instance is already running; exiting duplicate process')
+  app.quit()
+  process.exit(0)
+}
+
+app.on('second-instance', () => {
+  petHidden = false
+  if (win && !win.isDestroyed()) {
+    win.showInactive()
+    win.moveTop?.()
+    scheduleTopmostReassert()
+  }
+})
+
 process.on('uncaughtException', (err) => {
   console.error(`[kodama] uncaught exception: ${err?.stack || err?.message || err}`)
 })

@@ -43,7 +43,7 @@ async function main() {
     if (!electronApp || !existsSync(electronApp)) {
       throw new Error(`cannot resolve Electron.app from ${electronBin}`)
     }
-    child = spawn('open', ['-n', electronApp, '--args', appDir], {
+    child = spawn('open', [electronApp, '--args', appDir], {
       detached: true,
       stdio: 'ignore',
     })

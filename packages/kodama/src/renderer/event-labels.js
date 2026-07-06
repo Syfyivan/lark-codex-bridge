@@ -173,6 +173,22 @@ export function eventSessionTitle(event, max = 48) {
   return title && !isOpaqueInternalName(title) ? shortLabel(title, max) : ''
 }
 
+export function eventCurrentText(event, fallback = '', max = 96) {
+  const text = firstString(
+    event?.statusText,
+    event?.status_text,
+    event?.progressText,
+    event?.progress_text,
+    event?.resultText,
+    event?.result_text,
+    event?.text,
+    event?.message,
+    event?.summary,
+    fallback,
+  )
+  return text && !isOpaqueInternalName(text) ? shortLabel(text, max) : ''
+}
+
 export function eventSessionCacheKeys(event) {
   if (!event) return []
   const keys = []

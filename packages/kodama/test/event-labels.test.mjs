@@ -5,6 +5,7 @@ import {
   eventActorLabel,
   eventAppLabel,
   eventBubbleContext,
+  eventCurrentText,
   eventExplicitProjectLabel,
   eventProjectLabel,
   eventSessionCacheKeys,
@@ -179,4 +180,20 @@ test('session cache keys connect command progress to earlier prompt events', () 
   assert.ok(eventSessionCacheKeys(progress).includes('thread:thread-1'))
   assert.ok(eventSessionCacheKeys(first).some(key => key.startsWith('cwd:local:')))
   assert.ok(eventSessionCacheKeys(progress).some(key => key.startsWith('cwd:local:')))
+})
+
+test('current hover text prefers latest progress over initial prompt', () => {
+  const event = {
+    source: 'local',
+    type: 'task_progress',
+    prompt: '先让菌子给一个表情回复，然后开始review，同时你再给我解答现在的问题。',
+    text: 'Git 操作完成：git diff -- packages/bridge/lark-codex-bridge.mjs',
+    cwd: '/Users/bytedance/code/lark-codex-bridge',
+  }
+
+  assert.equal(
+    eventCurrentText(event),
+    'Git 操作完成：git diff -- packages/bridge/lark-codex-bridge.mjs',
+  )
+  assert.doesNotMatch(eventCurrentText(event), /先让菌子/)
 })

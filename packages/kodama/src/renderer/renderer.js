@@ -10,6 +10,7 @@ import {
   eventAgentLabel,
   eventAppLabel,
   eventBubbleContext,
+  eventCurrentText,
   eventExplicitProjectLabel,
   eventSessionCacheKeys,
   eventSessionTitle,
@@ -1504,15 +1505,53 @@ function shortText(text, max = 82) {
   return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized
 }
 
+function normalizedHoverKey(text) {
+  return String(text || '')
+    .replace(/^(?:最新|当前|任务|会话|你|Agent|机器人|Assistant|User)\s*[:：]\s*/iu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function pushHoverText(rows, seen, text, options = {}) {
+  const line = shortText(text, options.max || 82)
+  const key = normalizedHoverKey(line)
+  if (!key || seen.has(key)) return false
+  seen.add(key)
+  rows.push(`<div class="bubble-hover-text">${escapeHtml(line)}</div>`)
+  return true
+}
+
+function stalePromptPreviewLine(line, event, currentText) {
+  if (!currentText || !event?.prompt) return false
+  const text = String(line || '').trim()
+  if (!/^(?:你|User)\s*[:：]/iu.test(text)) return false
+  const prompt = normalizedHoverKey(event.prompt)
+  if (!prompt) return false
+  const current = normalizedHoverKey(currentText)
+  if (current && current.includes(prompt)) return false
+  return normalizedHoverKey(text).includes(prompt)
+}
+
+function addPreviewHoverLines(rows, seen, item, currentText, maxLines) {
+  let added = 0
+  for (const line of [...(item.preview?.lines || [])].reverse()) {
+    if (stalePromptPreviewLine(line, item.event, currentText)) continue
+    if (pushHoverText(rows, seen, line, { max: 82 })) added += 1
+    if (added >= maxLines) break
+  }
+}
+
 function bubbleHoverHtml(item) {
+  const currentText = eventCurrentText(item.event, item.text, 96)
+  const seen = new Set()
   const preview = item.preview
   if (preview?.ok) {
     const rows = [
-      `<div class="bubble-hover-title">${escapeHtml(preview.title || item.title)}</div>`,
+      `<div class="bubble-hover-title">${escapeHtml(item.title || preview.title)}</div>`,
     ]
-    for (const line of (preview.lines || []).slice(-2)) {
-      rows.push(`<div class="bubble-hover-text">${escapeHtml(shortText(line, 74))}</div>`)
-    }
+    pushHoverText(rows, seen, currentText ? `最新：${currentText}` : '', { max: 96 })
+    addPreviewHoverLines(rows, seen, item, currentText, currentText ? 1 : 2)
     return rows.join('')
   }
   if (preview?.loading) {
@@ -1530,11 +1569,13 @@ function bubbleHoverHtml(item) {
   const rows = [
     `<div class="bubble-hover-title">${escapeHtml(item.title)}</div>`,
   ]
-  if (item.event?.title) rows.push(`<div class="bubble-hover-text">任务：${escapeHtml(shortText(item.event.title, 74))}</div>`)
-  if (item.event?.prompt && item.event.prompt !== item.event?.title) {
-    rows.push(`<div class="bubble-hover-text">你：${escapeHtml(shortText(item.event.prompt, 74))}</div>`)
+  pushHoverText(rows, seen, currentText ? `最新：${currentText}` : '', { max: 96 })
+  if (!currentText && item.event?.title) {
+    pushHoverText(rows, seen, `任务：${item.event.title}`, { max: 82 })
   }
-  rows.push(`<div class="bubble-hover-text">${escapeHtml(shortText(item.text, 74))}</div>`)
+  if (!currentText && item.event?.prompt && item.event.prompt !== item.event?.title) {
+    pushHoverText(rows, seen, `会话：${item.event.prompt}`, { max: 82 })
+  }
   const actorLabel = eventActorLabel(item.event)
   const appLabel = eventAppLabel(item.event)
   const agentLabel = eventAgentLabel(item.event)
@@ -1588,22 +1629,23 @@ function previewKey(request) {
 // Build a hover summary from the event alone — used when no transcript file is
 // available (Codex `agent-turn-complete` notify carries the prompt + result but
 // no transcript path, so the file-read preview always failed before).
-function localPreviewFromEvent(event) {
+function localPreviewFromEvent(event, fallbackText = '') {
   const lines = []
+  const currentText = eventCurrentText(event, fallbackText, 96)
   const actorLabel = eventActorLabel(event)
   const appLabel = eventAppLabel(event)
   const agentLabel = eventAgentLabel(event)
   const projectLabel = eventExplicitProjectLabel(event)
   const workdirLabel = eventWorkdirLabel(event)
   const workId = eventWorkId(event)
+  if (currentText) lines.push(`最新: ${currentText}`)
   if (actorLabel) lines.push(`来源: ${actorLabel}`)
   if (appLabel) lines.push(`App: ${appLabel}`)
   if (agentLabel && agentLabel !== appLabel) lines.push(`Agent: ${agentLabel}`)
   if (projectLabel) lines.push(`项目: ${projectLabel}`)
   if (workdirLabel && workdirLabel !== projectLabel) lines.push(`工作目录: ${workdirLabel}`)
   if (workId) lines.push(`Work ID: ${shortText(workId, 18)}`)
-  if (event?.prompt) lines.push(`你: ${shortText(event.prompt, 74)}`)
-  if (event?.text) lines.push(`机器人: ${shortText(event.text, 74)}`)
+  if (!currentText && event?.prompt) lines.push(`会话: ${shortText(event.prompt, 74)}`)
   if (!lines.length) return { ok: false, error: '这条事件没有可显示的摘要' }
   return { ok: true, title: bubbleTitle(event), lines }
 }
@@ -1613,7 +1655,7 @@ async function ensureBubblePreview(item, event, anchor) {
   if (!request || item.preview?.ok || item.preview?.loading) return
   // No transcript on disk → synthesize from the event (avoids missing-transcript-path).
   if (!request.transcriptPath && !request.agentTranscriptPath) {
-    item.preview = localPreviewFromEvent(item.event)
+    item.preview = localPreviewFromEvent(item.event, item.text)
     return
   }
   const key = previewKey(request)

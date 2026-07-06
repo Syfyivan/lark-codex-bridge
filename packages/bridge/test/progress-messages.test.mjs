@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   DIRECT_TASK_HEARTBEATS,
@@ -9,6 +11,8 @@ import {
   formatDirectTaskStoppedReply,
   sanitizeBridgeStatusText,
 } from '../src/progress-messages.mjs';
+
+const here = rel => fileURLToPath(new URL(rel, import.meta.url));
 
 test('progress messages expose immediate receive, start, and bounded heartbeat text', () => {
   assert.equal(DIRECT_TASK_RECEIVED_TEXT, '已收到，正在判断任务范围和执行环境。');
@@ -43,4 +47,13 @@ test('status sanitizer clamps long text', () => {
   const text = sanitizeBridgeStatusText('x'.repeat(100), 8);
 
   assert.equal(text, 'xxxxxxxx\n...');
+});
+
+test('thread progress replies surface as task progress, not Feishu reply bubbles', () => {
+  const source = readFileSync(here('../lark-codex-bridge.mjs'), 'utf8');
+
+  assert.match(source, /function emitReplyPetEvent/);
+  assert.match(source, /petEventType:\s*'task_progress'/);
+  assert.match(source, /replyChannel:\s*'lark_thread'/);
+  assert.match(source, /petEvent:\s*false/);
 });

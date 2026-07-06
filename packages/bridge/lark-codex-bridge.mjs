@@ -676,6 +676,14 @@ function emitPet(type, payload = {}) {
   }
 }
 
+function emitReplyPetEvent(type, payload = {}, options = {}) {
+  if (options.petEvent === false) return;
+  emitPet(options.petEventType || type, {
+    ...payload,
+    ...(options.petEventPayload || {}),
+  });
+}
+
 function safeTaskText(text, maxChars = config.petSyncMaxMessageChars) {
   return clampText(redactForCard(String(text || '')), Math.max(80, Number(maxChars || 1000)));
 }
@@ -6227,13 +6235,19 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
         await replyRelayToLark(
           event,
           relayPayload,
-          options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {},
+          {
+            ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+            petEvent: false,
+          },
         );
       } else {
         await replyToLark(
           event,
           finalReply,
-          options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {},
+          {
+            ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+            petEvent: false,
+          },
         );
       }
     }
@@ -6248,7 +6262,10 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       await replyToLark(
         event,
         formatDirectTaskStoppedReply(),
-        options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-stopped` } : {},
+        {
+          ...(options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-stopped` } : {}),
+          petEvent: false,
+        },
       );
       return { ok: false, error: 'stopped' };
     }
@@ -6260,7 +6277,10 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     await replyToLark(
       event,
       formatDirectTaskFailureReply(error),
-      options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-failed` } : {},
+      {
+        ...(options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-failed` } : {}),
+        petEvent: false,
+      },
     );
     return { ok: false, error: String(error?.stack || error?.message || error) };
   } finally {
@@ -8317,11 +8337,11 @@ async function replyToOriginalThreadOnly(event, text, options = {}) {
       '--idempotency-key',
       key,
     ]);
-    emitPet('lark_reply_sent', {
+    emitReplyPetEvent('lark_reply_sent', {
       text,
       chatId: extractChatId(event),
       messageId,
-    });
+    }, options);
     return true;
   } catch (error) {
     console.error(`[bridge] failed to send thread-only reply: ${error.stack || error.message}`);
@@ -8334,6 +8354,11 @@ async function replyProgressToThread(event, text, idempotencySuffix) {
   const messageId = extractMessageId(event);
   return replyToOriginalThreadOnly(event, text, {
     idempotencyKey: `progress-${idempotencySuffix}-${messageId || randomUUID()}`,
+    petEventType: 'task_progress',
+    petEventPayload: {
+      progressKind: idempotencySuffix,
+      replyChannel: 'lark_thread',
+    },
   });
 }
 
@@ -8363,6 +8388,11 @@ function createThreadProgressMessenger(event, options = {}) {
         if (stopped && suffix !== 'started') return false;
         return replyToOriginalThreadOnly(event, text, {
           idempotencyKey: `progress-${suffix}-${baseKey}`,
+          petEventType: 'task_progress',
+          petEventPayload: {
+            progressKind: suffix,
+            replyChannel: 'lark_thread',
+          },
         });
       })
       .catch(error => {
@@ -8462,7 +8492,7 @@ async function replyToLark(event, text, options = {}) {
         '--idempotency-key',
         key,
       ]);
-      emitPet('lark_reply_sent', { text, chatId, messageId });
+      emitReplyPetEvent('lark_reply_sent', { text, chatId, messageId }, options);
       return;
     } catch (error) {
       if (!chatId) throw error;
@@ -8477,7 +8507,7 @@ async function replyToLark(event, text, options = {}) {
         '--idempotency-key',
         `${key}-chat-fallback`,
       ]);
-      emitPet('lark_reply_sent', { text, chatId, messageId });
+      emitReplyPetEvent('lark_reply_sent', { text, chatId, messageId }, options);
       return;
     }
   }
@@ -8496,7 +8526,7 @@ async function replyToLark(event, text, options = {}) {
     '--idempotency-key',
     options.idempotencyKey || `bridge-${randomUUID()}`,
   ]);
-  emitPet('lark_reply_sent', { text, chatId, messageId: extractMessageId(event) });
+  emitReplyPetEvent('lark_reply_sent', { text, chatId, messageId: extractMessageId(event) }, options);
 }
 
 async function replyRelayToLark(event, payload, options = {}) {
@@ -8527,7 +8557,7 @@ async function replyRelayToLark(event, payload, options = {}) {
       '--idempotency-key',
       options.idempotencyKey || `bridge-relay-${messageId}`,
     ]);
-    emitPet('lark_reply_sent', { text: payload.text, chatId: extractChatId(event), messageId });
+    emitReplyPetEvent('lark_reply_sent', { text: payload.text, chatId: extractChatId(event), messageId }, options);
     return;
   }
 
@@ -8547,7 +8577,7 @@ async function replyRelayToLark(event, payload, options = {}) {
     '--idempotency-key',
     options.idempotencyKey || `bridge-relay-${randomUUID()}`,
   ]);
-  emitPet('lark_reply_sent', { text: payload.text, chatId, messageId: extractMessageId(event) });
+  emitReplyPetEvent('lark_reply_sent', { text: payload.text, chatId, messageId: extractMessageId(event) }, options);
 }
 
 function reactionRuleMatches(rule, text) {

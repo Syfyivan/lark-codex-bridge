@@ -253,6 +253,20 @@ function showPetAndMaybeTogglePanel(togglePanel = false) {
   if (togglePanel) setTimeout(() => sendToPet('pet:toggle-panel'), 80)
 }
 
+function resetPetPosition() {
+  sendToPet('pet:apply-ui-patch', {
+    petX: null,
+    petY: null,
+    petScale: 0.72,
+    petOpacity: 0.82,
+  })
+}
+
+function showPetAndResetPosition() {
+  setPetHidden(false)
+  setTimeout(resetPetPosition, 80)
+}
+
 function showPetAndEnterMoveMode() {
   setPetHidden(false)
   setTimeout(() => sendToPet('pet:enter-move-mode'), 80)
@@ -2151,13 +2165,15 @@ function emitRendererAgentEvent(event) {
 
 function controlPet(action) {
   if (action === 'show') {
-    setPetHidden(false)
+    showPetAndResetPosition()
   } else if (action === 'hide') {
     setPetHidden(true)
   } else if (action === 'toggle') {
     setPetHidden(!petHidden)
   } else if (action === 'panel') {
     showPetAndMaybeTogglePanel(true)
+  } else if (action === 'reset-position') {
+    showPetAndResetPosition()
   } else if (action === 'bridge-tasks') {
     createBridgeTasksWindow()
   } else if (action === 'manage') {
@@ -2195,6 +2211,7 @@ function startLocalAgentServer() {
         hookReceiptLogFile: hookReceiptLogFile(),
         lastOpenedTarget,
         uiSettings: {
+          ...(lastUiSettings || {}),
           reported: Boolean(lastUiSettings),
           terminalLauncher: terminalLauncherPreference(),
           dndMode: Boolean(petUiMenuState.dndMode),
@@ -2215,7 +2232,7 @@ function startLocalAgentServer() {
       writeJson(res, 200, { ok: true, ...getCachedTokenStats() })
       return
     }
-    const controlMatch = url.pathname.match(/^\/pet\/(show|hide|toggle|panel|bridge-tasks|manage)$/)
+    const controlMatch = url.pathname.match(/^\/pet\/(show|hide|toggle|panel|reset-position|bridge-tasks|manage)$/)
     if (controlMatch && (req.method === 'GET' || req.method === 'POST')) {
       if (isCrossSiteBrowserRequest(req)) {
         res.writeHead(403)
@@ -2384,6 +2401,7 @@ function refreshTray() {
   })
   items.push({ label: '事件 / 配置面板  ⌘⌥P', click: () => showPetAndMaybeTogglePanel(true) })
   items.push({ label: '移动桌宠  ⌘⌥M', click: () => showPetAndEnterMoveMode() })
+  items.push({ label: '重置桌宠位置', click: () => showPetAndResetPosition() })
   items.push({ label: '管理 / 设置中心…', click: () => openManageWindow() })
   items.push({
     label: '补齐 Agent Hooks → Kodama',

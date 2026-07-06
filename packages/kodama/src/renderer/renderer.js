@@ -541,8 +541,9 @@ async function initLive2D() {
     const pw = model.width
     const ph = model.height
     const margin = 24
-    const autoX = window.innerWidth - pw - margin
-    const autoY = window.innerHeight - ph - margin
+    const defaultArea = viewportVisibleArea()
+    const autoX = defaultArea.right - pw - margin
+    const autoY = defaultArea.bottom - ph - margin
     // Honor edge mode. Live2D models carry a lot of transparent padding, so
     // clamping fully-inside leaves a big visible gap. 'half' lets the pet hang
     // partway off-screen so its visible body can truly hug/reach the edge.
@@ -670,8 +671,9 @@ function gifLayout() {
   img.style.height = `${ph}px`
   img.style.opacity = String(uiSettings.petOpacity)
   const margin = 24
-  const autoX = window.innerWidth - pw - margin
-  const autoY = window.innerHeight - ph - margin
+  const defaultArea = viewportVisibleArea()
+  const autoX = defaultArea.right - pw - margin
+  const autoY = defaultArea.bottom - ph - margin
   // gif sprites are tight (little transparent padding), so 'half' is gentler here
   // than for Live2D (whose models carry big padding) — otherwise the body gets cut.
   const minVisible = uiSettings.edgeMode === 'half' ? 0.7 : 1

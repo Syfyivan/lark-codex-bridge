@@ -8430,9 +8430,9 @@ function createThreadProgressMessenger(event, options = {}) {
   const enqueue = (text, suffix) => {
     if (!progressMessagesAllowedForEvent(event)) return Promise.resolve(false);
     queue = queue
-      .then(() => {
+      .then(async () => {
         if (stopped && suffix !== 'started') return false;
-        return replyToOriginalThreadOnly(event, text, {
+        const sent = await replyToOriginalThreadOnly(event, text, {
           idempotencyKey: `progress-${suffix}-${baseKey}`,
           petEventType: 'task_progress',
           petEventPayload: {
@@ -8442,6 +8442,14 @@ function createThreadProgressMessenger(event, options = {}) {
             replyChannel: 'lark_thread',
           },
         });
+        if (sent) {
+          recordBridgeTaskEvent(options.taskId, 'task_progress', {
+            text,
+            progressKind: suffix,
+            replyChannel: 'lark_thread',
+          });
+        }
+        return sent;
       })
       .catch(error => {
         console.error(`[bridge] failed to send progress message: ${error.stack || error.message}`);

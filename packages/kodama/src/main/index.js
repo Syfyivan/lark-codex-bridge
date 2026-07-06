@@ -28,6 +28,7 @@ const {
   shareBridgeTasks: createBridgeTasksShare,
   shareSession: createSessionShare,
 } = require('./bridge-client')
+const { createCodexSessionTitleResolver } = require('./codex-session-index')
 
 // Local hook receiver port — declared early; referenced by top-level consts
 // (e.g. KODAMA_HOOK_CURL) that would otherwise hit the temporal dead zone.
@@ -52,6 +53,7 @@ let lastOpenedTarget = null
 let petHidden = false
 let topmostTimers = []
 let topmostInterval = null
+const resolveCodexSessionTitle = createCodexSessionTitleResolver()
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
@@ -2156,11 +2158,19 @@ function recordHookReceipt(data, event, urlPath) {
 
 function emitRendererAgentEvent(event) {
   if (!event || !win || win.isDestroyed()) return false
+  const enrichedEvent = enrichCodexSessionTitle(event)
   localEventCount += 1
-  lastLocalEvent = { ...event, receivedAt: new Date().toISOString() }
-  if (petHidden && shouldWakeHiddenPet(event)) setPetHidden(false)
-  win.webContents.send('agent-event', event)
+  lastLocalEvent = { ...enrichedEvent, receivedAt: new Date().toISOString() }
+  if (petHidden && shouldWakeHiddenPet(enrichedEvent)) setPetHidden(false)
+  win.webContents.send('agent-event', enrichedEvent)
   return true
+}
+
+function enrichCodexSessionTitle(event) {
+  if (!event || event.sessionTitle || event.session_title) return event
+  const sid = event.sessionId || event.session_id || event.session
+  const title = resolveCodexSessionTitle(sid)
+  return title ? { ...event, sessionTitle: title } : event
 }
 
 function controlPet(action) {

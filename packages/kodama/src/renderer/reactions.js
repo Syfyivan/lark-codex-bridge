@@ -76,6 +76,7 @@ function playCue(type) {
 export function reactToEvent(event, hooks, options = {}) {
   const def = PET_CONFIG.events[event.type]
   if (!def) return
+  if (def.silent) return
 
   const src = PET_CONFIG.sources[event.source] || PET_CONFIG.sources.lark
   const context = eventBubbleContext(event) || src.label

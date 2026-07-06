@@ -36,6 +36,12 @@ test('task recorder persists safe bridge task timelines', () => {
     assert.equal(restored.chatId, 'oc_demo');
     assert.equal(restored.tokens, 123);
     assert.equal(restored.events.some(event => event.type === 'task_progress'), true);
+
+    const patched = createTaskRecorder({ storeDir: dir, maxTasks: 5 });
+    patched.patchTask(task.id, { progressCardMessageId: 'om_card', chatType: 'group' });
+    const patchedTask = patched.getTask(task.id);
+    assert.equal(patchedTask.progressCardMessageId, 'om_card');
+    assert.equal(patchedTask.chatType, 'group');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -48,20 +54,28 @@ test('task recorder marks stale running tasks interrupted on startup', () => {
     const task = recorder.startTask({
       prompt: '长任务',
       chatId: 'oc_demo',
+      chatType: 'group',
       messageId: 'om_demo',
       contextKey: 'chat:oc_demo',
       cwd: '/tmp/repo',
       sandbox: 'read-only',
     });
+    recorder.patchTask(task.id, { progressCardMessageId: 'om_progress_card' });
 
     const restored = createTaskRecorder({ storeDir: dir, maxTasks: 5 });
-    const count = restored.markRunningTasksInterrupted('Bridge restarted before final reply.');
+    const interrupted = restored.interruptRunningTasks('Bridge restarted before final reply.');
     const stale = restored.getTask(task.id);
 
-    assert.equal(count, 1);
+    assert.equal(interrupted.length, 1);
+    assert.equal(interrupted[0].id, task.id);
+    assert.equal(interrupted[0].chatType, 'group');
+    assert.equal(interrupted[0].progressCardMessageId, 'om_progress_card');
     assert.equal(stale.status, 'failed');
     assert.match(stale.errorText, /Bridge restarted/);
     assert.equal(stale.events.some(event => event.reason === 'bridge_restart'), true);
+
+    const count = restored.markRunningTasksInterrupted('Bridge restarted before final reply.');
+    assert.equal(count, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

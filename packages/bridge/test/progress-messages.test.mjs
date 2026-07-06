@@ -59,6 +59,27 @@ test('failure summary marks dirty worktrees as recoverable', () => {
   assert.doesNotMatch(reply, /\/Users\/bytedance/);
 });
 
+test('failure summary explains bridge restart interruption', () => {
+  const reply = formatDirectTaskFailureReply(
+    new Error('bridge 重启前该任务还没有上报最终状态；当前没有 active runner。'),
+    {
+      reason: 'bridge_restart',
+      cwd: '/Users/bytedance/code/buy-together',
+      gitStatus: [
+        '## main...origin/main',
+        ' M src/app/page.tsx',
+      ].join('\n'),
+      changedCount: 1,
+      hasWorktreeChanges: true,
+    },
+  );
+
+  assert.match(reply, /当前状态：失败（可恢复）/);
+  assert.match(reply, /bridge 重启时任务还没有上报最终状态/);
+  assert.match(reply, /当前没有 active runner/);
+  assert.match(reply, /从当前本地改动继续/);
+});
+
 test('stopped summary is structured as blocked', () => {
   const reply = formatDirectTaskStoppedReply();
 
@@ -81,4 +102,14 @@ test('thread progress replies surface as task progress, not Feishu reply bubbles
   assert.match(source, /replyChannel:\s*'lark_thread'/);
   assert.match(source, /recordBridgeTaskEvent\(options\.taskId,\s*'task_progress'/);
   assert.match(source, /petEvent:\s*false/);
+});
+
+test('startup-interrupted tasks can update stale progress cards and send a final reply', () => {
+  const source = readFileSync(here('../lark-codex-bridge.mjs'), 'utf8');
+
+  assert.match(source, /interruptRunningTasks\(bridgeRestartInterruptedReason\)/);
+  assert.match(source, /progressCardMessageId:\s*cardProgress\.messageId/);
+  assert.match(source, /notifyInterruptedTaskRunsOnStartup\(interruptedTaskRunsOnStartup\)/);
+  assert.match(source, /updateCardMessage\(task\.progressCardMessageId/);
+  assert.match(source, /startup-interrupted-\$\{task\.id\}/);
 });

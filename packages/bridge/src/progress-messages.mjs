@@ -45,11 +45,15 @@ export function formatDirectTaskFailureReply(error, recovery = {}) {
   const hasChanges = Boolean(recovery.hasWorktreeChanges || changeLines.length);
   const changedCount = Number(recovery.changedCount || changeLines.length || 0);
   const cwd = recovery.cwd ? sanitizeBridgeStatusText(recovery.cwd, 240) : '';
+  const wasBridgeRestart = recovery.reason === 'bridge_restart';
+  const didWhat = wasBridgeRestart
+    ? 'Codex run 已启动，但 bridge 重启时任务还没有上报最终状态；当前没有 active runner。'
+    : 'Codex run 已启动，但执行过程中出错。';
 
   if (hasChanges) {
     return [
       '当前状态：失败（可恢复）',
-      '做了什么：Codex run 已启动，但执行过程中有命令失败；bridge 已检测到本地工作区存在未提交改动。',
+      `做了什么：${didWhat} bridge 已检测到本地工作区存在未提交改动。`,
       `是否修改了代码：是，检测到 ${changedCount} 条未提交变更。`,
       '验证结果：未完成；需要修复失败命令后重新验证。',
       `失败摘要：${detail || '请查看 bridge 本地日志定位原因。'}`,
@@ -63,7 +67,7 @@ export function formatDirectTaskFailureReply(error, recovery = {}) {
 
   return [
     '当前状态：失败',
-    '做了什么：Codex run 已启动，但执行过程中出错。',
+    `做了什么：${didWhat}`,
     recovery.gitStatus
       ? '是否修改了代码：未检测到未提交变更。'
       : '是否修改了代码：未知；bridge 未能确认工作区状态。',

@@ -648,13 +648,12 @@ const petBus = config.petSyncEnabled
 const taskRecorder = config.taskViewerEnabled
   ? createTaskRecorder({ storeDir: config.taskViewerStoreDir, maxTasks: config.taskViewerMaxTasks })
   : null;
+const bridgeRestartInterruptedReason = 'bridge 重启前该任务还没有上报最终状态；当前没有 active runner。';
 const interruptedTaskRunsOnStartup = taskRecorder
-  ? taskRecorder.markRunningTasksInterrupted(
-      'Bridge restarted before this task reported final status; no active runner remains.',
-    )
-  : 0;
-if (interruptedTaskRunsOnStartup > 0) {
-  console.error(`[bridge] marked ${interruptedTaskRunsOnStartup} stale running task(s) as failed on startup`);
+  ? taskRecorder.interruptRunningTasks(bridgeRestartInterruptedReason)
+  : [];
+if (interruptedTaskRunsOnStartup.length > 0) {
+  console.error(`[bridge] marked ${interruptedTaskRunsOnStartup.length} stale running task(s) as failed on startup`);
 }
 
 // Mirror one piece of bot activity to the local desktop pet (Kodama). No-op
@@ -697,6 +696,7 @@ function startBridgeTaskRun(event, input = {}) {
       prompt,
       source: 'lark',
       chatId: extractChatId(event),
+      chatType: extractChatType(event),
       messageId: extractMessageId(event),
       senderId: extractSenderId(event),
       contextKey: input.contextKey || '',
@@ -708,6 +708,20 @@ function startBridgeTaskRun(event, input = {}) {
   } catch (error) {
     if (config.debug) console.error(`[task-viewer] start failed: ${error.message}`);
     return null;
+  }
+}
+
+function patchBridgeTaskRun(taskId, patch = {}) {
+  if (!taskRecorder || !taskId) return;
+  try {
+    const out = { ...patch };
+    if (typeof out.prompt === 'string') out.prompt = safeTaskText(out.prompt, 1200);
+    if (typeof out.title === 'string') out.title = safeTaskText(out.title, 1200);
+    if (typeof out.finalText === 'string') out.finalText = safeTaskText(out.finalText, 1600);
+    if (typeof out.errorText === 'string') out.errorText = safeTaskText(out.errorText, 1200);
+    taskRecorder.patchTask(taskId, out);
+  } catch (error) {
+    if (config.debug) console.error(`[task-viewer] patch failed: ${error.message}`);
   }
 }
 
@@ -5381,6 +5395,9 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
         },
       )
     : null;
+  if (cardProgress?.messageId) {
+    patchBridgeTaskRun(taskRun?.id, { progressCardMessageId: cardProgress.messageId });
+  }
   const progress = combineProgressReporters(
     cardProgress,
     createBridgeTaskProgressSink(taskRun?.id, petContext),
@@ -5944,6 +5961,9 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
         contextKey,
       })
     : null;
+  if (cardProgress?.messageId) {
+    patchBridgeTaskRun(taskRun?.id, { progressCardMessageId: cardProgress.messageId });
+  }
   const progress = combineProgressReporters(
     cardProgress,
     createBridgeTaskProgressSink(taskRun?.id, petContext),
@@ -6232,6 +6252,9 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
         messageId: petContext.messageId,
         contextKey,
       });
+  if (cardProgress?.messageId) {
+    patchBridgeTaskRun(taskRun?.id, { progressCardMessageId: cardProgress.messageId });
+  }
   const progress = combineProgressReporters(
     cardProgress,
     createBridgeTaskProgressSink(taskRun?.id, petContext),
@@ -7431,7 +7454,7 @@ function bridgeHealthPayload() {
     project_bindings_loaded: projectBindings.loaded,
     project_bindings_file: projectBindings.path,
     project_bindings_count: Object.keys(projectBindings.chats || {}).length,
-    interrupted_task_runs_on_startup: interruptedTaskRunsOnStartup,
+    interrupted_task_runs_on_startup: interruptedTaskRunsOnStartup.length,
     memory_enabled: config.memoryEnabled,
     memory_root_dir: config.memoryRootDir,
     memory_extractor_enabled: config.memoryExtractorEnabled,
@@ -8355,6 +8378,68 @@ async function createProgressReporter(event, prompt, options = {}) {
   return reporter.updateDisabled ? null : reporter;
 }
 
+function eventForRecordedTaskRun(task) {
+  return {
+    message_id: task.messageId || '',
+    chat_id: task.chatId || '',
+    chat_type: task.chatType || (task.messageId ? 'group' : ''),
+  };
+}
+
+async function notifyInterruptedTaskRunOnStartup(task) {
+  if (!task?.id) return;
+  const recovery = {
+    ...(await inspectFailedTaskWorktree(task.cwd || config.codexCwd)),
+    reason: 'bridge_restart',
+  };
+  const failureReply = formatDirectTaskFailureReply(new Error(bridgeRestartInterruptedReason), recovery);
+  recordBridgeTaskEvent(task.id, 'task_failed', {
+    text: failureReply,
+    recovery,
+    reason: 'bridge_restart',
+  });
+  failBridgeTaskRun(task.id, { errorText: failureReply });
+
+  if (task.progressCardMessageId) {
+    try {
+      await updateCardMessage(task.progressCardMessageId, buildProgressCard({
+        status: 'failed',
+        prompt: task.prompt || task.title || 'Bridge task',
+        taskId: task.id,
+        chatId: task.chatId || '',
+        messageId: task.messageId || '',
+        contextKey: task.contextKey || '',
+        startedAt: task.startedAt ? new Date(task.startedAt) : null,
+        items: [],
+        finalText: '',
+        errorText: failureReply,
+      }));
+    } catch (error) {
+      console.error(`[bridge] failed to update interrupted progress card ${task.id}: ${error.stack || error.message}`);
+    }
+  }
+
+  if (!task.messageId) return;
+  try {
+    await replyToLark(
+      eventForRecordedTaskRun(task),
+      failureReply,
+      {
+        idempotencyKey: `startup-interrupted-${task.id}`,
+        petEvent: false,
+      },
+    );
+  } catch (error) {
+    console.error(`[bridge] failed to send interrupted task reply ${task.id}: ${error.stack || error.message}`);
+  }
+}
+
+async function notifyInterruptedTaskRunsOnStartup(tasks = []) {
+  for (const task of tasks) {
+    await notifyInterruptedTaskRunOnStartup(task);
+  }
+}
+
 function progressMessagesAllowedForEvent(event) {
   return (
     config.progressMessagesEnabled &&
@@ -9052,6 +9137,9 @@ async function main() {
   );
   startStartupChecks();
   startHttpServer();
+  notifyInterruptedTaskRunsOnStartup(interruptedTaskRunsOnStartup).catch(error => {
+    console.error(`[bridge] failed to notify interrupted startup tasks: ${error.stack || error.message || error}`);
+  });
   await maybeLaunchPet();
   startDelegatePolling();
   if (config.eventEnabled) {

@@ -80,6 +80,7 @@ export function createTaskRecorder(options = {}) {
       prompt: input.prompt || '',
       source: input.source || 'lark',
       chatId: input.chatId || '',
+      chatType: input.chatType || '',
       messageId: input.messageId || '',
       senderId: input.senderId || '',
       contextKey: input.contextKey || '',
@@ -87,6 +88,7 @@ export function createTaskRecorder(options = {}) {
       sandbox: input.sandbox || '',
       backend: input.backend || '',
       runtime: input.runtime || '',
+      progressCardMessageId: input.progressCardMessageId || '',
       tokens: 0,
       eventCount: 0,
       startedAt: now,
@@ -106,6 +108,34 @@ export function createTaskRecorder(options = {}) {
     });
     trimMemory();
     pruneFiles();
+    return task;
+  }
+
+  function patchTask(id, patch = {}) {
+    const task = tasks.get(id);
+    if (!task) return null;
+    const now = new Date().toISOString();
+    for (const key of [
+      'title',
+      'prompt',
+      'chatId',
+      'chatType',
+      'messageId',
+      'senderId',
+      'contextKey',
+      'cwd',
+      'sandbox',
+      'backend',
+      'runtime',
+      'progressCardMessageId',
+      'finalText',
+      'errorText',
+    ]) {
+      if (Object.hasOwn(patch, key)) task[key] = patch[key] || '';
+    }
+    if (Object.hasOwn(patch, 'tokens')) task.tokens = Number(patch.tokens || 0);
+    task.updatedAt = now;
+    appendIndex(task);
     return task;
   }
 
@@ -155,12 +185,11 @@ export function createTaskRecorder(options = {}) {
     return task;
   }
 
-  function markRunningTasksInterrupted(reason = 'Bridge restarted before this task reported final status.') {
+  function interruptRunningTasks(reason = 'Bridge restarted before this task reported final status.') {
     loadIndex();
-    let count = 0;
+    const interrupted = [];
     for (const task of tasks.values()) {
       if (task.status !== 'running') continue;
-      count += 1;
       addEvent(task.id, 'task_failed', {
         text: reason,
         reason: 'bridge_restart',
@@ -169,8 +198,13 @@ export function createTaskRecorder(options = {}) {
         status: 'failed',
         errorText: reason,
       });
+      interrupted.push({ ...tasks.get(task.id) });
     }
-    return count;
+    return interrupted;
+  }
+
+  function markRunningTasksInterrupted(reason = 'Bridge restarted before this task reported final status.') {
+    return interruptRunningTasks(reason).length;
   }
 
   function listTasks({ limit = maxTasks } = {}) {
@@ -212,9 +246,11 @@ export function createTaskRecorder(options = {}) {
   return {
     storeDir,
     startTask,
+    patchTask,
     addEvent,
     finishTask,
     failTask,
+    interruptRunningTasks,
     markRunningTasksInterrupted,
     listTasks,
     getTask,

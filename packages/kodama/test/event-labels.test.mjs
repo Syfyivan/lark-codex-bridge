@@ -2,9 +2,16 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  eventActorLabel,
   eventAppLabel,
   eventBubbleContext,
+  eventExplicitProjectLabel,
   eventProjectLabel,
+  eventSessionCacheKeys,
+  eventSessionTitle,
+  eventWorkdirLabel,
+  sessionRequestForEvent,
+  targetForEvent,
   eventWorkId,
 } from '../src/renderer/event-labels.js'
 
@@ -73,4 +80,103 @@ test('third-party agent bubbles include app and project when available', () => {
     workspacePath: '/Users/bytedance/code/agent-demo',
   }
   assert.equal(eventBubbleContext(event), 'Gemini CLI / agent-demo')
+})
+
+test('local agent command progress is robot-labeled without fake Codex link', () => {
+  const event = {
+    source: 'local',
+    type: 'task_progress',
+    text: '正在执行 Git 操作：git status --short',
+    sessionId: 'cli-session',
+    cwd: '/Users/bytedance/code.byted.org',
+  }
+  assert.equal(eventActorLabel(event), '本机 Agent')
+  assert.equal(eventExplicitProjectLabel(event), '')
+  assert.equal(eventWorkdirLabel(event), 'code.byted.org')
+  assert.equal(eventProjectLabel(event), 'code.byted.org')
+  assert.equal(sessionRequestForEvent(event), null)
+  assert.equal(targetForEvent(event), null)
+})
+
+test('bridge-invoked local agent progress is labeled as Feishu bot work', () => {
+  const event = {
+    source: 'local',
+    type: 'task_progress',
+    prompt: '你是通过飞书机器人被调用的 Codex，请用中文回答。',
+    cwd: '/Users/bytedance/code/lark-codex-bridge',
+  }
+  assert.equal(eventActorLabel(event), '飞书机器人 Agent')
+})
+
+test('Codex transcript without desktop thread opens the local record only', () => {
+  const transcriptPath = '/Users/bytedance/.codex/sessions/2026/07/06/rollout-019f0000-1111-2222-3333-444444444444.jsonl'
+  const event = {
+    source: 'local',
+    type: 'task_done',
+    text: '完成',
+    transcriptPath,
+    cwd: '/Users/bytedance/code/kodama',
+  }
+  assert.equal(sessionRequestForEvent(event)?.provider, 'codex')
+  assert.deepEqual(targetForEvent(event), {
+    kind: 'local-path',
+    path: transcriptPath,
+    label: '打开 Codex 记录',
+  })
+})
+
+test('Codex Desktop thread remains explicitly openable', () => {
+  const event = {
+    source: 'local',
+    type: 'task_done',
+    text: '完成',
+    client: 'Codex Desktop',
+    threadId: 'thread-123',
+    turnId: 'turn-456',
+    cwd: '/Users/bytedance/code/kodama',
+  }
+  assert.equal(sessionRequestForEvent(event)?.canOpenCodexThread, true)
+  assert.deepEqual(targetForEvent(event), {
+    kind: 'codex-thread',
+    threadId: 'thread-123',
+    turnId: 'turn-456',
+    url: 'codex://threads/thread-123',
+    label: '打开 Codex 会话',
+    fallbackPath: '',
+  })
+})
+
+test('session title is extracted from explicit title before prompt', () => {
+  assert.equal(eventSessionTitle({
+    source: 'local',
+    type: 'task_progress',
+    title: '修复 BuyTogether 登录状态',
+    prompt: '很长的原始 prompt',
+  }), '修复 BuyTogether 登录状态')
+})
+
+test('session cache keys connect command progress to earlier prompt events', () => {
+  const first = {
+    source: 'local',
+    type: 'task_started',
+    prompt: '实现家庭采购商品合并逻辑',
+    sessionId: 'sess-1',
+    threadId: 'thread-1',
+    transcriptPath: '/Users/bytedance/.codex/sessions/2026/07/06/rollout-019f0000-1111-2222-3333-444444444444.jsonl',
+    cwd: '/Users/bytedance/code/buy-together',
+  }
+  const progress = {
+    source: 'local',
+    type: 'task_progress',
+    text: 'Git 操作完成：git status --short',
+    sessionId: 'sess-1',
+    threadId: 'thread-1',
+    cwd: '/Users/bytedance/code/buy-together',
+  }
+  assert.equal(eventSessionTitle(first), '实现家庭采购商品合并逻辑')
+  assert.equal(eventSessionTitle(progress), '')
+  assert.ok(eventSessionCacheKeys(first).includes('thread:thread-1'))
+  assert.ok(eventSessionCacheKeys(progress).includes('thread:thread-1'))
+  assert.ok(eventSessionCacheKeys(first).some(key => key.startsWith('cwd:local:')))
+  assert.ok(eventSessionCacheKeys(progress).some(key => key.startsWith('cwd:local:')))
 })

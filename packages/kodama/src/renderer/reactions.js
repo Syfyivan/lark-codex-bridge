@@ -12,6 +12,20 @@ function interpolate(tpl, vars) {
     .trim()
 }
 
+function isDelegatedReply(event) {
+  return event?.delegated === true ||
+    event?.delegate === true ||
+    event?.replyMode === 'delegate' ||
+    event?.reply_mode === 'delegate'
+}
+
+function bubbleTemplateForEvent(type, event, def) {
+  if (type === 'lark_reply_sent' && isDelegatedReply(event)) {
+    return '{icon} 我刚替你回复：{text}'
+  }
+  return def.bubble
+}
+
 // Native OS notification (popup + sound) for important events — the in-window
 // bubble is easy to miss. Guarded so node tests (no `window`) don't throw.
 function notify(title, body) {
@@ -65,7 +79,7 @@ export function reactToEvent(event, hooks, options = {}) {
 
   const src = PET_CONFIG.sources[event.source] || PET_CONFIG.sources.lark
   const context = eventBubbleContext(event) || src.label
-  const text = interpolate(def.bubble, {
+  const text = interpolate(bubbleTemplateForEvent(event.type, event, def), {
     icon: src.icon,
     label: src.label,
     context,

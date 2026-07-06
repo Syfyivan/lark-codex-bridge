@@ -41,6 +41,32 @@ test('task recorder persists safe bridge task timelines', () => {
   }
 });
 
+test('task recorder marks stale running tasks interrupted on startup', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'task-viewer-stale-'));
+  try {
+    const recorder = createTaskRecorder({ storeDir: dir, maxTasks: 5 });
+    const task = recorder.startTask({
+      prompt: '长任务',
+      chatId: 'oc_demo',
+      messageId: 'om_demo',
+      contextKey: 'chat:oc_demo',
+      cwd: '/tmp/repo',
+      sandbox: 'read-only',
+    });
+
+    const restored = createTaskRecorder({ storeDir: dir, maxTasks: 5 });
+    const count = restored.markRunningTasksInterrupted('Bridge restarted before final reply.');
+    const stale = restored.getTask(task.id);
+
+    assert.equal(count, 1);
+    assert.equal(stale.status, 'failed');
+    assert.match(stale.errorText, /Bridge restarted/);
+    assert.equal(stale.events.some(event => event.reason === 'bridge_restart'), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('task viewer renders a static visual timeline', () => {
   const tasks = [{
     id: 'task_demo',
@@ -69,6 +95,12 @@ test('task viewer renders a static visual timeline', () => {
   assert.match(html, /Bridge Task Session Viewer/);
   assert.match(html, /看一下 bridge 进度/);
   assert.match(html, /运行命令：rg task/);
+  assert.match(html, /可分享过程/);
+  assert.match(html, /飞书用户请求/);
+  assert.match(html, /机器人思考\/操作过程/);
+  assert.match(html, /机器人最终回复/);
+  assert.match(html, /chat-bubble/);
+  assert.match(html, /复制气泡/);
 });
 
 test('task viewer filters exported tasks by task or conversation scope', () => {

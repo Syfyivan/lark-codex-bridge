@@ -58,8 +58,6 @@
     <string>/Users/YOUR_USER/lark-codex-bridge</string>
     <key>CODEX_SANDBOX</key>
     <string>read-only</string>
-    <key>CODEX_TIMEOUT_MS</key>
-    <string>600000</string>
     <key>CODEX_EPHEMERAL</key>
     <string>1</string>
 

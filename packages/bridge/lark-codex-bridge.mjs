@@ -23,7 +23,10 @@ import {
   parseClaudeSessionTranscript,
 } from './src/claude-session.mjs';
 import {
+  cappedTimeoutMs,
   envFlag as readEnvFlag,
+  firstNonBlank,
+  optionalTimeoutMs,
   parseReactionRules,
   splitCsv,
 } from './src/env.mjs';
@@ -47,6 +50,23 @@ import {
 } from './src/context-queue.mjs';
 import { closeUnclosedCodeFence } from './src/lark-format.mjs';
 import { createPetEventBus } from './src/pet-event-bus.mjs';
+import {
+  classifyRiskPreflight,
+  formatRiskPreflightBlockedReply,
+} from './src/preflight-risk.mjs';
+import {
+  DIRECT_TASK_HEARTBEATS,
+  DIRECT_TASK_RECEIVED_TEXT,
+  DIRECT_TASK_STARTED_TEXT,
+  formatDirectTaskFailureReply,
+  formatDirectTaskStoppedReply,
+} from './src/progress-messages.mjs';
+import {
+  buildProjectPromptContext,
+  loadProjectBindings,
+  resolveProjectBinding,
+  validateProjectBindingSources,
+} from './src/project-bindings.mjs';
 import {
   appendJsonl,
   appendMemoryCandidate,
@@ -397,6 +417,13 @@ const config = {
         env.BRIDGE_PROFILE_CONFIG_FILE ||
         join(homedir(), '.lark-codex-bridge', 'profiles.json'),
     ),
+  projectBindingsFile:
+    expandHomePath(
+      env.PROJECT_BINDINGS_FILE ||
+        env.BRIDGE_PROJECT_BINDINGS_FILE ||
+        join(packageDir, 'config', 'project-bindings.json'),
+    ),
+  projectContextBudgetChars: Math.max(1200, Number(env.PROJECT_CONTEXT_BUDGET_CHARS || 9000)),
   memoryEnabled: envFlag('MEMORY_ENABLED', false),
   memoryRootDir: expandHomePath(env.MEMORY_ROOT_DIR || join(homedir(), '.lark-codex-bridge', 'memory')),
   soulsDir: configuredSoulsDir,
@@ -550,7 +577,7 @@ const config = {
   codexRuntime: normalizeCodexRuntime(env.CODEX_RUNTIME || env.CODEX_RUNNER || 'exec'),
   codexAppServerStartTimeoutMs: Math.max(1000, Number(env.CODEX_APP_SERVER_START_TIMEOUT_MS || 10_000)),
   codexAppServerRequestTimeoutMs: Math.max(1000, Number(env.CODEX_APP_SERVER_REQUEST_TIMEOUT_MS || 30_000)),
-  codexTimeoutMs: Number(env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
+  codexTimeoutMs: optionalTimeoutMs(env.CODEX_TIMEOUT_MS),
   codexEphemeral: env.CODEX_EPHEMERAL !== '0',
   codexSkipGitRepoCheck: envFlag('CODEX_SKIP_GIT_REPO_CHECK', true),
   codexResume: env.CODEX_RESUME || '',
@@ -559,7 +586,7 @@ const config = {
   claudeCodePermissionMode: env.CLAUDE_CODE_PERMISSION_MODE || 'plan',
   claudeCodeMaxTurns: Math.max(1, Number(env.CLAUDE_CODE_MAX_TURNS || 3)),
   claudeCodeNoSessionPersistence: envFlag('CLAUDE_CODE_NO_SESSION_PERSISTENCE', true),
-  claudeCodeTimeoutMs: Number(env.CLAUDE_CODE_TIMEOUT_MS || env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
+  claudeCodeTimeoutMs: optionalTimeoutMs(firstNonBlank(env.CLAUDE_CODE_TIMEOUT_MS, env.CODEX_TIMEOUT_MS)),
   claudeCodeExtraArgs: splitCsv(env.CLAUDE_CODE_EXTRA_ARGS || ''),
   cocoRunMode: ['chat', 'task'].includes(String(env.COCO_RUN_MODE || '').trim().toLowerCase())
     ? String(env.COCO_RUN_MODE).trim().toLowerCase()
@@ -577,12 +604,18 @@ const config = {
   cocoEnvironmentVars: splitCsv(env.COCO_ENVIRONMENT_VARS || env.COCO_ENVIRONMENT_VAR || ''),
   cocoTaskWait: envFlag('COCO_TASK_WAIT', false),
   cocoTaskSubscribe: envFlag('COCO_TASK_SUBSCRIBE', true),
-  cocoTimeoutMs: Number(env.COCO_TIMEOUT_MS || env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
-  cocoTaskWaitTimeoutMs: Number(env.COCO_TASK_WAIT_TIMEOUT_MS || env.COCO_TIMEOUT_MS || env.CODEX_TIMEOUT_MS || 10 * 60 * 1000),
+  cocoTimeoutMs: optionalTimeoutMs(firstNonBlank(env.COCO_TIMEOUT_MS, env.CODEX_TIMEOUT_MS)),
+  cocoTaskWaitTimeoutMs: optionalTimeoutMs(
+    firstNonBlank(env.COCO_TASK_WAIT_TIMEOUT_MS, env.COCO_TIMEOUT_MS, env.CODEX_TIMEOUT_MS),
+  ),
   progressCardEnabled: envFlag('PROGRESS_CARD_ENABLED', false),
   progressCardUpdateIntervalMs: Math.max(3000, Number(env.PROGRESS_CARD_UPDATE_INTERVAL_MS || 8000)),
   progressCardMaxItems: Math.max(3, Number(env.PROGRESS_CARD_MAX_ITEMS || 8)),
   progressCardFinalReply: envFlag('PROGRESS_CARD_FINAL_REPLY', false),
+  progressMessagesEnabled: envFlag('PROGRESS_MESSAGES_ENABLED', true),
+  progressHeartbeatIntervalMs: Math.max(1000, Number(env.PROGRESS_HEARTBEAT_INTERVAL_MS || 60_000)),
+  progressMaxHeartbeats: Math.max(0, Number(env.PROGRESS_MAX_HEARTBEATS || 4)),
+  riskPreflightEnabled: envFlag('RISK_PREFLIGHT_ENABLED', true),
   codexPromptPrefix:
     env.CODEX_PROMPT_PREFIX ||
     [
@@ -615,6 +648,14 @@ const petBus = config.petSyncEnabled
 const taskRecorder = config.taskViewerEnabled
   ? createTaskRecorder({ storeDir: config.taskViewerStoreDir, maxTasks: config.taskViewerMaxTasks })
   : null;
+const interruptedTaskRunsOnStartup = taskRecorder
+  ? taskRecorder.markRunningTasksInterrupted(
+      'Bridge restarted before this task reported final status; no active runner remains.',
+    )
+  : 0;
+if (interruptedTaskRunsOnStartup > 0) {
+  console.error(`[bridge] marked ${interruptedTaskRunsOnStartup} stale running task(s) as failed on startup`);
+}
 
 // Mirror one piece of bot activity to the local desktop pet (Kodama). No-op
 // unless PET_SYNC_ENABLED. SAFE mode redacts + clamps text; FULL mode only
@@ -727,6 +768,14 @@ function combineProgressReporters(...reporters) {
   };
 }
 const backendRunner = createRunner(config, { clampReply, runProcessFn: runProcess });
+const projectBindings = loadProjectBindings({
+  configFile: config.projectBindingsFile,
+});
+if (config.debug) {
+  console.error(
+    `[bridge] project bindings ${projectBindings.loaded ? 'loaded' : 'not loaded'} from ${projectBindings.path || '(none)'}`,
+  );
+}
 const profilePolicy = loadProfilePolicy({
   enabled: config.profilePolicyEnabled,
   configFile: config.profileConfigFile,
@@ -2820,6 +2869,112 @@ async function deployTaskViewerGoofyPreview(limit = config.taskViewerMaxTasks, s
   };
 }
 
+function buildTaskViewerShareCard({ share }) {
+  const scopeLabel = taskViewerTitleForScope(share.scope || {});
+  return {
+    config: {
+      wide_screen_mode: true,
+      update_multi: true,
+    },
+    header: {
+      template: 'green',
+      title: {
+        tag: 'plain_text',
+        content: '过程分享已生成',
+      },
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: [
+            `**范围**：${clampCardText(scopeLabel, 500)}`,
+            `**任务数**：${share.tasks}`,
+            `**Share ID**：\`${share.shareId}\``,
+          ].join('\n'),
+        },
+      },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            type: 'primary',
+            text: {
+              tag: 'plain_text',
+              content: '打开过程页',
+            },
+            url: share.url,
+          },
+        ],
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'lark_md',
+            content: [
+              formatLarkMarkdownLink('打开过程页', share.url),
+              '只包含公开过程摘要、飞书消息和机器人回复；隐藏 reasoning、system/developer 指令、工具原始输出不会导出。',
+            ].join('\n'),
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function formatTaskViewerShareText(share) {
+  return [
+    '过程分享已生成：',
+    formatLarkMarkdownLink('打开过程页', share.url),
+    `范围：${taskViewerTitleForScope(share.scope || {})}`,
+    `任务数：${share.tasks}`,
+    '说明：只包含公开过程摘要、飞书消息和机器人回复；隐藏 reasoning、system/developer 指令、工具原始输出不会导出。',
+  ].join('\n');
+}
+
+async function updateOrSendTaskViewerShareCard(event, share) {
+  const card = buildTaskViewerShareCard({ share });
+  const idempotencyKey = `task-viewer-share-${share.shareId}`;
+  const fallbackText = formatTaskViewerShareText(share);
+  const cardMessageId = extractMessageId(event);
+  if (cardMessageId) {
+    try {
+      await updateCardMessage(cardMessageId, card);
+      return;
+    } catch (error) {
+      console.error(`[bridge] failed to update task viewer share card, falling back to new card: ${error.message}`);
+    }
+  }
+
+  try {
+    await sendCardToLark(event, card, idempotencyKey);
+  } catch (error) {
+    console.error(`[bridge] failed to send task viewer share card, falling back to text: ${error.message}`);
+    await replyToLark(event, fallbackText);
+  }
+}
+
+async function handleTaskViewerShareAction(event, value) {
+  const taskId = String(value.task_id || value.taskId || '').trim();
+  const scope = normalizeTaskViewerScope({
+    task_id: taskId,
+    context_key: value.context_key || value.contextKey || '',
+    chat_id: value.chat_id || value.chatId || '',
+    message_id: value.message_id || value.messageId || '',
+  });
+  const exportScope = taskId ? { task_id: taskId } : scope;
+  const result = await deployTaskViewerGoofyPreview(taskId ? 1 : config.taskViewerMaxTasks, exportScope);
+  if (!result.tasks) {
+    await replyToLark(event, '生成过程分享失败：没有找到匹配的 bridge 任务。');
+    return true;
+  }
+  await updateOrSendTaskViewerShareCard(event, result);
+  return true;
+}
+
 function makeWebShareId(sessionId) {
   return `${sessionId}-${randomUUID().split('-')[0]}`;
 }
@@ -4420,7 +4575,7 @@ async function createSessionShareDocument(title, markdown) {
     chunks[0],
     ...sessionSharePlacementArgs(),
   ];
-  const stdout = await runCli(createArgs, '', { timeoutMs: Math.min(config.codexTimeoutMs, 120_000) });
+  const stdout = await runCli(createArgs, '', { timeoutMs: cappedTimeoutMs(config.codexTimeoutMs, 120_000) });
   const doc = extractCreatedDocInfo(stdout);
   const docRef = doc.docId || doc.docUrl;
 
@@ -4443,7 +4598,7 @@ async function createSessionShareDocument(title, markdown) {
         chunk,
       ],
       '',
-      { timeoutMs: Math.min(config.codexTimeoutMs, 120_000) },
+      { timeoutMs: cappedTimeoutMs(config.codexTimeoutMs, 120_000) },
     );
   }
 
@@ -5026,7 +5181,7 @@ function buildDelegateReviewAutomationPrompt(event, rawText, mrUrls, options = {
     '3. 在写任何 MR comment 或 approve 前，必须先完成所有 MR 的全量复核，包括跨 MR/跨仓语义一致性检查；不要发现第一个问题就停止，也不要分多轮追加问题。',
     '4. 如果发现问题：先汇总每个 MR 当前仍有效的全部阻塞项，去掉已过期、已修复、已被业务明确接受的评论，再形成一次性的“最终阻塞清单”；若“有问题时发 MR comment 开关”为开启，使用 bytedcli codebase mr review <MR_URL> --comment --body-file <file> 留 MR 级普通评论。只有位置很确定时再使用 draft/publish 行内评论。若开关为关闭或只读模式开启，只回复问题摘要，不写代码平台评论。有问题时绝对不要 approve，也不要 disapprove / request changes / 反向审批。',
     '5. 同一轮 review 中，不能只报告首个 blocker；不能对同一 latest commit 先报一部分问题、之后再补新的阻塞项。若确实需要后续复审，只能针对新 commit 或作者新说明重新评估。',
-    '6. 如果没有发现问题：只有在“自动 approve 开关”为开启、置信度 high、MR 未关闭、没有未处理阻塞评论、且检查状态没有失败时，才执行 bytedcli codebase mr review <MR_URL> --approve --body "LGTM，已检查 diff/评论/检查状态。"。如果 CI 无法确认且要求 CI 无失败，则不要 approve，也不要 disapprove / request changes，只回复需要人工确认 CI。',
+    '6. 如果没有发现问题：只有在“自动 approve 开关”为开启、置信度 high、MR 未关闭、没有未处理阻塞评论、且检查状态没有业务/编译/测试失败时，才执行 bytedcli codebase mr review <MR_URL> --approve --body "LGTM，已检查 diff/评论/检查状态。"。如果 CI 无法确认且要求 CI 无失败，则不要 approve，也不要 disapprove / request changes，只回复需要人工确认 CI。例外：`SyncMrToCommon` / “合入改动到公共仓库” / “代码 Review 未通过，合入改动到公共仓库前需要通过 review” 这类失败是等待 protected-branch review 的前置门禁，本次 review/approve 正是为了解锁它；只要其他检查无失败、diff/评论无 blocker，就不要因为这个检查失败而拒绝 approve，approve 后在最终输出说明该同步检查需要重跑或由作者继续触发。',
     '7. 操作完成后，只在最终输出里说明逐个 MR 已评论/已 approve/未操作的原因、评审依据和剩余风险；对未 approve 的 MR 明确写出“修完这些即可 A”的最终阻塞清单；不要自己回复飞书消息，不要泄露 token/secret/JWT/cookie。',
   ].join('\n');
 }
@@ -5192,9 +5347,35 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
   );
 
   const prompt = buildReviewFollowupPrompt(rootEvent, rootText, replyEvent, replyText, { round });
-  const progress = config.reviewFollowupProgressCardEnabled
-    ? await createProgressReporter(rootEvent, ['review follow-up', replyMessageId || 'unknown'].join('\n'))
+  const contextKey = contextKeyForBridgeEvent(rootEvent);
+  const taskRun = startBridgeTaskRun(rootEvent, {
+    prompt: ['review follow-up', replyMessageId || 'unknown'].join('\n'),
+    contextKey,
+    cwd: config.codexCwd,
+    sandbox: config.codexSandbox,
+  });
+  const petContext = {
+    contextKey,
+    chatId: extractChatId(rootEvent),
+    messageId: rootMessageId,
+  };
+  const cardProgress = config.reviewFollowupProgressCardEnabled
+    ? await createProgressReporter(
+        rootEvent,
+        ['review follow-up', replyMessageId || 'unknown'].join('\n'),
+        {
+          force: config.reviewFollowupProgressCardEnabled,
+          taskId: taskRun?.id || '',
+          chatId: petContext.chatId,
+          messageId: petContext.messageId,
+          contextKey,
+        },
+      )
     : null;
+  const progress = combineProgressReporters(
+    cardProgress,
+    createBridgeTaskProgressSink(taskRun?.id, petContext),
+  );
   try {
     const output = await buildReply(prompt, { progress });
     const result = normalizeReviewFollowupResult(output);
@@ -5212,6 +5393,8 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
       });
     }
     if (progress) await progress.finish(output);
+    recordBridgeTaskEvent(taskRun?.id, 'task_done', { text: output });
+    finishBridgeTaskRun(taskRun?.id, { finalText: output });
     console.error(`[bridge] review follow-up ${id} completed`);
   } catch (error) {
     saveReviewFollowupReply(rootMessageId, replyMessageId, {
@@ -5225,6 +5408,8 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
       error: String(error?.message || error),
     });
     if (progress) await progress.fail(error.message || error);
+    recordBridgeTaskEvent(taskRun?.id, 'task_failed', { text: String(error?.message || error), reason: 'error' });
+    failBridgeTaskRun(taskRun?.id, { errorText: String(error?.message || error) });
     throw error;
   }
 }
@@ -5728,9 +5913,31 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
   console.error(`[bridge] delegate review automation ${id} starting for message ${record.originalMessageId}`);
 
   const prompt = buildDelegateReviewAutomationPrompt(event, rawText, mrUrls, { readOnly });
-  const progress = config.delegateReviewProgressCardEnabled
-    ? await createProgressReporter(event, ['MR review 自动化', ...mrUrls].join('\n'))
+  const contextKey = contextKeyForBridgeEvent(event);
+  const taskRun = startBridgeTaskRun(event, {
+    prompt: ['MR review 自动化', ...mrUrls].join('\n'),
+    contextKey,
+    cwd: config.codexCwd,
+    sandbox: config.codexSandbox,
+  });
+  const petContext = {
+    contextKey,
+    chatId: record.chatId,
+    messageId: record.originalMessageId,
+  };
+  const cardProgress = config.delegateReviewProgressCardEnabled
+    ? await createProgressReporter(event, ['MR review 自动化', ...mrUrls].join('\n'), {
+        force: true,
+        taskId: taskRun?.id || '',
+        chatId: petContext.chatId,
+        messageId: petContext.messageId,
+        contextKey,
+      })
     : null;
+  const progress = combineProgressReporters(
+    cardProgress,
+    createBridgeTaskProgressSink(taskRun?.id, petContext),
+  );
   try {
     const output = await buildReply(prompt, { progress });
     updateApproval(id, {
@@ -5740,6 +5947,8 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
     });
     console.error(`[bridge] delegate review automation ${id} completed`);
     if (progress) await progress.finish(output);
+    recordBridgeTaskEvent(taskRun?.id, 'task_done', { text: output });
+    finishBridgeTaskRun(taskRun?.id, { finalText: output });
     if (config.delegateReviewReplyToGroup) {
       try {
         await replyToLark(event, output || '已完成 review 自动化，但 Codex 没有返回文本。');
@@ -5757,6 +5966,8 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
       error: String(error?.stack || error?.message || error),
     });
     if (progress) await progress.fail(error.message || error);
+    recordBridgeTaskEvent(taskRun?.id, 'task_failed', { text: String(error?.message || error), reason: 'error' });
+    failBridgeTaskRun(taskRun?.id, { errorText: String(error?.message || error) });
     throw error;
   }
 }
@@ -5855,6 +6066,13 @@ async function sendApprovedReply(approval) {
     `delegate-approved-${approval.id}`,
   ]);
   const payload = tryJsonLoose(stdout) || {};
+  emitPet('lark_reply_sent', {
+    text,
+    chatId: approval.chatId || '',
+    messageId: payload?.data?.message_id || payload?.message_id || approval.originalMessageId || '',
+    delegated: true,
+    replyMode: 'delegate',
+  });
   return {
     messageId: payload?.data?.message_id || payload?.message_id || '',
     threadId: payload?.data?.thread_id || payload?.thread_id || '',
@@ -5880,6 +6098,7 @@ function buildDirectCodexPrompt(event, rawText, options = {}) {
   const promptBase = config.prefix ? rawText.slice(config.prefix.length).trim() : rawText;
   const prompt = stripBotMentionText(stripBridgeTraceText(promptBase));
   const nonOwnerQueryNotice = options.nonOwnerQuery ? nonOwnerGuardNotice(config, options) : '';
+  const projectPromptContext = String(options.projectPromptContext || '').trim();
   const profilePromptContext = String(options.profilePromptContext || '').trim();
   const memoryPromptContext = String(options.memoryPromptContext || '').trim();
   const approvalNotice = options.approvedBy
@@ -5903,10 +6122,13 @@ function buildDirectCodexPrompt(event, rawText, options = {}) {
     `sender_id=${extractSenderId(event) || 'unknown'}`,
     `sender_type=${extractSenderType(event) || 'unknown'}`,
     `context_key=${options.contextKey || contextKeyForBridgeEvent(event)}`,
+    options.projectId ? `project_id=${options.projectId}` : '',
     '',
     '当前处理模式：直接 @机器人 / 私聊机器人，bridge 会把你的最终回答原样发回飞书。',
     '回复格式要求：直接写给提问者；不要套用“建议操作 / 待发送回复 / 操作计划 / 草稿”等代理审批包装。',
+    '最终回复必须包含：当前状态、做了什么、是否修改了代码、验证结果、剩余风险或下一步；如果只是总结或回答问题，也明确写“是否修改了代码：否”。',
     '身份边界：不要替知微或其它机器人正式发言；如果用户要“让知微说/回复/处理”，只能给宋一凡可复制的草稿或说明应由目标机器人自己响应，不要把面向目标机器人的话术作为最终回复发出。',
+    projectPromptContext,
     profilePromptContext,
     memoryPromptContext,
     nonOwnerQueryNotice,
@@ -5960,15 +6182,29 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
   const cardProgress = options.progress === false
     || trace
     ? null
-    : await createProgressReporter(event, prompt || stripBridgeTraceText(rawText));
+    : await createProgressReporter(event, prompt || stripBridgeTraceText(rawText), {
+        taskId: taskRun?.id || '',
+        chatId: petContext.chatId,
+        messageId: petContext.messageId,
+        contextKey,
+      });
   const progress = combineProgressReporters(
     cardProgress,
     createBridgeTaskProgressSink(taskRun?.id, petContext),
   );
-  const shouldSendFinalReply = config.progressCardFinalReply || !cardProgress;
+  const threadProgress = options.progress === false || trace
+    ? null
+    : createThreadProgressMessenger(event, {
+        idempotencyKey: taskRun?.id || extractMessageId(event) || randomUUID(),
+      });
+  const shouldSendFinalReply = config.progressCardFinalReply || !cardProgress || config.progressMessagesEnabled;
   emitPet('task_started', { ...petContext, text: prompt || stripBridgeTraceText(rawText) });
   const usageRef = {};
   try {
+    if (threadProgress) {
+      await threadProgress.started();
+      threadProgress.startHeartbeats();
+    }
     const reply = await buildReply(codexPrompt, {
       progress,
       sandbox: executionOptions.sandbox || config.codexSandbox,
@@ -6011,7 +6247,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       failBridgeTaskRun(taskRun?.id, { status: 'cancelled', errorText: '任务已停止' });
       await replyToLark(
         event,
-        '任务已停止。',
+        formatDirectTaskStoppedReply(),
         options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-stopped` } : {},
       );
       return { ok: false, error: 'stopped' };
@@ -6023,11 +6259,15 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     failBridgeTaskRun(taskRun?.id, { errorText: String(error?.message || error) });
     await replyToLark(
       event,
-      `执行失败：${clampReply(error.message || error)}`,
+      formatDirectTaskFailureReply(error),
       options.idempotencyKey ? { idempotencyKey: `${options.idempotencyKey}-failed` } : {},
     );
     return { ok: false, error: String(error?.stack || error?.message || error) };
   } finally {
+    if (threadProgress) {
+      threadProgress.stop();
+      await threadProgress.flush();
+    }
     unregisterStop();
     if (nonOwnerContext) nonOwnerContext.cleanup();
   }
@@ -6081,6 +6321,103 @@ function oncallExecutionOptionsForEvent(event, requesterIsOwner) {
   if (!binding) return {};
   if (requesterIsOwner) return { cwd: binding.cwd, oncallCwd: binding.cwd };
   return { realWorkspace: binding.cwd, oncallCwd: binding.cwd };
+}
+
+function projectBindingForEvent(event) {
+  return resolveProjectBinding(projectBindings, { chatId: extractChatId(event) });
+}
+
+function formatProjectBindingInvalidMessage(missing) {
+  return `项目绑定无效：缺失 ${missing.join('、')}，未启动 Codex。`;
+}
+
+function projectBindingProfileContext(binding, rawText, requesterIsOwner) {
+  if (!binding) return '';
+  return [
+    'Project profile / capability 边界：',
+    requesterIsOwner
+      ? '当前请求来自 owner；仍需遵守项目绑定中的高风险审批边界。'
+      : '当前请求来自项目群成员；只允许项目绑定声明的本地开发动作，高风险动作必须等待 owner 审批。',
+    `project：${binding.project}`,
+    `project_root：${binding.cwd}`,
+    `allowed_actions：${binding.allowedActions.join(', ') || 'none'}`,
+    `requires_owner_approval：${binding.requiresOwnerApproval.join(', ') || 'none'}`,
+    '这只是当前群的项目协作上下文，不代表提问者身份；不要因为项目 profile 改写用户本人身份。',
+    `当前用户消息：\n${stripBotMentionText(stripBridgeTraceText(rawText))}`,
+  ].join('\n\n');
+}
+
+async function projectBindingDecisionForEvent(event, rawText, requesterIsOwner) {
+  const binding = projectBindingForEvent(event);
+  if (!binding) return { ok: true, binding: null, options: {} };
+
+  const missing = validateProjectBindingSources(binding);
+  if (missing.length) {
+    return {
+      ok: false,
+      binding,
+      message: formatProjectBindingInvalidMessage(missing),
+    };
+  }
+
+  let projectPromptContext = '';
+  try {
+    projectPromptContext = buildProjectPromptContext(binding, {
+      taskText: rawText,
+      maxChars: config.projectContextBudgetChars,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      binding,
+      message: `项目绑定无效：缺失 project context ${error.message || error}，未启动 Codex。`,
+    };
+  }
+
+  return {
+    ok: true,
+    binding,
+    options: {
+      cwd: binding.cwd,
+      realWorkspace: binding.cwd,
+      projectId: binding.projectId,
+      projectName: binding.project,
+      projectPromptContext,
+      projectProfilePromptContext: projectBindingProfileContext(binding, rawText, requesterIsOwner),
+      projectAllowedActions: binding.allowedActions,
+      projectRequiresOwnerApproval: binding.requiresOwnerApproval,
+      projectRunsInRealCwd: binding.allowedActions.includes('edit_project_files'),
+    },
+  };
+}
+
+function buildDirectExecutionOptions({
+  requesterIsOwner,
+  oncallOptions = {},
+  projectOptions = {},
+  profileOptions = {},
+  memoryOptions = {},
+  extra = {},
+} = {}) {
+  const base = {
+    ...oncallOptions,
+    ...projectOptions,
+    ...profileOptions,
+    ...memoryOptions,
+    ...extra,
+  };
+  if (requesterIsOwner) return base;
+  if (projectOptions.projectRunsInRealCwd) {
+    return {
+      ...base,
+      sandbox: base.sandbox || config.codexNonOwnerSandbox,
+    };
+  }
+  return {
+    ...base,
+    nonOwnerQuery: true,
+    sandbox: config.codexNonOwnerSandbox,
+  };
 }
 
 async function handleOncallCommand(event, command, requesterIsOwner) {
@@ -6152,7 +6489,7 @@ async function handleOncallCommand(event, command, requesterIsOwner) {
   return false;
 }
 
-function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner) {
+function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner, projectDecision = null) {
   const promptText = stripBotMentionText(stripBridgeTraceText(rawText));
   const result = evaluateProfilePolicy(
     profilePolicy,
@@ -6164,6 +6501,23 @@ function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner) {
     promptText,
     { isOwner: requesterIsOwner },
   );
+  if (
+    !result.ok &&
+    projectDecision?.binding &&
+    ['unconfigured-group', 'unconfigured-chat'].includes(result.reason)
+  ) {
+    return {
+      ok: true,
+      options: projectDecision.options?.projectProfilePromptContext
+        ? {
+            profilePromptContext: projectDecision.options.projectProfilePromptContext,
+            profileActor: requesterIsOwner ? 'owner' : 'member',
+            profileId: `project:${projectDecision.binding.projectId}`,
+            capabilityId: 'project_binding',
+          }
+        : {},
+    };
+  }
   if (!result.ok) return result;
   return {
     ok: true,
@@ -6179,8 +6533,11 @@ function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner) {
 }
 
 function memoryRouteForEvent(event, rawText) {
+  const binding = projectBindingForEvent(event);
   return resolveMemoryRoute(
-    config,
+    binding?.projectId
+      ? { ...config, memoryDefaultProjectId: binding.projectId }
+      : config,
     {
       chatId: extractChatId(event),
       chatType: extractChatType(event),
@@ -6545,6 +6902,10 @@ async function handleCardActionEvent(event) {
     await handleSessionGenerateLinkAction(event, value);
     return;
   }
+  if (action === 'task_viewer_share') {
+    await handleTaskViewerShareAction(event, value);
+    return;
+  }
 
   const id = value.approval_id;
   if (
@@ -6756,6 +7117,11 @@ async function handlePolledMessage(chatId, message, now = Date.now(), options = 
   const event = listedMessageToEvent(chatId, message);
   const rawText = extractText(event).trim();
   if (!rawText) return false;
+  const senderSkipReason = shouldSkipSender(event, rawText);
+  if (senderSkipReason) {
+    if (config.debug) console.error(`[bridge] skipped polled message ${messageId}: ${senderSkipReason}`);
+    return false;
+  }
   const eventSkipReason = shouldSkipBridgeGeneratedMessage({
     rawText,
     messageType: extractMessageType(event) || messageType(message),
@@ -6823,7 +7189,7 @@ async function pollDelegateMentionsInChat(chatId) {
       'json',
     ],
     '',
-    { timeoutMs: Math.min(config.codexTimeoutMs, 60_000) },
+    { timeoutMs: cappedTimeoutMs(config.codexTimeoutMs, 60_000) },
   );
   const payload = tryJsonLoose(stdout) || {};
   const messages = payload?.data?.messages || payload?.messages || [];
@@ -6860,7 +7226,7 @@ async function pollDelegateMentionsByGlobalSearch(now = Date.now()) {
       'json',
     ],
     '',
-    { timeoutMs: Math.min(config.codexTimeoutMs, 60_000) },
+    { timeoutMs: cappedTimeoutMs(config.codexTimeoutMs, 60_000) },
   );
   const payload = tryJsonLoose(stdout) || {};
   const messages = payload?.data?.messages || payload?.messages || [];
@@ -6997,6 +7363,10 @@ function bridgeHealthPayload() {
     profile_policy_enabled: profilePolicy.enabled,
     profile_policy_loaded: profilePolicy.loaded,
     profile_config_file: profilePolicy.path,
+    project_bindings_loaded: projectBindings.loaded,
+    project_bindings_file: projectBindings.path,
+    project_bindings_count: Object.keys(projectBindings.chats || {}).length,
+    interrupted_task_runs_on_startup: interruptedTaskRunsOnStartup,
     memory_enabled: config.memoryEnabled,
     memory_root_dir: config.memoryRootDir,
     memory_extractor_enabled: config.memoryExtractorEnabled,
@@ -7732,6 +8102,29 @@ function buildProgressCard(state) {
     });
   }
 
+  if (state.taskId) {
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          type: 'default',
+          text: {
+            tag: 'plain_text',
+            content: '分享过程',
+          },
+          value: {
+            bridge_action: 'task_viewer_share',
+            task_id: state.taskId,
+            chat_id: state.chatId || '',
+            message_id: state.messageId || '',
+            context_key: state.contextKey || '',
+          },
+        },
+      ],
+    });
+  }
+
   elements.push({
     tag: 'note',
     elements: [
@@ -7766,30 +8159,32 @@ function extractSentMessageId(stdout) {
 async function sendCardToLark(event, card, idempotencyKey) {
   const messageId = extractMessageId(event);
   const chatType = extractChatType(event);
+  const chatId = extractChatId(event);
   if (messageId && chatType !== 'p2p') {
-    const stdout = await runCli([
-      'im',
-      '+messages-reply',
-      '--as',
-      'bot',
-      '--message-id',
-      messageId,
-      '--msg-type',
-      'interactive',
-      '--content',
-      JSON.stringify(card),
-      ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
-      '--idempotency-key',
-      idempotencyKey,
-    ]);
-    return extractSentMessageId(stdout);
+    try {
+      const stdout = await runCli([
+        'im',
+        '+messages-reply',
+        '--as',
+        'bot',
+        '--message-id',
+        messageId,
+        '--msg-type',
+        'interactive',
+        '--content',
+        JSON.stringify(card),
+        ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
+        '--idempotency-key',
+        idempotencyKey,
+      ]);
+      return extractSentMessageId(stdout);
+    } catch (error) {
+      if (!chatId) throw error;
+      console.error(`[bridge] failed to send card in thread, falling back to chat: ${error.message}`);
+    }
   }
 
-  const chatId = extractChatId(event);
   if (!chatId) throw new Error('event has neither usable message_id nor chat_id');
-  if (config.delegateReplyInThread && chatType !== 'p2p') {
-    throw new Error('refusing to send group card without original message_id for thread reply');
-  }
   const stdout = await runCli([
     'im',
     '+messages-send',
@@ -7820,11 +8215,15 @@ async function updateCardMessage(cardMessageId, card) {
   ]);
 }
 
-async function createProgressReporter(event, prompt) {
-  if (!config.progressCardEnabled || config.mode === 'jwt-check') return null;
+async function createProgressReporter(event, prompt, options = {}) {
+  if ((!config.progressCardEnabled && !options.force) || config.mode === 'jwt-check') return null;
   const state = {
     status: 'running',
     prompt,
+    taskId: options.taskId || '',
+    chatId: options.chatId || extractChatId(event),
+    messageId: options.messageId || extractMessageId(event),
+    contextKey: options.contextKey || contextKeyForBridgeEvent(event),
     startedAt: new Date(),
     items: ['已收到请求，正在启动 Codex。'],
     finalText: '',
@@ -7891,6 +8290,146 @@ async function createProgressReporter(event, prompt) {
   return reporter.updateDisabled ? null : reporter;
 }
 
+function progressMessagesAllowedForEvent(event) {
+  return (
+    config.progressMessagesEnabled &&
+    config.mode !== 'jwt-check' &&
+    Boolean(extractMessageId(event)) &&
+    extractChatType(event) !== 'p2p'
+  );
+}
+
+async function replyToOriginalThreadOnly(event, text, options = {}) {
+  const messageId = extractMessageId(event);
+  if (!messageId || extractChatType(event) === 'p2p') return false;
+  const key = options.idempotencyKey || `bridge-thread-${messageId}-${randomUUID()}`;
+  try {
+    await runCli([
+      'im',
+      '+messages-reply',
+      '--as',
+      'bot',
+      '--message-id',
+      messageId,
+      '--text',
+      text,
+      '--reply-in-thread',
+      '--idempotency-key',
+      key,
+    ]);
+    emitPet('lark_reply_sent', {
+      text,
+      chatId: extractChatId(event),
+      messageId,
+    });
+    return true;
+  } catch (error) {
+    console.error(`[bridge] failed to send thread-only reply: ${error.stack || error.message}`);
+    return false;
+  }
+}
+
+async function replyProgressToThread(event, text, idempotencySuffix) {
+  if (!progressMessagesAllowedForEvent(event)) return false;
+  const messageId = extractMessageId(event);
+  return replyToOriginalThreadOnly(event, text, {
+    idempotencyKey: `progress-${idempotencySuffix}-${messageId || randomUUID()}`,
+  });
+}
+
+async function sendDirectTaskReceivedProgress(event) {
+  return replyProgressToThread(event, DIRECT_TASK_RECEIVED_TEXT, 'received');
+}
+
+async function replyProjectBindingInvalid(event, message) {
+  const key = `project-binding-invalid-${extractMessageId(event) || randomUUID()}`;
+  const sent = await replyToOriginalThreadOnly(event, message, { idempotencyKey: key });
+  if (!sent) {
+    await replyToLark(event, message, { idempotencyKey: key });
+  }
+}
+
+function createThreadProgressMessenger(event, options = {}) {
+  let heartbeatTimer = null;
+  let heartbeatCount = 0;
+  let stopped = false;
+  let queue = Promise.resolve();
+  const baseKey = options.idempotencyKey || extractMessageId(event) || randomUUID();
+
+  const enqueue = (text, suffix) => {
+    if (!progressMessagesAllowedForEvent(event)) return Promise.resolve(false);
+    queue = queue
+      .then(() => {
+        if (stopped && suffix !== 'started') return false;
+        return replyToOriginalThreadOnly(event, text, {
+          idempotencyKey: `progress-${suffix}-${baseKey}`,
+        });
+      })
+      .catch(error => {
+        console.error(`[bridge] failed to send progress message: ${error.stack || error.message}`);
+        return false;
+      });
+    return queue;
+  };
+
+  return {
+    async started() {
+      return enqueue(DIRECT_TASK_STARTED_TEXT, 'started');
+    },
+    startHeartbeats() {
+      if (!progressMessagesAllowedForEvent(event)) return;
+      if (config.progressMaxHeartbeats <= 0) return;
+      if (heartbeatTimer) return;
+      heartbeatTimer = setInterval(() => {
+        if (stopped) return;
+        heartbeatCount += 1;
+        if (heartbeatCount > config.progressMaxHeartbeats) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+          return;
+        }
+        const text = DIRECT_TASK_HEARTBEATS[(heartbeatCount - 1) % DIRECT_TASK_HEARTBEATS.length];
+        enqueue(text, `heartbeat-${heartbeatCount}`);
+      }, config.progressHeartbeatIntervalMs);
+      heartbeatTimer.unref?.();
+    },
+    stop() {
+      stopped = true;
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+    },
+    async flush() {
+      await queue;
+    },
+  };
+}
+
+async function replyRiskPreflightBlocked(event, rawText, preflight) {
+  const text = formatRiskPreflightBlockedReply();
+  const key = `risk-preflight-${extractMessageId(event) || randomUUID()}`;
+  const sent = await replyToOriginalThreadOnly(event, text, { idempotencyKey: key });
+  if (!sent) {
+    await replyToLark(event, text, { idempotencyKey: key });
+  }
+  await createSensitiveOperationApproval(event, rawText, {
+    sensitive: true,
+    labels: preflight.labels,
+    executionKind: 'risk_preflight',
+  });
+}
+
+async function maybeHandleRiskPreflight(event, rawText, requesterIsOwner) {
+  if (!config.riskPreflightEnabled || requesterIsOwner) return false;
+  const taskText = stripBotMentionText(stripBridgeTraceText(rawText));
+  const preflight = classifyRiskPreflight(taskText);
+  if (!preflight.blocked) return false;
+  await replyRiskPreflightBlocked(event, rawText, preflight);
+  console.error(`[bridge] risk preflight blocked message ${extractMessageId(event) || '(unknown)'}: ${preflight.labels.join(', ')}`);
+  return true;
+}
+
 async function replyToLark(event, text, options = {}) {
   const sendReply = async baseArgs => {
     if (!config.replyMarkdownEnabled) {
@@ -7908,23 +8447,41 @@ async function replyToLark(event, text, options = {}) {
 
   const messageId = extractMessageId(event);
   const chatType = extractChatType(event);
+  const chatId = extractChatId(event);
   if (messageId && chatType !== 'p2p') {
-    await sendReply([
-      'im',
-      '+messages-reply',
-      '--as',
-      'bot',
-      '--message-id',
-      messageId,
-      ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
-      '--idempotency-key',
-      options.idempotencyKey || `bridge-${messageId}`,
-    ]);
-    emitPet('lark_reply_sent', { text, chatId: extractChatId(event), messageId });
-    return;
+    const key = options.idempotencyKey || `bridge-${messageId}`;
+    try {
+      await sendReply([
+        'im',
+        '+messages-reply',
+        '--as',
+        'bot',
+        '--message-id',
+        messageId,
+        ...(config.delegateReplyInThread ? ['--reply-in-thread'] : []),
+        '--idempotency-key',
+        key,
+      ]);
+      emitPet('lark_reply_sent', { text, chatId, messageId });
+      return;
+    } catch (error) {
+      if (!chatId) throw error;
+      console.error(`[bridge] failed to send reply in thread, falling back to chat: ${error.message}`);
+      await sendReply([
+        'im',
+        '+messages-send',
+        '--as',
+        'bot',
+        '--chat-id',
+        chatId,
+        '--idempotency-key',
+        `${key}-chat-fallback`,
+      ]);
+      emitPet('lark_reply_sent', { text, chatId, messageId });
+      return;
+    }
   }
 
-  const chatId = extractChatId(event);
   if (!chatId) throw new Error('event has neither usable message_id nor chat_id');
   if (config.delegateReplyInThread && chatType !== 'p2p') {
     throw new Error('refusing to send group reply without original message_id for thread reply');
@@ -8161,7 +8718,16 @@ async function handleEvent(event) {
       await replyToLark(event, '用法：/queue <要排队给 Codex 的消息>');
       return;
     }
-    const profileDecision = evaluateDirectProfilePolicy(event, queueCommand.text, requesterIsOwner);
+    await sendDirectTaskReceivedProgress(event);
+    if (await maybeHandleRiskPreflight(event, queueCommand.text, requesterIsOwner)) {
+      return;
+    }
+    const projectDecision = await projectBindingDecisionForEvent(event, queueCommand.text, requesterIsOwner);
+    if (!projectDecision.ok) {
+      await replyProjectBindingInvalid(event, projectDecision.message);
+      return;
+    }
+    const profileDecision = evaluateDirectProfilePolicy(event, queueCommand.text, requesterIsOwner, projectDecision);
     if (!profileDecision.ok) {
       if (!profileDecision.silent && profileDecision.message) {
         await replyToLark(event, profileDecision.message);
@@ -8169,24 +8735,18 @@ async function handleEvent(event) {
       return;
     }
     const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
+    const executionOptions = buildDirectExecutionOptions({
+      requesterIsOwner,
+      oncallOptions,
+      projectOptions: projectDecision.options,
+      profileOptions: profileDecision.options,
+      memoryOptions: memoryOptionsForEvent(event, queueCommand.text),
+      extra: { queuedByCommand: true },
+    });
     await executeDirectCodexTaskQueued(
       event,
       queueCommand.text,
-      requesterIsOwner
-        ? {
-            ...oncallOptions,
-            ...profileDecision.options,
-            ...memoryOptionsForEvent(event, queueCommand.text),
-            queuedByCommand: true,
-          }
-        : {
-            ...oncallOptions,
-            ...profileDecision.options,
-            ...memoryOptionsForEvent(event, queueCommand.text),
-            queuedByCommand: true,
-            nonOwnerQuery: true,
-            sandbox: config.codexNonOwnerSandbox,
-          },
+      executionOptions,
     );
     return;
   }
@@ -8208,6 +8768,13 @@ async function handleEvent(event) {
   }
 
   const reviewAutomation = shouldHandleDelegateReviewAutomation(rawText);
+  const directCodexCandidate = !botSendCommand && !sessionShareCommand && !reviewAutomation;
+  if (directCodexCandidate) {
+    await sendDirectTaskReceivedProgress(event);
+    if (await maybeHandleRiskPreflight(event, rawText, requesterIsOwner)) {
+      return;
+    }
+  }
   const classification = classifyDirectExecution(rawText, {
     botSendCommand,
     sessionShareCommand,
@@ -8256,7 +8823,13 @@ async function handleEvent(event) {
     return;
   }
 
-  const profileDecision = evaluateDirectProfilePolicy(event, rawText, requesterIsOwner);
+  const projectDecision = await projectBindingDecisionForEvent(event, rawText, requesterIsOwner);
+  if (!projectDecision.ok) {
+    await replyProjectBindingInvalid(event, projectDecision.message);
+    return;
+  }
+
+  const profileDecision = evaluateDirectProfilePolicy(event, rawText, requesterIsOwner, projectDecision);
   if (!profileDecision.ok) {
     if (!profileDecision.silent && profileDecision.message) {
       await replyToLark(event, profileDecision.message);
@@ -8265,22 +8838,17 @@ async function handleEvent(event) {
   }
 
   const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
+  const executionOptions = buildDirectExecutionOptions({
+    requesterIsOwner,
+    oncallOptions,
+    projectOptions: projectDecision.options,
+    profileOptions: profileDecision.options,
+    memoryOptions: memoryOptionsForEvent(event, rawText),
+  });
   await executeDirectCodexTaskQueued(
     event,
     rawText,
-    requesterIsOwner
-      ? {
-          ...oncallOptions,
-          ...profileDecision.options,
-          ...memoryOptionsForEvent(event, rawText),
-        }
-      : {
-          ...oncallOptions,
-          ...profileDecision.options,
-          ...memoryOptionsForEvent(event, rawText),
-          nonOwnerQuery: true,
-          sandbox: config.codexNonOwnerSandbox,
-        },
+    executionOptions,
   );
 }
 

@@ -9,6 +9,7 @@
   },
   "files": [
     "lark-codex-bridge.mjs",
+    "config",
     "src",
     "scripts",
     "docs",

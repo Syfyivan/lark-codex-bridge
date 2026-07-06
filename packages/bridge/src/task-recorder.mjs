@@ -155,6 +155,24 @@ export function createTaskRecorder(options = {}) {
     return task;
   }
 
+  function markRunningTasksInterrupted(reason = 'Bridge restarted before this task reported final status.') {
+    loadIndex();
+    let count = 0;
+    for (const task of tasks.values()) {
+      if (task.status !== 'running') continue;
+      count += 1;
+      addEvent(task.id, 'task_failed', {
+        text: reason,
+        reason: 'bridge_restart',
+      });
+      failTask(task.id, {
+        status: 'failed',
+        errorText: reason,
+      });
+    }
+    return count;
+  }
+
   function listTasks({ limit = maxTasks } = {}) {
     loadIndex();
     return [...tasks.values()]
@@ -191,7 +209,17 @@ export function createTaskRecorder(options = {}) {
   }
 
   loadIndex();
-  return { storeDir, startTask, addEvent, finishTask, failTask, listTasks, getTask, exportTasks };
+  return {
+    storeDir,
+    startTask,
+    addEvent,
+    finishTask,
+    failTask,
+    markRunningTasksInterrupted,
+    listTasks,
+    getTask,
+    exportTasks,
+  };
 }
 
 export function writeFileEnsured(file, content) {

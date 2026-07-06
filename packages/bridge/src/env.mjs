@@ -17,6 +17,27 @@ export function envFlag(env, name, defaultValue = false) {
   return envFlagValue(value, defaultValue);
 }
 
+export function firstNonBlank(...values) {
+  return values.find(value => String(value ?? '').trim() !== '');
+}
+
+export function optionalTimeoutMs(value, defaultValue = 0) {
+  const rawValue = firstNonBlank(value);
+  if (rawValue === undefined) return defaultValue;
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return parsed;
+}
+
+export function cappedTimeoutMs(timeoutMs, capMs) {
+  const timeout = Number(timeoutMs);
+  const cap = Number(capMs);
+  if (!Number.isFinite(cap) || cap <= 0) return Number.isFinite(timeout) && timeout > 0 ? timeout : 0;
+  if (!Number.isFinite(timeout) || timeout <= 0) return cap;
+  return Math.min(timeout, cap);
+}
+
 export function parseReactionRules(value) {
   const text = String(value || '').trim();
   if (!text) return [];

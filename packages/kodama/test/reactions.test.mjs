@@ -22,6 +22,23 @@ test('lark task_done renders a 💬-prefixed bubble with the summary', () => {
   assert.deepEqual(out.status, ['done'])
 })
 
+test('lark_reply_sent defaults to the bot own reply copy', () => {
+  const out = collect({ type: 'lark_reply_sent', source: 'lark', text: '执行失败' })
+  assert.equal(out.says.length, 1)
+  assert.match(out.says[0], /菌子回复：执行失败/)
+  assert.doesNotMatch(out.says[0], /替你/)
+  assert.doesNotMatch(out.says[0], /回了飞书/)
+  assert.deepEqual(out.status, ['replying'])
+})
+
+test('delegated lark_reply_sent keeps the user proxy copy', () => {
+  const out = collect({ type: 'lark_reply_sent', source: 'lark', text: '我稍后处理', delegated: true })
+  assert.equal(out.says.length, 1)
+  assert.match(out.says[0], /我刚替你回复：我稍后处理/)
+  assert.doesNotMatch(out.says[0], /回了飞书/)
+  assert.deepEqual(out.status, ['replying'])
+})
+
 test('local source uses the 💻 prefix', () => {
   const out = collect({ type: 'task_done', source: 'local', text: '' })
   assert.match(out.says[0], /💻/)

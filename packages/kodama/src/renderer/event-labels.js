@@ -31,7 +31,7 @@ export function isOpaqueInternalName(value) {
   return /^[a-z0-9]{20,}$/i.test(text) && !/[._-]/.test(text)
 }
 
-function eventPath(event) {
+export function eventPath(event) {
   return firstString(
     event?.cwd,
     event?.projectDir,
@@ -117,6 +117,13 @@ export function eventAgentLabel(event) {
 }
 
 export function eventProjectLabel(event) {
+  const explicit = eventExplicitProjectLabel(event)
+  if (explicit) return explicit
+
+  return eventWorkdirLabel(event)
+}
+
+export function eventExplicitProjectLabel(event) {
   const explicit = firstString(
     event?.projectName,
     event?.project_name,
@@ -125,8 +132,10 @@ export function eventProjectLabel(event) {
     event?.workspaceName,
     event?.workspace_name,
   )
-  if (explicit && !isOpaqueInternalName(explicit)) return shortLabel(explicit, 28)
+  return explicit && !isOpaqueInternalName(explicit) ? shortLabel(explicit, 28) : ''
+}
 
+export function eventWorkdirLabel(event) {
   const path = eventPath(event)
   const base = pathBaseName(path)
   if (!base || isTraeInternalPath(path) || isOpaqueInternalName(base)) return ''
@@ -148,4 +157,188 @@ export function eventBubbleContext(event, max = 34) {
   const task = eventTaskLabel(event)
   if (app && task && app !== task) return shortLabel(`${app} / ${task}`, max)
   return shortLabel(task || app, max)
+}
+
+export function eventSessionTitle(event, max = 48) {
+  const title = firstString(
+    event?.sessionTitle,
+    event?.session_title,
+    event?.summaryTitle,
+    event?.summary_title,
+    event?.aiTitle,
+    event?.ai_title,
+    event?.title,
+    event?.prompt,
+  )
+  return title && !isOpaqueInternalName(title) ? shortLabel(title, max) : ''
+}
+
+export function eventSessionCacheKeys(event) {
+  if (!event) return []
+  const keys = []
+  const threadId = firstString(event.threadId, event.thread_id, event['thread-id'])
+  const sessionId = firstString(event.sessionId, event.session_id, event.session)
+  const transcriptPath = firstString(event.transcriptPath, event.transcript_path)
+  const agentTranscriptPath = firstString(event.agentTranscriptPath, event.agent_transcript_path)
+  const chatId = firstString(event.chatId, event.chat_id)
+  const messageId = firstString(event.messageId, event.message_id)
+  const path = eventPath(event)
+
+  if (threadId) keys.push(`thread:${threadId}`)
+  if (sessionId) keys.push(`session:${sessionId}`)
+  if (transcriptPath) keys.push(`transcript:${normalizePath(transcriptPath)}`)
+  if (agentTranscriptPath) keys.push(`agent-transcript:${normalizePath(agentTranscriptPath)}`)
+  if (chatId) keys.push(`chat:${chatId}:${messageId}`)
+  if (path) keys.push(`cwd:${event.source || 'local'}:${normalizePath(path)}`)
+  return keys
+}
+
+export function eventActorLabel(event) {
+  if (!event) return ''
+  const type = String(event.type || '')
+  const text = [
+    event.prompt,
+    event.title,
+    event.text,
+    event.client,
+    event.originator,
+    event.app,
+    event.sourceApp,
+    event.source_app,
+  ].map(value => String(value || '')).join(' ')
+  const fromBridgePrompt = /通过飞书机器人被调用|飞书机器人/.test(text)
+  const hasLarkContext = Boolean(firstString(event.chatId, event.chat_id, event.messageId, event.message_id))
+  if (event.source === 'local') {
+    if (fromBridgePrompt || hasLarkContext) return '飞书机器人 Agent'
+    return '本机 Agent'
+  }
+  if (event.source === 'lark') {
+    if (type === 'lark_message_received') return '飞书用户请求'
+    return '飞书机器人'
+  }
+  return ''
+}
+
+export function isCodexTranscriptPath(value) {
+  return /(^|\/)\.codex\/sessions\//.test(String(value || ''))
+}
+
+export function isCodexInternalMemoryPath(value) {
+  return /(^|\/)\.codex\/memories(\/|$)/.test(String(value || '').replace(/\\/g, '/'))
+}
+
+export function isClaudeTranscriptPath(value) {
+  return /(^|\/)\.claude\/projects\//.test(String(value || ''))
+}
+
+export function inferSessionIdFromTranscriptPath(value) {
+  const file = String(value || '').split('/').pop() || ''
+  const uuid = file.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+  return uuid?.[0] || ''
+}
+
+function eventClient(event) {
+  return firstString(
+    event?.client,
+    event?.originator,
+    event?.sourceApp,
+    event?.source_app,
+    event?.app,
+    event?.appName,
+    event?.app_name,
+    event?.agentApp,
+    event?.agent_app,
+    event?.kodamaAgent,
+    event?.kodama_agent,
+  )
+}
+
+function isCodexDesktopEvent(event) {
+  if (event?.codexDesktop === true || event?.codex_desktop === true) return true
+  return /\bcodex\s+(desktop|app)\b/i.test(eventClient(event))
+}
+
+export function sessionRequestForEvent(event, options = {}) {
+  if (!event || event.source !== 'local') return null
+  const transcriptPath = event.transcriptPath || event.transcript_path || ''
+  const agentTranscriptPath = event.agentTranscriptPath || event.agent_transcript_path || ''
+  const sessionId = event.sessionId || event.session_id || inferSessionIdFromTranscriptPath(transcriptPath)
+  const threadId = event.threadId || event.thread_id || event['thread-id'] || ''
+  const client = eventClient(event).toLowerCase()
+  const cwd = eventPath(event)
+
+  if (isCodexInternalMemoryPath(cwd) || isCodexInternalMemoryPath(transcriptPath) || isCodexInternalMemoryPath(agentTranscriptPath)) {
+    return null
+  }
+  if (client.includes('trae') || client.includes('coco')) return null
+
+  const codexTranscript = isCodexTranscriptPath(transcriptPath) || isCodexTranscriptPath(agentTranscriptPath)
+  const codexThreadOpenable = Boolean(threadId && isCodexDesktopEvent(event))
+  const claude = isClaudeTranscriptPath(transcriptPath) || isClaudeTranscriptPath(agentTranscriptPath) || client.includes('claude')
+  const provider = claude ? 'claude' : codexTranscript || codexThreadOpenable ? 'codex' : ''
+  const id = provider === 'codex' ? (threadId || sessionId) : sessionId
+  if (!provider || !id) return null
+
+  return {
+    provider,
+    sessionId: id,
+    threadId,
+    transcriptPath,
+    agentTranscriptPath,
+    cwd,
+    canOpenCodexThread: provider === 'codex' && codexThreadOpenable,
+    bridgeUrl: options.bridgeUrl || '',
+    token: options.token || '',
+  }
+}
+
+export function targetForEvent(event, options = {}) {
+  if (!event) return null
+  const url = event.url || event.link || event.deepLink || event.deep_link || ''
+  if (url) return { kind: 'url', url, label: '打开链接' }
+
+  const chatId = event.chatId || event.chat_id || ''
+  if (chatId) {
+    const messageId = event.messageId || event.message_id || ''
+    return {
+      kind: 'lark',
+      chatId,
+      messageId,
+      label: messageId ? `飞书消息 ${messageId}` : `飞书会话 ${chatId}`,
+    }
+  }
+
+  const session = sessionRequestForEvent(event, options)
+  if (!session) return null
+  if (session.provider === 'codex') {
+    if (session.canOpenCodexThread) {
+      return {
+        kind: 'codex-thread',
+        threadId: session.threadId || session.sessionId,
+        turnId: event.turnId || event.turn_id || event['turn-id'] || '',
+        url: `codex://threads/${encodeURIComponent(session.threadId || session.sessionId)}`,
+        label: '打开 Codex 会话',
+        fallbackPath: session.transcriptPath,
+      }
+    }
+    if (session.transcriptPath) {
+      return {
+        kind: 'local-path',
+        path: session.transcriptPath,
+        label: '打开 Codex 记录',
+      }
+    }
+    return null
+  }
+  if (session.provider === 'claude') {
+    return {
+      kind: 'terminal-session',
+      sessionId: session.sessionId,
+      tty: event.tty || '',
+      cwd: session.cwd,
+      label: '打开 Claude Code 终端',
+      fallbackPath: session.transcriptPath,
+    }
+  }
+  return null
 }

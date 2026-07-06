@@ -260,7 +260,7 @@ CODEX_MODEL=
 CODEX_RUNTIME=auto                # exec | app-server | auto
 CODEX_APP_SERVER_START_TIMEOUT_MS=10000
 CODEX_APP_SERVER_REQUEST_TIMEOUT_MS=30000
-CODEX_TIMEOUT_MS=600000
+CODEX_TIMEOUT_MS=                 # empty or 0 means no Codex turn timeout
 CODEX_EPHEMERAL=1
 
 CLAUDE_CODE_BIN=claude
@@ -268,7 +268,7 @@ CLAUDE_CODE_OUTPUT_FORMAT=json    # json | stream-json | text
 CLAUDE_CODE_PERMISSION_MODE=plan  # keep write-capable modes owner/approval-gated
 CLAUDE_CODE_MAX_TURNS=3
 CLAUDE_CODE_NO_SESSION_PERSISTENCE=1
-CLAUDE_CODE_TIMEOUT_MS=600000
+CLAUDE_CODE_TIMEOUT_MS=           # empty falls back to CODEX_TIMEOUT_MS
 CLAUDE_CODE_EXTRA_ARGS=
 
 COCO_RUN_MODE=chat                # chat | task
@@ -278,8 +278,8 @@ COCO_BRANCH=
 COCO_MERGE_REQUEST_NUMBER=
 COCO_TASK_WAIT=0                  # task mode returns after submit unless enabled
 COCO_TASK_SUBSCRIBE=1
-COCO_TIMEOUT_MS=600000
-COCO_TASK_WAIT_TIMEOUT_MS=1200000
+COCO_TIMEOUT_MS=                  # empty falls back to CODEX_TIMEOUT_MS
+COCO_TASK_WAIT_TIMEOUT_MS=        # empty falls back to COCO_TIMEOUT_MS/CODEX_TIMEOUT_MS
 
 CLAUDE_HOME=~/.claude
 CLAUDE_PROJECTS_ROOT=~/.claude/projects
@@ -320,6 +320,11 @@ TASK_VIEWER_GOOFY_DESCRIPTION="Bridge Task Session Viewer"
 TASK_VIEWER_GOOFY_EXPIRY_DAYS=365
 TASK_VIEWER_GOOFY_TIMEOUT_MS=180000
 ```
+
+Backend runner timeout variables use milliseconds when set to a positive
+integer. Leaving them empty, or setting them to `0`, disables the runner timeout
+so long Codex/Claude/Coco tasks can continue until they finish or are stopped by
+another control path.
 
 ## Owner Ops Commands
 
@@ -362,6 +367,42 @@ disposable scratch directory with `CODEX_NON_OWNER_SANDBOX`; the bound project
 is only exposed in the prompt as the real workspace to inspect. This keeps the
 oncall convenience without letting shared-chat members mutate the real repo
 without approval.
+
+## Project Chat Bindings
+
+Project bindings are stable `chat_id -> project` routes. They are stronger than
+`CODEX_CWD` and more complete than `/oncall bind`: a binding supplies the project
+`cwd`, project memory file, TODO file, roadmap file, allowed local actions, and
+the risky actions that still require owner approval.
+
+Set `PROJECT_BINDINGS_FILE` to a JSON file such as
+`packages/bridge/config/project-bindings.json`:
+
+```json
+{
+  "version": 1,
+  "chats": {
+    "oc_group_chat_id": {
+      "project": "BuyTogether",
+      "project_id": "buy-together",
+      "cwd": "/Users/bytedance/code/buy-together",
+      "memory_file": "/Users/bytedance/code/buy-together/.omx/project-memory.json",
+      "todo_file": "/Users/bytedance/code/buy-together/TODO.md",
+      "roadmap_file": "/Users/bytedance/code/buy-together/docs/version-roadmap.md",
+      "allowed_actions": ["edit_project_files", "run_local_tests", "run_dev_server"],
+      "requires_owner_approval": ["github_push", "payment", "production_deploy", "destructive_delete"]
+    }
+  }
+}
+```
+
+When a direct bot task comes from a bound chat, the bridge validates all bound
+paths before starting Codex. If any source is missing, it replies in the
+original thread and does not start the backend. A valid binding runs the task in
+the project `cwd` and injects a bounded project context built from the project
+memory, TODO, and roadmap. The bridge does not read recent group history by
+default; the injected policy tells Codex to inspect group messages only when the
+user explicitly references recent chat context or an unresolved link/repo.
 
 ## Profile Capability Policy
 

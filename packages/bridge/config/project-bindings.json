@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "chats": {
+    "oc_508cc6ad150eaa47ac0da3e37c0a19c8": {
+      "project": "BuyTogether",
+      "project_id": "buy-together",
+      "cwd": "/Users/bytedance/code/buy-together",
+      "memory_file": "/Users/bytedance/code/buy-together/.omx/project-memory.json",
+      "todo_file": "/Users/bytedance/code/buy-together/TODO.md",
+      "roadmap_file": "/Users/bytedance/code/buy-together/docs/version-roadmap.md",
+      "allowed_actions": [
+        "edit_project_files",
+        "run_local_tests",
+        "run_dev_server"
+      ],
+      "requires_owner_approval": [
+        "github_push",
+        "github_permission_change",
+        "real_purchase",
+        "payment",
+        "production_deploy",
+        "destructive_delete"
+      ]
+    }
+  }
+}

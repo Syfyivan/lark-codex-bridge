@@ -5,7 +5,21 @@ import { PET_CONFIG } from './config/pet-config.js'
 import { initAccessoryLayer } from './accessories.js'
 import { ACCESSORIES, ACCESSORY_SLOTS } from './config/accessories.js'
 import { initGrowth, feed as feedGrowth, feedManually, growthScale, feedTokens, statusText, getState as getGrowthState, equipAccessory, unlockWithExp, configureAccessories } from './growth.js'
-import { eventAgentLabel, eventAppLabel, eventBubbleContext, eventProjectLabel, eventTaskLabel, eventWorkId } from './event-labels.js'
+import {
+  eventActorLabel,
+  eventAgentLabel,
+  eventAppLabel,
+  eventBubbleContext,
+  eventExplicitProjectLabel,
+  eventSessionCacheKeys,
+  eventSessionTitle,
+  eventTaskLabel,
+  eventWorkdirLabel,
+  eventWorkId,
+  inferSessionIdFromTranscriptPath,
+  sessionRequestForEvent as buildSessionRequestForEvent,
+  targetForEvent as buildTargetForEvent,
+} from './event-labels.js'
 
 // Live2D model is chosen by `pnpm run setup <name>` (writes ./models/current-model.js).
 const FALLBACK_MODEL_URL = './models/wanko/Wanko.model3.json'
@@ -87,9 +101,11 @@ let bubbleSeq = 0
 const eventLog = []
 const bubbleLog = []
 const sessionPreviewCache = new Map()
+const sessionTitleCache = new Map()
 const pendingBubbleShares = new Set()
 const pendingSubagentShares = new Set()
 const MAX_EVENT_LOG = 40
+const MAX_SESSION_TITLE_CACHE = 200
 const MAX_TRANSIENT_BUBBLES = 6
 const MAX_PERSISTENT_BUBBLES = 120
 const PANEL_TABS = new Set(['settings', 'waiting', 'done', 'sessions', 'bridge', 'recent', 'config'])
@@ -1284,62 +1300,59 @@ function taskName(event) {
   return sourceLabel(event.source)
 }
 
+function trimSessionTitleCache() {
+  while (sessionTitleCache.size > MAX_SESSION_TITLE_CACHE) {
+    const oldest = sessionTitleCache.keys().next().value
+    if (!oldest) break
+    sessionTitleCache.delete(oldest)
+  }
+}
+
+function rememberSessionTitle(event) {
+  const title = eventSessionTitle(event)
+  if (!title) return
+  for (const key of eventSessionCacheKeys(event)) {
+    sessionTitleCache.delete(key)
+    sessionTitleCache.set(key, title)
+  }
+  trimSessionTitleCache()
+}
+
+function cachedSessionTitle(event) {
+  const direct = eventSessionTitle(event)
+  if (direct) return direct
+  for (const key of eventSessionCacheKeys(event)) {
+    const title = sessionTitleCache.get(key)
+    if (title) return title
+  }
+  return ''
+}
+
+function titleContains(base, title) {
+  const left = String(base || '').replace(/\s+/g, ' ').toLowerCase()
+  const right = String(title || '').replace(/\s+/g, ' ').toLowerCase()
+  return Boolean(right && left.includes(right))
+}
+
 function bubbleTitle(event) {
   if (!event) return 'Kodama'
-  return `${taskName(event)} · ${typeLabel(event.type)}`
-}
-
-function isCodexTranscriptPath(value) {
-  return /(^|\/)\.codex\/sessions\//.test(String(value || ''))
-}
-
-function isCodexInternalMemoryPath(value) {
-  return /(^|\/)\.codex\/memories(\/|$)/.test(String(value || '').replace(/\\/g, '/'))
-}
-
-function isClaudeTranscriptPath(value) {
-  return /(^|\/)\.claude\/projects\//.test(String(value || ''))
-}
-
-function inferSessionIdFromTranscriptPath(value) {
-  const file = String(value || '').split('/').pop() || ''
-  const uuid = file.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
-  return uuid?.[0] || ''
+  const actor = eventActorLabel(event)
+  const task = taskName(event)
+  const suffix = typeLabel(event.type)
+  const base = actor && task && actor !== task
+    ? `${actor} / ${task} · ${suffix}`
+    : actor
+      ? `${actor} · ${suffix}`
+      : `${task} · ${suffix}`
+  const sessionTitle = cachedSessionTitle(event)
+  return sessionTitle && !titleContains(base, sessionTitle) ? `${base}（${sessionTitle}）` : base
 }
 
 function sessionRequestForEvent(event) {
-  if (!event || event.source !== 'local') return null
-  const transcriptPath = event.transcriptPath || event.transcript_path || ''
-  const agentTranscriptPath = event.agentTranscriptPath || event.agent_transcript_path || ''
-  const sessionId = event.sessionId || event.session_id || inferSessionIdFromTranscriptPath(transcriptPath)
-  const threadId = event.threadId || event.thread_id || event['thread-id'] || ''
-  const client = String(event.client || event.originator || '').toLowerCase()
-  const cwd = event.cwd || event.projectDir || event.project_dir || event.workspacePath || event.workspace_path || ''
-  if (isCodexInternalMemoryPath(cwd) || isCodexInternalMemoryPath(transcriptPath) || isCodexInternalMemoryPath(agentTranscriptPath)) {
-    return null
-  }
-  // Trae/Coco hook payloads carry conversation ids, but Kodama does not have a
-  // reliable deep link or terminal jump for Trae Work sessions yet. Do not fall
-  // through to the generic "sessionId means Codex" branch, or Trae bubbles get
-  // the same unopenable Codex target that internal Codex tasks used to get.
-  if (client.includes('trae') || client.includes('coco')) return null
-  const provider = isClaudeTranscriptPath(transcriptPath) || isClaudeTranscriptPath(agentTranscriptPath) || client.includes('claude')
-    ? 'claude'
-    : isCodexTranscriptPath(transcriptPath) || client.includes('codex') || threadId || sessionId
-      ? 'codex'
-      : ''
-  const id = provider === 'codex' ? (threadId || sessionId) : sessionId
-  if (!provider || !id) return null
-  return {
-    provider,
-    sessionId: id,
-    threadId,
-    transcriptPath,
-    agentTranscriptPath,
-    cwd,
+  return buildSessionRequestForEvent(event, {
     bridgeUrl: activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL,
     token: activeAgentConfig.token || '',
-  }
+  })
 }
 
 function shouldPersistBubble(event) {
@@ -1522,13 +1535,17 @@ function bubbleHoverHtml(item) {
     rows.push(`<div class="bubble-hover-text">你：${escapeHtml(shortText(item.event.prompt, 74))}</div>`)
   }
   rows.push(`<div class="bubble-hover-text">${escapeHtml(shortText(item.text, 74))}</div>`)
+  const actorLabel = eventActorLabel(item.event)
   const appLabel = eventAppLabel(item.event)
   const agentLabel = eventAgentLabel(item.event)
-  const projectLabel = eventProjectLabel(item.event)
+  const projectLabel = eventExplicitProjectLabel(item.event)
+  const workdirLabel = eventWorkdirLabel(item.event)
   const workId = eventWorkId(item.event)
+  if (actorLabel) rows.push(`<div class="bubble-hover-meta">来源：${escapeHtml(actorLabel)}</div>`)
   if (appLabel) rows.push(`<div class="bubble-hover-meta">App：${escapeHtml(appLabel)}</div>`)
   if (agentLabel && agentLabel !== appLabel) rows.push(`<div class="bubble-hover-meta">Agent：${escapeHtml(agentLabel)}</div>`)
   if (projectLabel) rows.push(`<div class="bubble-hover-meta">项目：${escapeHtml(projectLabel)}</div>`)
+  if (workdirLabel && workdirLabel !== projectLabel) rows.push(`<div class="bubble-hover-meta">工作目录：${escapeHtml(workdirLabel)}</div>`)
   if (workId) rows.push(`<div class="bubble-hover-meta">Work ID：${escapeHtml(shortText(workId, 18))}</div>`)
   return rows.join('')
 }
@@ -1573,16 +1590,20 @@ function previewKey(request) {
 // no transcript path, so the file-read preview always failed before).
 function localPreviewFromEvent(event) {
   const lines = []
+  const actorLabel = eventActorLabel(event)
   const appLabel = eventAppLabel(event)
   const agentLabel = eventAgentLabel(event)
-  const projectLabel = eventProjectLabel(event)
+  const projectLabel = eventExplicitProjectLabel(event)
+  const workdirLabel = eventWorkdirLabel(event)
   const workId = eventWorkId(event)
+  if (actorLabel) lines.push(`来源: ${actorLabel}`)
   if (appLabel) lines.push(`App: ${appLabel}`)
   if (agentLabel && agentLabel !== appLabel) lines.push(`Agent: ${agentLabel}`)
   if (projectLabel) lines.push(`项目: ${projectLabel}`)
+  if (workdirLabel && workdirLabel !== projectLabel) lines.push(`工作目录: ${workdirLabel}`)
   if (workId) lines.push(`Work ID: ${shortText(workId, 18)}`)
   if (event?.prompt) lines.push(`你: ${shortText(event.prompt, 74)}`)
-  if (event?.text) lines.push(`Agent: ${shortText(event.text, 74)}`)
+  if (event?.text) lines.push(`机器人: ${shortText(event.text, 74)}`)
   if (!lines.length) return { ok: false, error: '这条事件没有可显示的摘要' }
   return { ok: true, title: bubbleTitle(event), lines }
 }
@@ -1920,6 +1941,7 @@ function togglePanel(force) {
 
 function recordAgentEvent(event) {
   if (!event || !event.type) return
+  rememberSessionTitle(event)
   const record = {
     ...event,
     id: String(++eventSeq),
@@ -1932,43 +1954,10 @@ function recordAgentEvent(event) {
 }
 
 function targetForEvent(event) {
-  if (!event) return null
-  const url = event.url || event.link || event.deepLink || event.deep_link || ''
-  if (url) return { kind: 'url', url, label: '打开链接' }
-  const chatId = event.chatId || event.chat_id || ''
-  if (chatId) {
-    const messageId = event.messageId || event.message_id || ''
-    return {
-      kind: 'lark',
-      chatId,
-      messageId,
-      label: messageId ? `飞书消息 ${messageId}` : `飞书会话 ${chatId}`,
-    }
-  }
-  const session = sessionRequestForEvent(event)
-  if (session) {
-    if (session.provider === 'codex') {
-      return {
-        kind: 'codex-thread',
-        threadId: session.sessionId,
-        turnId: event.turnId || event.turn_id || event['turn-id'] || '',
-        url: `codex://threads/${encodeURIComponent(session.sessionId)}`,
-        label: '打开 Codex 会话',
-        fallbackPath: session.transcriptPath,
-      }
-    }
-    if (session.provider === 'claude') {
-      return {
-        kind: 'terminal-session',
-        sessionId: session.sessionId,
-        tty: event.tty || '',
-        cwd: session.cwd,
-        label: '打开 Claude Code 终端',
-        fallbackPath: session.transcriptPath,
-      }
-    }
-  }
-  return null
+  return buildTargetForEvent(event, {
+    bridgeUrl: activeAgentConfig.bridgeUrl || DEFAULT_BRIDGE_URL,
+    token: activeAgentConfig.token || '',
+  })
 }
 
 function targetKey(target) {

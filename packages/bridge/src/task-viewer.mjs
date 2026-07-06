@@ -99,7 +99,7 @@ function eventLabel(type) {
     task_done: '完成',
     task_failed: '失败',
     task_cancelled: '取消',
-    lark_message_received: '飞书消息',
+    lark_message_received: '飞书用户请求',
     lark_reply_sent: '飞书回复',
   }[type] || type || '事件';
 }
@@ -112,6 +112,53 @@ function taskDuration(task) {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   return `${minutes}m ${seconds % 60}s`;
+}
+
+function eventBubbleRole(event) {
+  if (event.type === 'task_started' || event.type === 'lark_message_received') return 'user';
+  if (event.type === 'task_failed' || event.type === 'task_cancelled') return 'error';
+  return 'assistant';
+}
+
+function eventBubbleTitle(event) {
+  const role = eventBubbleRole(event);
+  if (role === 'user') return '飞书用户请求';
+  if (role === 'error') return eventLabel(event.type);
+  if (event.type === 'task_progress') return '机器人思考/操作过程';
+  if (event.type === 'task_done' || event.type === 'lark_reply_sent') return '机器人最终回复';
+  return eventLabel(event.type);
+}
+
+function eventVisibleText(event) {
+  return firstText(event.text, event.reason, event.command);
+}
+
+function renderConversationBubble(event, index) {
+  const text = eventVisibleText(event);
+  if (!text) return '';
+  const role = eventBubbleRole(event);
+  const bubbleId = `${event.taskId || 'task'}-${event.id || index}`;
+  return `<article class="chat-row chat-${escapeHtml(role)}">
+  <div class="avatar">${role === 'user' ? '飞' : role === 'error' ? '!' : '菌'}</div>
+  <div class="bubble-wrap">
+    <div class="bubble-meta"><b>${escapeHtml(eventBubbleTitle(event))}</b><span>${escapeHtml(formatTime(event.ts))}</span></div>
+    <div class="chat-bubble" id="${escapeHtml(bubbleId)}">${escapeHtml(text)}</div>
+    <div class="bubble-actions">
+      <button class="bubble-button copy-bubble" type="button" data-copy-target="${escapeHtml(bubbleId)}">复制气泡</button>
+    </div>
+  </div>
+</article>`;
+}
+
+function renderConversation(task) {
+  const events = Array.isArray(task.events) ? task.events : [];
+  const bubbles = events
+    .map((event, index) => renderConversationBubble(event, index))
+    .filter(Boolean)
+    .join('\n');
+  return bubbles
+    ? `<section class="conversation"><h3>可分享过程</h3>${bubbles}</section>`
+    : '<section class="conversation"><h3>可分享过程</h3><p class="muted">这个任务没有记录到可见过程。</p></section>';
 }
 
 function renderTaskList(tasks) {
@@ -138,6 +185,7 @@ function renderTimeline(tasks) {
   <p>${escapeHtml(event.text || event.reason || event.command || '')}</p>
 </li>`).join('\n')
         : '<li class="event"><strong>暂无事件</strong><p>这个任务没有记录到可见进度。</p></li>';
+      const conversation = renderConversation(task);
       return `<article class="task-detail${index === 0 ? ' is-active' : ''}" data-task-id="${escapeHtml(task.id)}">
   <header class="detail-head">
     <div>
@@ -163,6 +211,7 @@ function renderTimeline(tasks) {
   ${task.prompt ? `<section class="prompt"><h3>请求摘要</h3><p>${escapeHtml(task.prompt)}</p></section>` : ''}
   ${task.finalText ? `<section class="final"><h3>最终回复</h3><p>${escapeHtml(task.finalText)}</p></section>` : ''}
   ${task.errorText ? `<section class="error"><h3>错误</h3><p>${escapeHtml(task.errorText)}</p></section>` : ''}
+  ${conversation}
   <ol class="timeline">${rows}</ol>
 </article>`;
     })
@@ -307,6 +356,103 @@ export function renderTaskViewerHtml(input = {}) {
       overflow-wrap: anywhere;
     }
     .error { border-color: rgba(180, 35, 24, .28); background: #fff7f7; }
+    .muted { color: var(--muted); }
+    .conversation {
+      display: grid;
+      gap: 14px;
+      margin: 16px 0;
+    }
+    .conversation h3 {
+      margin-bottom: 0;
+    }
+    .chat-row {
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr);
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .chat-row.chat-user {
+      grid-template-columns: minmax(0, 1fr) 38px;
+    }
+    .chat-row.chat-user .avatar {
+      grid-column: 2;
+      grid-row: 1;
+      background: var(--accent);
+    }
+    .chat-row.chat-user .bubble-wrap {
+      grid-column: 1;
+      grid-row: 1;
+      align-items: flex-end;
+    }
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #344054;
+      color: #fff;
+      font-weight: 800;
+    }
+    .chat-error .avatar {
+      background: var(--danger);
+    }
+    .bubble-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      min-width: 0;
+    }
+    .bubble-meta {
+      display: flex;
+      gap: 8px;
+      margin: 0 2px 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .bubble-meta b {
+      color: var(--ink);
+    }
+    .chat-bubble {
+      max-width: min(860px, 100%);
+      border: 1px solid rgba(52, 64, 84, .16);
+      border-radius: 8px;
+      padding: 12px 14px;
+      background: var(--panel);
+      box-shadow: 0 8px 22px rgba(16, 24, 40, .05);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .chat-user .chat-bubble {
+      border-color: rgba(15, 123, 101, .24);
+      background: var(--accent-soft);
+    }
+    .chat-error .chat-bubble {
+      border-color: rgba(180, 35, 24, .28);
+      background: #fff7f7;
+    }
+    .bubble-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      width: 100%;
+      margin-top: 7px;
+    }
+    .bubble-button {
+      min-height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0 10px;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+    }
+    .bubble-button:hover {
+      border-color: rgba(15, 123, 101, .42);
+      background: var(--accent-soft);
+    }
     .timeline {
       margin: 16px 0 0;
       padding: 0;
@@ -370,6 +516,19 @@ export function renderTaskViewerHtml(input = {}) {
         document.querySelectorAll('.task-detail').forEach(function(panel) {
           panel.classList.toggle('is-active', panel.getAttribute('data-task-id') === id);
         });
+      });
+    });
+    document.querySelectorAll('.copy-bubble').forEach(function(button) {
+      button.addEventListener('click', function() {
+        var id = button.getAttribute('data-copy-target');
+        var target = id ? document.getElementById(id) : null;
+        var text = target ? target.innerText : '';
+        if (!text || !navigator.clipboard) return;
+        navigator.clipboard.writeText(text).then(function() {
+          var old = button.textContent;
+          button.textContent = '已复制';
+          setTimeout(function() { button.textContent = old; }, 1200);
+        }).catch(function() {});
       });
     });
   </script>

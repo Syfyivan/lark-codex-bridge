@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { envFlag, envFlagValue, parseReactionRules, splitCsv } from '../src/env.mjs';
+import {
+  cappedTimeoutMs,
+  envFlag,
+  envFlagValue,
+  firstNonBlank,
+  optionalTimeoutMs,
+  parseReactionRules,
+  splitCsv,
+} from '../src/env.mjs';
 
 test('splitCsv trims and removes empty items', () => {
   assert.deepEqual(splitCsv(' a, ,b,, c '), ['a', 'b', 'c']);
@@ -21,6 +29,27 @@ test('envFlag reads from a provided env object', () => {
   assert.equal(envFlag({ FEATURE: '1' }, 'FEATURE'), true);
   assert.equal(envFlag({ FEATURE: 'no' }, 'FEATURE'), false);
   assert.equal(envFlag({}, 'FEATURE', true), true);
+});
+
+test('firstNonBlank returns the first configured value', () => {
+  assert.equal(firstNonBlank('', undefined, '  ', '60000'), '60000');
+  assert.equal(firstNonBlank('0', '60000'), '0');
+  assert.equal(firstNonBlank('', null), undefined);
+});
+
+test('optionalTimeoutMs treats blank or non-positive values as no timeout', () => {
+  assert.equal(optionalTimeoutMs(undefined), 0);
+  assert.equal(optionalTimeoutMs(''), 0);
+  assert.equal(optionalTimeoutMs('0'), 0);
+  assert.equal(optionalTimeoutMs('-1'), 0);
+  assert.equal(optionalTimeoutMs('60000'), 60000);
+});
+
+test('cappedTimeoutMs preserves short command caps when runner timeout is disabled', () => {
+  assert.equal(cappedTimeoutMs(0, 60_000), 60_000);
+  assert.equal(cappedTimeoutMs(undefined, 60_000), 60_000);
+  assert.equal(cappedTimeoutMs(120_000, 60_000), 60_000);
+  assert.equal(cappedTimeoutMs(30_000, 60_000), 30_000);
 });
 
 test('parseReactionRules normalizes supported rule shapes', () => {

@@ -12,6 +12,7 @@ import {
   eventBubbleContext,
   eventCurrentText,
   eventExplicitProjectLabel,
+  eventLarkReplyMergeKey,
   eventSessionCacheKeys,
   eventSessionTitle,
   eventTaskLabel,
@@ -1362,6 +1363,8 @@ function shouldPersistBubble(event) {
 
 function bubbleMergeKey(event) {
   if (!event?.type) return ''
+  const larkReplyKey = eventLarkReplyMergeKey(event)
+  if (larkReplyKey) return larkReplyKey
   if (!new Set(['task_started', 'task_progress', 'task_waiting', 'task_done', 'task_failed']).has(event.type)) {
     return ''
   }

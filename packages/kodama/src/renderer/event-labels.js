@@ -209,6 +209,14 @@ export function eventSessionCacheKeys(event) {
   return keys
 }
 
+export function eventLarkReplyMergeKey(event) {
+  if (String(event?.type || '') !== 'lark_reply_sent') return ''
+  const messageId = firstString(event?.messageId, event?.message_id)
+  if (!messageId) return ''
+  const chatId = firstString(event?.chatId, event?.chat_id)
+  return `lark-reply:${chatId}:${messageId}`
+}
+
 export function eventActorLabel(event) {
   if (!event) return ''
   const type = String(event.type || '')

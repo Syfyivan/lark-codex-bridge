@@ -7,6 +7,7 @@ import {
   eventBubbleContext,
   eventCurrentText,
   eventExplicitProjectLabel,
+  eventLarkReplyMergeKey,
   eventProjectLabel,
   eventSessionCacheKeys,
   eventSessionTitle,
@@ -196,4 +197,28 @@ test('current hover text prefers latest progress over initial prompt', () => {
     'Git 操作完成：git diff -- packages/bridge/lark-codex-bridge.mjs',
   )
   assert.doesNotMatch(eventCurrentText(event), /先让菌子/)
+})
+
+test('lark reply merge key replaces repeated replies without merging progress', () => {
+  const base = {
+    source: 'lark',
+    chatId: 'oc_chat',
+    messageId: 'om_message',
+  }
+  assert.equal(
+    eventLarkReplyMergeKey({ ...base, type: 'lark_reply_sent', text: '仍在处理' }),
+    'lark-reply:oc_chat:om_message',
+  )
+  assert.equal(
+    eventLarkReplyMergeKey({ ...base, type: 'lark_reply_sent', text: '正在整理结果' }),
+    'lark-reply:oc_chat:om_message',
+  )
+  assert.equal(
+    eventLarkReplyMergeKey({ ...base, type: 'task_progress', text: '正在运行验证' }),
+    '',
+  )
+  assert.equal(
+    eventLarkReplyMergeKey({ source: 'lark', type: 'lark_reply_sent', chatId: 'oc_chat' }),
+    '',
+  )
 })

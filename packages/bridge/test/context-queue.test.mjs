@@ -8,6 +8,7 @@ import {
   isStopCommand,
   parseQueueCommand,
 } from '../src/context-queue.mjs';
+import * as contextQueue from '../src/context-queue.mjs';
 
 test('parseQueueCommand and isStopCommand recognize control commands', () => {
   assert.deepEqual(parseQueueCommand('/queue 继续查第二个问题'), { text: '继续查第二个问题' });
@@ -18,19 +19,165 @@ test('parseQueueCommand and isStopCommand recognize control commands', () => {
   assert.equal(isStopCommand('/logs 20'), false);
 });
 
-test('conversationKeyForEvent prefers thread-level context when present', () => {
+test('conversationKeyForEvent keeps group and topic-group tasks in one chat context', () => {
   assert.equal(
     conversationKeyForEvent({ chatId: 'oc_1', chatType: 'group' }),
     'chat:oc_1',
   );
   assert.equal(
     conversationKeyForEvent({ chatId: 'oc_1', chatType: 'topic_group', threadId: 'omt_1' }),
+    'chat:oc_1',
+  );
+  assert.equal(
+    conversationKeyForEvent({
+      chatId: 'oc_1',
+      chatType: 'topic_group',
+      threadId: 'omt_1',
+      groupScoped: false,
+    }),
     'thread:oc_1:omt_1',
   );
   assert.equal(
     conversationKeyForEvent({ chatId: 'oc_p2p', chatType: 'p2p', senderId: 'ou_1' }),
     'p2p:oc_p2p',
   );
+});
+
+test('parseCodexSessionCommand recognizes group session controls', () => {
+  assert.equal(typeof contextQueue.parseCodexSessionCommand, 'function');
+  assert.deepEqual(contextQueue.parseCodexSessionCommand('/new 修复上传状态'), {
+    action: 'new',
+    title: '修复上传状态',
+  });
+  assert.deepEqual(contextQueue.parseCodexSessionCommand('新建一个 session'), {
+    action: 'new',
+    title: '',
+  });
+  assert.deepEqual(contextQueue.parseCodexSessionCommand('/sessions'), { action: 'list' });
+  assert.deepEqual(contextQueue.parseCodexSessionCommand('/session'), { action: 'status' });
+  assert.deepEqual(contextQueue.parseCodexSessionCommand('/use 2'), { action: 'use', selector: '2' });
+  assert.equal(contextQueue.parseCodexSessionCommand('/queue hello'), null);
+});
+
+test('codexSessionMessageIds keeps stable message and topic references once', () => {
+  assert.equal(typeof contextQueue.codexSessionMessageIds, 'function');
+  assert.deepEqual(contextQueue.codexSessionMessageIds({
+    messageId: 'om_message',
+    rootId: 'omt_root',
+    parentId: 'om_parent',
+    replyToMessageId: 'om_parent',
+  }), ['om_message', 'omt_root', 'om_parent']);
+});
+
+test('executeCodexSessionCommand enforces owner and running-task boundaries', async () => {
+  assert.equal(typeof contextQueue.executeCodexSessionCommand, 'function');
+  let newSessionCalls = 0;
+  const runner = {
+    async newSession() {
+      newSessionCalls += 1;
+      return { id: 'thread-new', title: '新需求' };
+    },
+    listSessions() {
+      return [];
+    },
+    activeSession() {
+      return null;
+    },
+    useSession() {
+      return null;
+    },
+  };
+
+  const denied = await contextQueue.executeCodexSessionCommand({
+    command: { action: 'new', title: '新需求' },
+    runner,
+    contextKey: 'chat:oc_1',
+    isOwner: false,
+  });
+  assert.match(denied.message, /只有 bridge owner/);
+
+  const busy = await contextQueue.executeCodexSessionCommand({
+    command: { action: 'new', title: '新需求' },
+    runner,
+    contextKey: 'chat:oc_1',
+    isOwner: true,
+    activeCount: 1,
+  });
+  assert.match(busy.message, /\/stop/);
+
+  const ephemeral = await contextQueue.executeCodexSessionCommand({
+    command: { action: 'new', title: '新需求' },
+    runner: { ...runner, persistentSessions: false },
+    contextKey: 'chat:oc_1',
+    isOwner: true,
+  });
+  assert.match(ephemeral.message, /CODEX_EPHEMERAL=0/);
+  assert.equal(newSessionCalls, 0);
+});
+
+test('executeCodexSessionCommand creates, lists, reports, and switches group sessions', async () => {
+  assert.equal(typeof contextQueue.executeCodexSessionCommand, 'function');
+  const sessions = [
+    { id: 'thread-2', title: '第二个需求', cwd: '/repo', updatedAt: '2026-07-13T02:00:00.000Z' },
+    { id: 'thread-1', title: '第一个需求', cwd: '/repo', updatedAt: '2026-07-13T01:00:00.000Z' },
+  ];
+  let active = sessions[0];
+  let newOptions = null;
+  const runner = {
+    async newSession(options) {
+      newOptions = options;
+      active = { id: 'thread-3', title: options.title, cwd: options.cwd };
+      sessions.unshift(active);
+      return active;
+    },
+    listSessions() {
+      return sessions;
+    },
+    activeSession() {
+      return active;
+    },
+    useSession({ selector }) {
+      active = selector === '2' ? sessions[1] : null;
+      return active;
+    },
+  };
+
+  const created = await contextQueue.executeCodexSessionCommand({
+    command: { action: 'new', title: '' },
+    runner,
+    contextKey: 'chat:oc_1',
+    isOwner: true,
+    cwd: '/repo',
+    sandbox: 'workspace-write',
+    messageIds: ['om_new'],
+    defaultTitle: '需求群 · 新会话',
+  });
+  assert.equal(newOptions.title, '需求群 · 新会话');
+  assert.deepEqual(newOptions.messageIds, ['om_new']);
+  assert.match(created.message, /thread-3/);
+
+  const listed = await contextQueue.executeCodexSessionCommand({
+    command: { action: 'list' },
+    runner,
+    contextKey: 'chat:oc_1',
+  });
+  assert.match(listed.message, /当前/);
+  assert.match(listed.message, /第二个需求/);
+
+  const status = await contextQueue.executeCodexSessionCommand({
+    command: { action: 'status' },
+    runner,
+    contextKey: 'chat:oc_1',
+  });
+  assert.match(status.message, /thread-3/);
+
+  const selected = await contextQueue.executeCodexSessionCommand({
+    command: { action: 'use', selector: '2' },
+    runner,
+    contextKey: 'chat:oc_1',
+    isOwner: true,
+  });
+  assert.match(selected.message, /thread-2/);
 });
 
 test('createContextQueueRuntime serializes tasks per context only', async () => {

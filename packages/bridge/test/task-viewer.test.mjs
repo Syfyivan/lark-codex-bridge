@@ -38,10 +38,15 @@ test('task recorder persists safe bridge task timelines', () => {
     assert.equal(restored.events.some(event => event.type === 'task_progress'), true);
 
     const patched = createTaskRecorder({ storeDir: dir, maxTasks: 5 });
-    patched.patchTask(task.id, { progressCardMessageId: 'om_card', chatType: 'group' });
+    patched.patchTask(task.id, {
+      progressCardMessageId: 'om_card',
+      chatType: 'group',
+      sessionId: '019f-session',
+    });
     const patchedTask = patched.getTask(task.id);
     assert.equal(patchedTask.progressCardMessageId, 'om_card');
     assert.equal(patchedTask.chatType, 'group');
+    assert.equal(patchedTask.sessionId, '019f-session');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -94,6 +99,7 @@ test('task viewer renders a static visual timeline', () => {
     sandbox: 'read-only',
     backend: 'codex',
     runtime: 'exec',
+    sessionId: '019f-session',
     tokens: 123,
     startedAt: '2026-06-16T00:00:00.000Z',
     updatedAt: '2026-06-16T00:00:02.000Z',
@@ -113,6 +119,7 @@ test('task viewer renders a static visual timeline', () => {
   assert.match(html, /飞书用户请求/);
   assert.match(html, /机器人思考\/操作过程/);
   assert.match(html, /机器人最终回复/);
+  assert.match(html, /Codex Session<\/b><code>019f-session/);
   assert.match(html, /chat-bubble/);
   assert.match(html, /复制气泡/);
 });

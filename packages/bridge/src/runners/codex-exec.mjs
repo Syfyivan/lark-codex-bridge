@@ -13,6 +13,11 @@ export function createCodexBackendRunner(config, deps = {}) {
     return {
       id: 'codex',
       label: 'Codex app-server (auto, exec fallback)',
+      persistentSessions: appServerRunner.persistentSessions,
+      newSession: options => appServerRunner.newSession(options),
+      listSessions: options => appServerRunner.listSessions(options),
+      useSession: options => appServerRunner.useSession(options),
+      activeSession: options => appServerRunner.activeSession(options),
       async run(prompt, options = {}) {
         try {
           return await appServerRunner.run(prompt, options);
@@ -37,6 +42,19 @@ function createUnifiedCodexRunner(runner) {
   return {
     id: 'codex',
     label: runner.label || runner.id,
+    persistentSessions: runner.persistentSessions === true,
+    ...(typeof runner.newSession === 'function'
+      ? { newSession: options => runner.newSession(options) }
+      : {}),
+    ...(typeof runner.listSessions === 'function'
+      ? { listSessions: options => runner.listSessions(options) }
+      : {}),
+    ...(typeof runner.useSession === 'function'
+      ? { useSession: options => runner.useSession(options) }
+      : {}),
+    ...(typeof runner.activeSession === 'function'
+      ? { activeSession: options => runner.activeSession(options) }
+      : {}),
     async run(prompt, options = {}) {
       const result = await runner.run(prompt, options);
       if (result && typeof result === 'object' && 'text' in result) return result;

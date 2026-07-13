@@ -4,6 +4,12 @@ import { EventEmitter } from 'node:events';
 import { resolve } from 'node:path';
 
 import { buildCodexPromptText } from './codex-runner.mjs';
+import {
+  createCodexSessionStore,
+  defaultCodexSessionStoreFile,
+} from './codex-session-store.mjs';
+
+export { createCodexSessionStore, defaultCodexSessionStoreFile } from './codex-session-store.mjs';
 
 export function normalizeCodexRuntime(value) {
   const normalized = String(value || 'exec').trim().toLowerCase();
@@ -86,7 +92,8 @@ export class JsonLineCodexAppServerClient extends EventEmitter {
         version: this.config.version || '0.0.0',
       },
       capabilities: {
-        experimental: true,
+        experimentalApi: false,
+        requestAttestation: false,
       },
     }, { timeoutMs: this.config.codexAppServerStartTimeoutMs || 10_000 })
       .then(result => {
@@ -197,6 +204,14 @@ export function createCodexAppServerRunner(config, deps = {}) {
   const client = deps.appServerClient || new JsonLineCodexAppServerClient(config, deps);
   const clampReply = deps.clampReply || (value => String(value || ''));
   const sessions = new Map();
+  const sessionStore = deps.sessionStore || (
+    config.codexEphemeral
+      ? null
+      : createCodexSessionStore({
+          file: config.codexSessionStoreFile || defaultCodexSessionStoreFile(),
+          maxSessions: config.codexSessionHistoryLimit,
+        })
+  );
 
   client.on?.('stderr', text => {
     const trimmed = String(text || '').trim();
@@ -205,6 +220,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
 
   function sessionKeyFor(options) {
     if (!options.contextKey) return '';
+    if (!config.codexEphemeral) return options.contextKey;
     return [
       options.contextKey,
       resolve(options.cwd || config.codexCwd),
@@ -213,15 +229,13 @@ export function createCodexAppServerRunner(config, deps = {}) {
     ].join('\u001f');
   }
 
-  async function ensureThread(options) {
+  async function startThread(options, { forceNew = false } = {}) {
     const key = sessionKeyFor(options);
-    if (key && sessions.has(key)) return sessions.get(key);
-
     const cwd = resolve(options.cwd || config.codexCwd);
     const sandbox = options.sandbox || config.codexSandbox;
+    if (!forceNew && key && sessions.has(key)) return sessions.get(key);
     const response = await client.request('thread/start', {
       cwd,
-      runtimeWorkspaceRoots: [cwd],
       model: config.codexModel || undefined,
       sandbox,
       approvalPolicy: 'never',
@@ -230,15 +244,88 @@ export function createCodexAppServerRunner(config, deps = {}) {
     const threadId = response?.thread?.id;
     if (!threadId) throw new Error('codex app-server thread/start returned no thread id');
 
-    const session = { threadId, key, cwd, sandbox };
+    const title = String(options.sessionTitle || options.title || '').trim();
+    if (title) {
+      await client.request('thread/name/set', { threadId, name: title }, {
+        timeoutMs: config.codexAppServerRequestTimeoutMs || 30_000,
+      });
+    }
+    const session = { threadId, id: threadId, title, key, cwd, sandbox };
     if (key) sessions.set(key, session);
+    sessionStore?.record(key, session, { activate: options.activateSession !== false });
+    sessionStore?.bindMessages(key, threadId, options.messageIds || []);
+    return session;
+  }
+
+  async function ensureThread(options) {
+    const key = sessionKeyFor(options);
+    if (config.codexEphemeral || !sessionStore || !key) return startThread(options);
+
+    const resolved = options.sessionId
+      ? { session: { id: options.sessionId }, source: 'explicit' }
+      : sessionStore.resolve(key, options.messageIds || []);
+    const targetId = resolved.session?.id || '';
+    const cached = sessions.get(key);
+    if (!targetId) return startThread(options);
+    const cwd = resolve(options.cwd || resolved.session?.cwd || config.codexCwd);
+    const sandbox = options.sandbox || resolved.session?.sandbox || config.codexSandbox;
+    if (cached?.threadId === targetId && cached.cwd === cwd && cached.sandbox === sandbox) {
+      sessionStore.bindMessages(key, targetId, options.messageIds || []);
+      return cached;
+    }
+
+    const response = await client.request('thread/resume', {
+      threadId: targetId,
+      cwd,
+      sandbox,
+      approvalPolicy: 'never',
+      model: config.codexModel || undefined,
+    }, { timeoutMs: config.codexAppServerRequestTimeoutMs || 30_000 });
+    const threadId = response?.thread?.id || targetId;
+    const session = {
+      threadId,
+      id: threadId,
+      title: resolved.session?.title || '',
+      key,
+      cwd,
+      sandbox,
+    };
+    sessions.set(key, session);
+    sessionStore.record(key, session, {
+      activate: resolved.source !== 'message' && options.activateSession !== false,
+    });
+    sessionStore.bindMessages(key, threadId, options.messageIds || []);
     return session;
   }
 
   return {
     id: 'codex-app-server',
     label: 'Codex app-server',
+    persistentSessions: Boolean(sessionStore),
     sessions,
+    async newSession(options = {}) {
+      if (config.codexEphemeral || !sessionStore) {
+        throw new Error('Codex group sessions require CODEX_EPHEMERAL=0');
+      }
+      const session = await startThread({
+        ...options,
+        sessionTitle: options.title || options.sessionTitle || '',
+        activateSession: true,
+      }, { forceNew: true });
+      return { ...session, id: session.threadId };
+    },
+    listSessions(options = {}) {
+      return sessionStore?.list(sessionKeyFor(options)) || [];
+    },
+    useSession(options = {}) {
+      const key = sessionKeyFor(options);
+      const selected = sessionStore?.activate(key, options.selector);
+      if (selected) sessions.delete(key);
+      return selected;
+    },
+    activeSession(options = {}) {
+      return sessionStore?.active(sessionKeyFor(options)) || null;
+    },
     async run(prompt, options = {}) {
       const session = await ensureThread(options);
       const fullPrompt = buildCodexPromptText(config, prompt, { progress: options.progress });
@@ -250,6 +337,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
         timeoutMs: config.codexTimeoutMs,
         signal: options.signal,
       });
+      sessionStore?.bindMessages(session.key, session.threadId, options.messageIds || []);
       const text = extractFinalAgentText(turn);
       const usage = turn?.usage || turn?.tokenUsage || turn?.token_usage || null;
       const tokens =

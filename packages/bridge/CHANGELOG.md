@@ -18,6 +18,7 @@
 - 持久 Codex Session 的 token 只由 Codex 本地用量账本统计，避免桌宠的 Bridge 用量重复累计。
 - `/health` 和 HTTP 健康检查现在会展示群 Session 开关、持久化状态与 Session Store 路径。
 - 适配当前 Codex app-server 初始化协议，并移除已不需要的实验性 `runtimeWorkspaceRoots` 参数。
+- Bridge CI 使用 Node.js 22.13，以满足仓库固定的 pnpm 11.7 运行要求。
 
 ### Security
 

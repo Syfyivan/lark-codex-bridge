@@ -17,6 +17,8 @@ Lark bot event -> lark-cli -> backend runner -> Lark reply or progress card
 - Reply only when the bot is mentioned in a group, unless configured otherwise.
 - Run Codex through `codex exec`, a persistent app-server connection, or
   `auto` fallback mode.
+- Keep one persistent Codex Session per Lark group by default, with explicit
+  `/new`, `/sessions`, `/session`, and `/use` controls.
 - Select first-class backend runners with `BRIDGE_BACKEND=codex|claude|coco|agent|api`.
 - Show an interactive progress card while the selected backend is working.
 - Replace the progress card with the final answer when the task finishes.
@@ -246,7 +248,7 @@ LOOP_HARD_MAX_TURNS=0             # optional emergency cap; 0 means no turn cap
 LOOP_IGNORE_SENDER_IDS=
 LOOP_ALLOW_SENDER_IDS=
 
-CONTEXT_QUEUE_ENABLED=1           # serialize direct backend tasks per chat/thread
+CONTEXT_QUEUE_ENABLED=1           # serialize Codex tasks per group; other backends keep chat/thread scope
 ONCALL_BINDINGS_FILE=~/.lark-codex-bridge/oncall-bindings.json
 PROFILE_POLICY_ENABLED=0          # enable profile/capability gate before direct backend runs
 PROFILE_CONFIG_FILE=~/.lark-codex-bridge/profiles.json
@@ -257,11 +259,14 @@ CODEX_SANDBOX=read-only           # owner / approved sensitive operations use th
 CODEX_NON_OWNER_SANDBOX=workspace-write  # non-owner ordinary queries run in a disposable scratch cwd
 CODEX_NON_OWNER_SCRATCH_ROOT=     # defaults to the OS temp directory
 CODEX_MODEL=
-CODEX_RUNTIME=auto                # exec | app-server | auto
+CODEX_RUNTIME=app-server          # required for persistent group Sessions
 CODEX_APP_SERVER_START_TIMEOUT_MS=10000
 CODEX_APP_SERVER_REQUEST_TIMEOUT_MS=30000
 CODEX_TIMEOUT_MS=                 # empty or 0 means no Codex turn timeout
-CODEX_EPHEMERAL=1
+CODEX_EPHEMERAL=0                 # persistent Sessions appear in the Codex local session store
+CODEX_GROUP_SESSION_ENABLED=1
+CODEX_SESSION_STORE_FILE=~/.lark-codex-bridge/codex-sessions.json
+CODEX_SESSION_HISTORY_LIMIT=20
 
 CLAUDE_CODE_BIN=claude
 CLAUDE_CODE_OUTPUT_FORMAT=json    # json | stream-json | text
@@ -336,6 +341,10 @@ The owner can mention the bot in a group, or message it directly, with:
 /logs 40
 /ops health
 /stop
+/new 可选标题
+/sessions
+/session
+/use 2
 ```
 
 `/health` includes the configured sandbox modes, session-share output, selected
@@ -344,11 +353,22 @@ counts. For the Codex backend it also includes a startup preflight for
 app-server `turn/steer` and `turn/interrupt` protocol support. That preflight is
 readiness information for the lower-latency app-server runtime.
 
-When `CONTEXT_QUEUE_ENABLED=1`, direct backend tasks are serialized per chat or
-thread. A normal new request in the same context waits for the current backend
-task to finish. Use `/queue <message>` to explicitly append a follow-up request
-to the same context queue. Use `/stop` as a bridge owner to abort the active
-Codex child process for the current context and clear pending queued tasks.
+When `CODEX_GROUP_SESSION_ENABLED=1`, `CODEX_RUNTIME=app-server`, and
+`CODEX_EPHEMERAL=0`, every Lark group uses one active persistent Codex Session.
+Ordinary messages in that group keep using it across topics and Bridge restarts.
+`/new [title]` creates and activates another Session; `/sessions` lists retained
+Sessions, `/session` shows the current one, and `/use <number|id|title>` switches
+back. Creating and switching are owner-only and are rejected while the group has
+a running or queued task. Replies in an older Lark topic stay bound to the
+Session that originally handled that topic, even after the group's active
+Session changes. Group Memory remains a separate chat-level store, so `/new`
+does not erase the requirement group's shared memory.
+
+When `CONTEXT_QUEUE_ENABLED=1`, Codex tasks are serialized per group when group
+Sessions are enabled; other backends retain their chat/topic scope. A normal new
+request in the same context waits for the current backend task to finish. Use
+`/queue <message>` to append a follow-up and `/stop` as a bridge owner to abort
+the active task and clear pending queued tasks.
 
 ## Oncall Chat Binding
 
@@ -485,9 +505,11 @@ files.
 - `codex`: uses `CODEX_RUNTIME`:
   - `exec` runs one `codex exec` process per turn with the existing sandbox,
     cwd, model, timeout, and ephemeral-session behavior.
-  - `app-server` starts a local Codex app-server client, creates one Codex
-    thread per Lark context/cwd/sandbox tuple, and uses `turn/start` plus
-    `turn/interrupt`.
+  - `app-server` starts a local Codex app-server client and uses `thread/start`,
+    `thread/resume`, `turn/start`, and `turn/interrupt`. With persistent group
+    Sessions enabled, the Session key is the Lark group rather than the current
+    topic, cwd, or sandbox; each turn still resumes with its current safety
+    context.
   - `auto` tries app-server first and falls back to `exec` if app-server is
     unavailable.
 - `claude`: runs Claude Code as a first-class CLI adapter with `claude -p`,
@@ -612,8 +634,9 @@ The returned card points to a Goofy Preview HTTPS URL instead of a local
 
 ## Bridge Task Session Viewer
 
-Codex bridge tasks are often `CODEX_EPHEMERAL=1`, so they do not appear in
-`~/.codex/sessions`. The bridge keeps its own safe task timeline instead:
+Persistent Codex group Sessions (`CODEX_EPHEMERAL=0`) appear in the Codex local
+session store and can be opened from Codex App. The bridge also keeps a safe
+task timeline for Lark-specific context, progress cards, and failures:
 
 ```text
 ~/.lark-codex-bridge/task-runs/
@@ -622,8 +645,10 @@ Codex bridge tasks are often `CODEX_EPHEMERAL=1`, so they do not appear in
 ```
 
 The recorder stores safe summaries only: request summary, context, cwd/sandbox,
-public progress items, final reply summary, failure reason, and token totals when
-the backend exposes them. It does not export hidden reasoning or raw tool output.
+Codex `sessionId`, public progress items, final reply summary, failure reason,
+and token totals when the backend exposes them. The desktop pet can use those
+progress events to show what stage the robot is in, while Codex App remains the
+full task surface. It does not export hidden chain-of-thought or raw tool output.
 
 Local viewer:
 
@@ -874,6 +899,11 @@ repository script path.
 
 Publishing to npm is optional. GitHub install works without it. If you do want a
 public npm package, this repository is prepared as a scoped package:
+
+Every user-visible Bridge change must first be added to
+[`CHANGELOG.md`](./CHANGELOG.md) under `Unreleased`. Pull requests that modify
+`packages/bridge` without updating the Changelog fail the Bridge CI check. At
+release time, move those entries under the new version and release date.
 
 ```bash
 npm login

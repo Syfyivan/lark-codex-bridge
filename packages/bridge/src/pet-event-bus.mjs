@@ -22,6 +22,12 @@ const STATUS_BY_TYPE = {
   task_failed: 'failed',
 };
 
+export function petTokenUsage(tokens, options = {}) {
+  if (options.codexEphemeral === false) return 0;
+  const value = Number(tokens);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 export function createPetEventBus({ maxBuffer = DEFAULT_MAX_BUFFER } = {}) {
   const subscribers = new Set();
   const recent = [];

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -13,6 +16,7 @@ import {
   parseCocoOutput,
 } from '../src/runners/coco.mjs';
 import { createRunner } from '../src/runners/index.mjs';
+import { createCodexSessionStore } from '../src/codex-app-server.mjs';
 
 function baseConfig(patch = {}) {
   return {
@@ -87,6 +91,34 @@ test('Codex auto runtime falls back to exec when app-server fails', async () => 
   assert.equal(result.text, 'fallback answer');
   assert.equal(result.raw.fallback_from, 'codex-app-server');
   assert.equal(captured.command, 'codex');
+});
+
+test('unified Codex runner exposes app-server group session controls', async () => {
+  let threadCount = 0;
+  const runner = createRunner(baseConfig({ codexRuntime: 'app-server', codexEphemeral: false }), {
+    sessionStore: createCodexSessionStore({
+      file: join(mkdtempSync(join(tmpdir(), 'bridge-runner-controls-')), 'sessions.json'),
+    }),
+    appServerClient: {
+      on() {},
+      async request(method, params) {
+        if (method === 'thread/start') return { thread: { id: `thread-${++threadCount}` } };
+        if (method === 'thread/name/set') return {};
+        if (method === 'thread/resume') return { thread: { id: params.threadId } };
+        throw new Error(`unexpected method ${method}`);
+      },
+    },
+  });
+
+  assert.equal(typeof runner.newSession, 'function');
+  assert.equal(typeof runner.listSessions, 'function');
+  assert.equal(typeof runner.useSession, 'function');
+  assert.equal(typeof runner.activeSession, 'function');
+
+  const created = await runner.newSession({ contextKey: 'chat:oc_group', title: '需求会话' });
+  assert.equal(created.id, 'thread-1');
+  assert.equal(runner.activeSession({ contextKey: 'chat:oc_group' }).id, 'thread-1');
+  assert.equal(runner.listSessions({ contextKey: 'chat:oc_group' }).length, 1);
 });
 
 test('Claude Code runner builds non-interactive safe default args', () => {

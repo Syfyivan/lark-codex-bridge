@@ -58,8 +58,16 @@
     <string>/Users/YOUR_USER/lark-codex-bridge</string>
     <key>CODEX_SANDBOX</key>
     <string>read-only</string>
+    <key>CODEX_RUNTIME</key>
+    <string>app-server</string>
     <key>CODEX_EPHEMERAL</key>
+    <string>0</string>
+    <key>CODEX_GROUP_SESSION_ENABLED</key>
     <string>1</string>
+    <key>CODEX_SESSION_STORE_FILE</key>
+    <string>/Users/YOUR_USER/.lark-codex-bridge/codex-sessions.json</string>
+    <key>CODEX_SESSION_HISTORY_LIMIT</key>
+    <string>20</string>
 
     <key>PROGRESS_CARD_ENABLED</key>
     <string>1</string>

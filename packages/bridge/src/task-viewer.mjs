@@ -205,6 +205,7 @@ function renderTimeline(tasks) {
     <div><b>Chat</b><code>${escapeHtml(task.chatId || '-')}</code></div>
     <div><b>Message</b><code>${escapeHtml(task.messageId || '-')}</code></div>
     <div><b>Context</b><code>${escapeHtml(task.contextKey || '-')}</code></div>
+    <div><b>Codex Session</b><code>${escapeHtml(task.sessionId || '-')}</code></div>
     <div><b>CWD</b><code>${escapeHtml(task.cwd || '-')}</code></div>
     <div><b>Sandbox</b><code>${escapeHtml(task.sandbox || '-')}</code></div>
   </section>

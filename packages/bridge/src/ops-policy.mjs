@@ -107,6 +107,10 @@ export function formatHealthReport(input) {
     input.backendLabel ? `backendLabel: ${input.backendLabel}` : '',
     `codexRunner: ${input.codexRunner || input.backendRunner || 'codex'}`,
     input.codexRuntime ? `codexRuntime: ${input.codexRuntime}` : '',
+    `groupSessions: ${input.codexGroupSessionEnabled ? 'enabled' : 'disabled'} persistent=${input.codexEphemeral ? 'no' : 'yes'}`,
+    input.codexGroupSessionEnabled && input.codexSessionStoreFile
+      ? `sessionStore: ${input.codexSessionStoreFile}`
+      : '',
     `codexSandbox: ${input.codexSandbox}`,
     `codexNonOwnerSandbox: ${input.codexNonOwnerSandbox}`,
     `sessionShareOutput: ${input.sessionShareOutput}`,

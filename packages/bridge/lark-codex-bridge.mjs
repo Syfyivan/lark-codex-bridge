@@ -42,14 +42,17 @@ import {
 } from './src/codex-runner.mjs';
 import { normalizeCodexRuntime } from './src/codex-app-server.mjs';
 import {
+  codexSessionMessageIds,
   conversationKeyForEvent,
   createContextQueueRuntime,
   createStopRegistry,
+  executeCodexSessionCommand,
   isStopCommand,
+  parseCodexSessionCommand,
   parseQueueCommand,
 } from './src/context-queue.mjs';
 import { closeUnclosedCodeFence } from './src/lark-format.mjs';
-import { createPetEventBus } from './src/pet-event-bus.mjs';
+import { createPetEventBus, petTokenUsage } from './src/pet-event-bus.mjs';
 import {
   classifyRiskPreflight,
   formatRiskPreflightBlockedReply,
@@ -579,6 +582,11 @@ const config = {
   codexAppServerRequestTimeoutMs: Math.max(1000, Number(env.CODEX_APP_SERVER_REQUEST_TIMEOUT_MS || 30_000)),
   codexTimeoutMs: optionalTimeoutMs(env.CODEX_TIMEOUT_MS),
   codexEphemeral: env.CODEX_EPHEMERAL !== '0',
+  codexGroupSessionEnabled: envFlag('CODEX_GROUP_SESSION_ENABLED', env.CODEX_EPHEMERAL === '0'),
+  codexSessionStoreFile: expandHomePath(
+    env.CODEX_SESSION_STORE_FILE || join(homedir(), '.lark-codex-bridge', 'codex-sessions.json'),
+  ),
+  codexSessionHistoryLimit: Math.max(1, Number(env.CODEX_SESSION_HISTORY_LIMIT || 20)),
   codexSkipGitRepoCheck: envFlag('CODEX_SKIP_GIT_REPO_CHECK', true),
   codexResume: env.CODEX_RESUME || '',
   claudeCodeBin: env.CLAUDE_CODE_BIN || env.CLAUDE_BIN || 'claude',
@@ -977,6 +985,20 @@ function contextKeyForBridgeEvent(event) {
     chatId: extractChatId(event),
     chatType: extractChatType(event),
     senderId: extractSenderId(event),
+    threadId: findStringDeep(event, ['thread_id', 'threadId']),
+    rootId: findStringDeep(event, ['root_id', 'rootId']),
+    parentId: findStringDeep(event, ['parent_id', 'parentId']),
+    replyToMessageId: findStringDeep(event, ['reply_to_message_id', 'replyToMessageId']),
+    groupScoped:
+      config.backend === 'codex' &&
+      config.codexGroupSessionEnabled &&
+      !config.codexEphemeral,
+  });
+}
+
+function codexSessionMessageIdsForEvent(event) {
+  return codexSessionMessageIds({
+    messageId: extractMessageId(event),
     threadId: findStringDeep(event, ['thread_id', 'threadId']),
     rootId: findStringDeep(event, ['root_id', 'rootId']),
     parentId: findStringDeep(event, ['parent_id', 'parentId']),
@@ -6279,14 +6301,26 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       sandbox: executionOptions.sandbox || config.codexSandbox,
       cwd: executionOptions.cwd || config.codexCwd,
       contextKey,
+      messageIds: codexSessionMessageIdsForEvent(event),
+      sessionTitle:
+        executionOptions.sessionTitle ||
+        `Lark · ${clampText(stripBotMentionText(stripBridgeTraceText(rawText)).replace(/\s+/g, ' '), 72)}`,
       signal: abortController.signal,
       usageRef,
     });
+    if (usageRef.sessionId) {
+      petContext.sessionId = usageRef.sessionId;
+      patchBridgeTaskRun(taskRun?.id, { sessionId: usageRef.sessionId });
+    }
     const finalReply = normalizeDirectBotReply(reply);
     const relayPayload = trace ? relayReplyPayload(finalReply, trace, event) : null;
     const visibleReply = relayPayload?.text ? stripBridgeTraceText(relayPayload.text) : finalReply;
     if (progress) await progress.finish(visibleReply);
-    emitPet('task_done', { ...petContext, text: visibleReply, tokens: usageRef.tokens || 0 });
+    emitPet('task_done', {
+      ...petContext,
+      text: visibleReply,
+      tokens: petTokenUsage(usageRef.tokens, { codexEphemeral: config.codexEphemeral }),
+    });
     recordBridgeTaskEvent(taskRun?.id, 'task_done', { text: visibleReply, tokens: usageRef.tokens || 0 });
     finishBridgeTaskRun(taskRun?.id, { finalText: visibleReply, tokens: usageRef.tokens || 0 });
     recordThreadMemoryIfEnabled(event, rawText, visibleReply, executionOptions);
@@ -7397,7 +7431,11 @@ function startDelegatePolling() {
 async function buildReply(prompt, options = {}) {
   const result = await backendRunner.run(prompt, options);
   // Surface token usage to callers that opt in (for the desktop pet's cross-source ledger).
-  if (options.usageRef) options.usageRef.tokens = Number(result?.tokens) || 0;
+  if (options.usageRef) {
+    options.usageRef.tokens = Number(result?.tokens) || 0;
+    options.usageRef.sessionId = String(result?.sessionId || '');
+    options.usageRef.taskId = String(result?.taskId || '');
+  }
   return result.text || '后端执行完成，但没有返回文本。';
 }
 
@@ -7443,6 +7481,10 @@ function bridgeHealthPayload() {
     backend_label: backendRunner.label,
     codex_runner: backendRunner.id,
     codex_runtime: config.codexRuntime,
+    codex_group_session_enabled: config.codexGroupSessionEnabled,
+    codex_session_persistent: !config.codexEphemeral,
+    codex_session_store_file: config.codexSessionStoreFile,
+    codex_session_history_limit: config.codexSessionHistoryLimit,
     session_share_output: config.sessionShareOutput,
     context_queue_enabled: config.contextQueueEnabled,
     context_queue_active: directTaskQueue.activeTotal(),
@@ -7480,6 +7522,9 @@ function bridgeHealthText() {
     backendLabel: backendRunner.label,
     codexRunner: backendRunner.id,
     codexRuntime: config.codexRuntime,
+    codexGroupSessionEnabled: config.codexGroupSessionEnabled,
+    codexEphemeral: config.codexEphemeral,
+    codexSessionStoreFile: config.codexSessionStoreFile,
     sessionShareOutput: config.sessionShareOutput,
     contextQueueEnabled: config.contextQueueEnabled,
     contextQueueActive: directTaskQueue.activeTotal(),
@@ -8876,6 +8921,40 @@ async function handleEvent(event) {
   const oncallCommand = parseOncallCommand(controlText);
   if (oncallCommand && await handleOncallCommand(event, oncallCommand, requesterIsOwner)) {
     return;
+  }
+
+  const sessionCommand = parseCodexSessionCommand(controlText);
+  if (sessionCommand) {
+    const contextKey = contextKeyForBridgeEvent(event);
+    const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
+    const projectBinding = projectBindingForEvent(event);
+    const result = await executeCodexSessionCommand({
+      command: sessionCommand,
+      runner: backendRunner,
+      contextKey,
+      isOwner: requesterIsOwner,
+      activeCount: stopRegistry.activeCount(contextKey),
+      queuedCount: directTaskQueue.queuedCount(contextKey),
+      cwd: oncallOptions.cwd || projectBinding?.cwd || config.codexCwd,
+      sandbox: requesterIsOwner ? config.codexSandbox : config.codexNonOwnerSandbox,
+      messageIds: codexSessionMessageIdsForEvent(event),
+      defaultTitle: `${config.botDisplayName} · 群会话`,
+    });
+    if (result.handled) {
+      if (result.session?.id) {
+        emitPet('session_changed', {
+          contextKey,
+          chatId: extractChatId(event),
+          messageId: extractMessageId(event),
+          sessionId: result.session.id,
+          text: result.session.title || result.session.id,
+        });
+      }
+      await replyToLark(event, result.message, {
+        idempotencyKey: `session-${sessionCommand.action}-${extractMessageId(event) || randomUUID()}`,
+      });
+      return;
+    }
   }
 
   if (isStopCommand(controlText)) {

@@ -77,6 +77,65 @@ class FakeAppServerClient extends EventEmitter {
   }
 }
 
+class NotificationItemsAppServerClient extends FakeAppServerClient {
+  async request(method, params) {
+    if (method !== 'turn/start') return super.request(method, params);
+    this.calls.push({ method, params });
+    this.turnCount += 1;
+    const turnId = `turn-${this.turnCount}`;
+    setImmediate(() => {
+      this.emit('notification', {
+        method: 'item/completed',
+        params: {
+          threadId: params.threadId,
+          turnId,
+          item: { id: `agent-${turnId}`, type: 'agentMessage', text: `answer ${turnId}` },
+        },
+      });
+      this.emit('notification', {
+        method: 'turn/completed',
+        params: {
+          threadId: params.threadId,
+          turn: { id: turnId, status: 'completed', items: [] },
+        },
+      });
+    });
+    return { turn: { id: turnId, status: 'inProgress' } };
+  }
+}
+
+class ConcurrentTurnDetectingClient extends FakeAppServerClient {
+  constructor() {
+    super();
+    this.activeTurns = 0;
+    this.maxActiveTurns = 0;
+  }
+
+  async request(method, params) {
+    if (method !== 'turn/start') return super.request(method, params);
+    this.calls.push({ method, params });
+    this.turnCount += 1;
+    this.activeTurns += 1;
+    this.maxActiveTurns = Math.max(this.maxActiveTurns, this.activeTurns);
+    const turnId = `turn-${this.turnCount}`;
+    setTimeout(() => {
+      this.activeTurns -= 1;
+      this.emit('notification', {
+        method: 'turn/completed',
+        params: {
+          threadId: params.threadId,
+          turn: {
+            id: turnId,
+            status: 'completed',
+            items: [{ id: `agent-${turnId}`, type: 'agentMessage', text: `answer ${turnId}` }],
+          },
+        },
+      });
+    }, 20);
+    return { turn: { id: turnId, status: 'inProgress' } };
+  }
+}
+
 test('normalizeCodexRuntime accepts exec app-server and auto', () => {
   assert.equal(normalizeCodexRuntime('exec'), 'exec');
   assert.equal(normalizeCodexRuntime('appserver'), 'app-server');
@@ -135,6 +194,34 @@ test('Codex app-server runner reuses a thread for the same context key', async (
   assert.equal(client.calls.filter(call => call.method === 'turn/start').length, 2);
   assert.equal(client.calls.find(call => call.method === 'turn/start').params.input[0].text.includes('prefix'), true);
   assert.deepEqual(progressItems, ['运行命令：rg bridge']);
+});
+
+test('Codex app-server runner keeps the final agent item emitted before turn completion', async () => {
+  const client = new NotificationItemsAppServerClient();
+  const runner = createCodexAppServerRunner(baseConfig(), {
+    appServerClient: client,
+    clampReply: value => String(value).trim(),
+  });
+
+  const result = await runner.run('prompt', { contextKey: 'chat:oc_group' });
+
+  assert.equal(result.text, 'answer turn-1');
+});
+
+test('Codex app-server runner serializes turns that share one session', async () => {
+  const client = new ConcurrentTurnDetectingClient();
+  const runner = createCodexAppServerRunner(baseConfig(), {
+    appServerClient: client,
+    clampReply: value => String(value).trim(),
+  });
+
+  const results = await Promise.all([
+    runner.run('first', { contextKey: 'chat:oc_group' }),
+    runner.run('second', { contextKey: 'chat:oc_group' }),
+  ]);
+
+  assert.deepEqual(results.map(result => result.text), ['answer turn-1', 'answer turn-2']);
+  assert.equal(client.maxActiveTurns, 1);
 });
 
 test('Codex app-server runner starts separate threads for different safety contexts', async () => {
@@ -203,6 +290,31 @@ test('Codex app-server runner resumes the persisted group session after restart'
   assert.equal(secondClient.calls.find(call => call.method === 'turn/start').params.threadId, 'thread-1');
 });
 
+test('persistent sessions isolate custom cwd and sandbox from the default group session', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-codex-safety-context-'));
+  const client = new FakeAppServerClient();
+  const runner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
+    appServerClient: client,
+    sessionStore: codexAppServer.createCodexSessionStore({ file: join(root, 'sessions.json') }),
+  });
+
+  const owner = await runner.run('owner task', {
+    contextKey: 'chat:oc_group',
+    cwd: '/workspace',
+    sandbox: 'read-only',
+  });
+  const delegated = await runner.run('delegated task', {
+    contextKey: 'chat:oc_group',
+    cwd: '/tmp/non-owner',
+    sandbox: 'workspace-write',
+  });
+
+  assert.notEqual(owner.sessionId, delegated.sessionId);
+  assert.equal(client.calls.filter(call => call.method === 'thread/start').length, 2);
+  assert.equal(client.calls.filter(call => call.method === 'thread/resume').length, 0);
+  assert.equal(runner.activeSession({ contextKey: 'chat:oc_group' }).id, owner.sessionId);
+});
+
 test('persistent group sessions reject missing context before starting a thread', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-codex-missing-context-'));
   const client = new FakeAppServerClient();
@@ -240,7 +352,7 @@ test('Codex app-server runner can create and switch group sessions explicitly', 
   assert.equal(result.sessionId, 'thread-1');
 });
 
-test('persistent group session is resumed with the current turn safety context', async () => {
+test('persistent group sessions do not resume across different safety contexts', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-codex-safety-'));
   const client = new FakeAppServerClient();
   const runner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
@@ -259,10 +371,7 @@ test('persistent group session is resumed with the current turn safety context',
     sandbox: 'read-only',
   });
 
-  assert.equal(second.sessionId, 'thread-1');
-  const resume = client.calls.find(call => call.method === 'thread/resume');
-  assert.ok(resume, 'expected the existing thread to be resumed with new safety settings');
-  assert.equal(resume.params.threadId, 'thread-1');
-  assert.equal(resume.params.cwd, '/scratch/member');
-  assert.equal(resume.params.sandbox, 'read-only');
+  assert.equal(second.sessionId, 'thread-2');
+  assert.equal(client.calls.filter(call => call.method === 'thread/start').length, 2);
+  assert.equal(client.calls.filter(call => call.method === 'thread/resume').length, 0);
 });

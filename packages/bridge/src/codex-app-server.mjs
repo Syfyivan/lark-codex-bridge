@@ -34,6 +34,15 @@ export function extractFinalAgentText(turn) {
   return '';
 }
 
+function mergeCompletedTurnItems(turnItems, completedItems) {
+  const merged = new Map();
+  for (const item of [...turnItems, ...completedItems]) {
+    const key = String(item?.id || `${item?.type || 'item'}:${merged.size}`);
+    merged.set(key, item);
+  }
+  return [...merged.values()];
+}
+
 export function summarizeAppServerNotification(message) {
   const method = message?.method || '';
   const params = message?.params || {};
@@ -204,6 +213,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
   const client = deps.appServerClient || new JsonLineCodexAppServerClient(config, deps);
   const clampReply = deps.clampReply || (value => String(value || ''));
   const sessions = new Map();
+  const sessionRunChains = new Map();
   const sessionStore = deps.sessionStore || (
     config.codexEphemeral
       ? null
@@ -220,13 +230,26 @@ export function createCodexAppServerRunner(config, deps = {}) {
 
   function sessionKeyFor(options) {
     if (!options.contextKey) return '';
-    if (!config.codexEphemeral) return options.contextKey;
-    return [
-      options.contextKey,
-      resolve(options.cwd || config.codexCwd),
-      options.sandbox || config.codexSandbox,
-      config.codexModel || '',
-    ].join('\u001f');
+    const cwd = resolve(options.cwd || config.codexCwd);
+    const sandbox = options.sandbox || config.codexSandbox;
+    const defaultCwd = resolve(config.codexCwd);
+    const defaultSandbox = config.codexSandbox;
+    if (!config.codexEphemeral && cwd === defaultCwd && sandbox === defaultSandbox) {
+      return options.contextKey;
+    }
+    return [options.contextKey, cwd, sandbox, config.codexModel || ''].join('\u001f');
+  }
+
+  async function runInSessionOrder(key, operation) {
+    if (!key) return operation();
+    const previous = sessionRunChains.get(key) || Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    sessionRunChains.set(key, current);
+    try {
+      return await current;
+    } finally {
+      if (sessionRunChains.get(key) === current) sessionRunChains.delete(key);
+    }
   }
 
   async function startThread(options, { forceNew = false } = {}) {
@@ -328,39 +351,42 @@ export function createCodexAppServerRunner(config, deps = {}) {
       return sessionStore?.active(sessionKeyFor(options)) || null;
     },
     async run(prompt, options = {}) {
-      const session = await ensureThread(options);
-      const fullPrompt = buildCodexPromptText(config, prompt, { progress: options.progress });
-      const turn = await runAppServerTurn({
-        client,
-        threadId: session.threadId,
-        prompt: fullPrompt,
-        progress: options.progress,
-        timeoutMs: config.codexTimeoutMs,
-        signal: options.signal,
-      });
-      sessionStore?.bindMessages(session.key, session.threadId, options.messageIds || []);
-      const text = extractFinalAgentText(turn);
-      const usage = turn?.usage || turn?.tokenUsage || turn?.token_usage || null;
-      const tokens =
-        typeof usage === 'number'
-          ? usage
-          : usage
-            ? (usage.input_tokens || usage.inputTokens || 0) +
-              (usage.output_tokens || usage.outputTokens || 0) +
-              (usage.cached_input_tokens || usage.cache_read_input_tokens || usage.cachedInputTokens || 0)
-            : 0;
-      return {
-        text: clampReply(text || 'Codex app-server 执行完成，但没有返回文本。'),
-        raw: {
-          runner: 'codex-app-server',
+      const key = sessionKeyFor(options);
+      return runInSessionOrder(key, async () => {
+        const session = await ensureThread(options);
+        const fullPrompt = buildCodexPromptText(config, prompt, { progress: options.progress });
+        const turn = await runAppServerTurn({
+          client,
           threadId: session.threadId,
-          turnId: turn?.id || '',
-          usage, // kept for debugging the exact usage shape
-        },
-        sessionId: session.threadId,
-        taskId: turn?.id || '',
-        tokens,
-      };
+          prompt: fullPrompt,
+          progress: options.progress,
+          timeoutMs: config.codexTimeoutMs,
+          signal: options.signal,
+        });
+        sessionStore?.bindMessages(session.key, session.threadId, options.messageIds || []);
+        const text = extractFinalAgentText(turn);
+        const usage = turn?.usage || turn?.tokenUsage || turn?.token_usage || null;
+        const tokens =
+          typeof usage === 'number'
+            ? usage
+            : usage
+              ? (usage.input_tokens || usage.inputTokens || 0) +
+                (usage.output_tokens || usage.outputTokens || 0) +
+                (usage.cached_input_tokens || usage.cache_read_input_tokens || usage.cachedInputTokens || 0)
+              : 0;
+        return {
+          text: clampReply(text || 'Codex app-server 执行完成，但没有返回文本。'),
+          raw: {
+            runner: 'codex-app-server',
+            threadId: session.threadId,
+            turnId: turn?.id || '',
+            usage, // kept for debugging the exact usage shape
+          },
+          sessionId: session.threadId,
+          taskId: turn?.id || '',
+          tokens,
+        };
+      });
     },
   };
 }
@@ -427,6 +453,7 @@ function waitForTurnCompletion(input) {
     signal = null,
   } = input;
   let cleanupWait = () => {};
+  const completedItems = [];
   const promise = new Promise((resolve, reject) => {
     let timeout = null;
     const cleanup = () => {
@@ -445,6 +472,13 @@ function waitForTurnCompletion(input) {
     const onNotification = message => {
       const summary = summarizeAppServerNotification(message);
       if (summary && progress) progress.add(summary);
+      if (message?.method === 'item/completed') {
+        const currentTurnId = turnIdRef();
+        if (message.params?.threadId !== threadId) return;
+        if (currentTurnId && message.params?.turnId !== currentTurnId) return;
+        if (message.params?.item) completedItems.push(message.params.item);
+        return;
+      }
       if (message?.method !== 'turn/completed') return;
       const turn = message.params?.turn;
       const currentTurnId = turnIdRef();
@@ -455,7 +489,13 @@ function waitForTurnCompletion(input) {
         finish(reject)(new Error(detail));
         return;
       }
-      finish(resolve)(turn);
+      finish(resolve)({
+        ...turn,
+        items: mergeCompletedTurnItems(
+          Array.isArray(turn?.items) ? turn.items : [],
+          completedItems,
+        ),
+      });
     };
 
     client.on?.('notification', onNotification);

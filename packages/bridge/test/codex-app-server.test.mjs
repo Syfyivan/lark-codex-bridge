@@ -203,6 +203,18 @@ test('Codex app-server runner resumes the persisted group session after restart'
   assert.equal(secondClient.calls.find(call => call.method === 'turn/start').params.threadId, 'thread-1');
 });
 
+test('persistent group sessions reject missing context before starting a thread', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-codex-missing-context-'));
+  const client = new FakeAppServerClient();
+  const runner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
+    appServerClient: client,
+    sessionStore: codexAppServer.createCodexSessionStore({ file: join(root, 'sessions.json') }),
+  });
+
+  await assert.rejects(runner.run('missing context'), /missing Codex session context key/);
+  assert.equal(client.calls.filter(call => call.method === 'thread/start').length, 0);
+});
+
 test('Codex app-server runner can create and switch group sessions explicitly', async () => {
   assert.equal(typeof codexAppServer.createCodexSessionStore, 'function');
   const root = mkdtempSync(join(tmpdir(), 'bridge-codex-switch-'));

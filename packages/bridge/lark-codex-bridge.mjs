@@ -125,6 +125,7 @@ import {
   extractCodebaseMrUrls,
   shouldTriggerReviewAutomation,
 } from './src/review-automation-policy.mjs';
+import { buildDelegateCodexRunOptions } from './src/delegate-run-options.mjs';
 import { renderSessionMarkdownBlockHtml } from './src/session-markdown.mjs';
 import {
   createTaskRecorder,
@@ -5886,15 +5887,19 @@ async function shouldHandleDelegateMention(event, rawText) {
 async function createDelegateDraft(event, rawText) {
   const id = shortApprovalId();
   console.error(`[bridge] delegate draft ${id} starting for message ${extractMessageId(event)}`);
+  const contextKey = contextKeyForBridgeEvent(event);
   const nonOwnerContext = createNonOwnerCodexExecutionContext(config);
   let draftOutput = '';
   try {
     draftOutput = await buildReply(
       `${buildDelegateDraftPrompt(event, rawText)}\n${nonOwnerGuardNotice(config, nonOwnerContext)}`,
-      {
+      buildDelegateCodexRunOptions({
+        contextKey,
         sandbox: nonOwnerContext.sandbox,
         cwd: nonOwnerContext.cwd,
-      },
+        messageIds: codexSessionMessageIdsForEvent(event),
+        sessionTitle: 'Lark · 代理草稿',
+      }),
     );
   } finally {
     nonOwnerContext.cleanup();
@@ -5991,7 +5996,14 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
     createBridgeTaskProgressSink(taskRun?.id, petContext),
   );
   try {
-    const output = await buildReply(prompt, { progress });
+    const output = await buildReply(prompt, buildDelegateCodexRunOptions({
+      progress,
+      contextKey,
+      cwd: config.codexCwd,
+      sandbox: config.codexSandbox,
+      messageIds: codexSessionMessageIdsForEvent(event),
+      sessionTitle: 'Lark · MR review 自动化',
+    }));
     updateApproval(id, {
       status: 'done',
       completedAt: new Date().toISOString(),

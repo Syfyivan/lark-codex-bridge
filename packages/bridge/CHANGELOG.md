@@ -20,6 +20,10 @@
 - 适配当前 Codex app-server 初始化协议，并移除已不需要的实验性 `runtimeWorkspaceRoots` 参数。
 - Bridge CI 使用 Node.js 22.13，以满足仓库固定的 pnpm 11.7 运行要求。
 
+### Fixed
+
+- 修复启用持久 Codex Session 后，MR review 自动化和代理草稿因未传递群聊 Session 上下文而稳定失败的问题。
+
 ### Security
 
 - 只有 Bridge owner 可以新建或切换群 Session；查询 Session 状态和列表保持只读开放。

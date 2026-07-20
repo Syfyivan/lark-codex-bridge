@@ -231,6 +231,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
 
   async function startThread(options, { forceNew = false } = {}) {
     const key = sessionKeyFor(options);
+    if (sessionStore && !key) throw new Error('missing Codex session context key');
     const cwd = resolve(options.cwd || config.codexCwd);
     const sandbox = options.sandbox || config.codexSandbox;
     if (!forceNew && key && sessions.has(key)) return sessions.get(key);

@@ -31,11 +31,6 @@ import {
   splitCsv,
 } from './src/env.mjs';
 import {
-  capabilityRuntimeOptions,
-  discoverCodexMcpServerNames,
-  discoverCodexSkills,
-} from './src/capability-runtime-policy.mjs';
-import {
   isDeletedLarkMessage,
   shouldSkipBridgeGeneratedMessage,
 } from './src/approval-message-policy.mjs';
@@ -56,7 +51,6 @@ import {
   parseCodexSessionCommand,
   parseQueueCommand,
 } from './src/context-queue.mjs';
-import { buildDelegateRecentChatContext } from './src/delegate-context.mjs';
 import { closeUnclosedCodeFence } from './src/lark-format.mjs';
 import { createPetEventBus, petTokenUsage } from './src/pet-event-bus.mjs';
 import {
@@ -117,7 +111,6 @@ import {
 } from './src/oncall-policy.mjs';
 import { runProcess } from './src/process-manager.mjs';
 import {
-  effectiveProfileOwners,
   evaluateProfilePolicy,
   isProfileOwner,
   loadProfilePolicy,
@@ -130,7 +123,6 @@ import {
 import {
   canDirectReviewAutomation,
   extractCodebaseMrUrls,
-  resolveReviewAutomationMode,
   shouldTriggerReviewAutomation,
 } from './src/review-automation-policy.mjs';
 import { buildDelegateCodexRunOptions } from './src/delegate-run-options.mjs';
@@ -704,12 +696,6 @@ function safeTaskText(text, maxChars = config.petSyncMaxMessageChars) {
   return clampText(redactForCard(String(text || '')), Math.max(80, Number(maxChars || 1000)));
 }
 
-function fallbackTaskDoneText(text, context = '') {
-  const normalized = String(text || '').trim();
-  if (normalized) return normalized;
-  return context ? `${context} 未返回可见文本。` : '任务已完成，但未返回可见文本。';
-}
-
 function startBridgeTaskRun(event, input = {}) {
   if (!taskRecorder) return null;
   try {
@@ -1263,13 +1249,9 @@ function shouldHandleDelegateReviewAutomation(rawText) {
 }
 
 function canExecuteReviewAutomationDirectly(event, rawText) {
-  const senderId = extractSenderId(event);
-  const senderIsKnownBot = isKnownBotSender(event);
   return canDirectReviewAutomation({
     requesterIsOwner: isBridgeOwnerEvent(event),
-    senderIsKnownBot,
-    senderIsTrustedBot:
-      senderIsKnownBot && config.loopBotAllowSenderIds.includes(senderId),
+    senderIsKnownBot: isKnownBotSender(event),
     rawText,
   });
 }
@@ -5174,19 +5156,16 @@ function normalizeDirectBotReply(output) {
   return directReply ? clampReply(directReply) : text;
 }
 
-function buildDelegateDraftPrompt(event, rawText, options = {}) {
+function buildDelegateDraftPrompt(event, rawText) {
   const chatId = extractChatId(event);
   const messageId = extractMessageId(event);
   const requesterId = extractSenderId(event);
   const requesterName = extractSenderName(event) || requesterId || '对方';
-  const recentChatContext = String(options.recentChatContext || '').trim();
-  const memoryPromptContext = String(options.memoryPromptContext || '').trim();
 
   return [
     '你是宋一凡的飞书助理。群里有人 @ 宋一凡，请先替宋一凡想好操作和回复，但绝对不要向群里发送消息。',
     '',
-    'bridge 可能已经在下面注入“当前群最近消息”和“可见记忆上下文”。如果这些上下文存在，优先使用它们判断“这个/那个/？”等短消息指向，不要退化成只看原消息。',
-    '你可以使用本机 lark-cli / bytedcli / 文件系统做只读查询。只有预读取上下文和记忆都不足时，才再尝试读取当前群最近消息，并按需要搜索飞书文档或历史消息。',
+    '你可以使用本机 lark-cli / bytedcli / 文件系统做只读查询。优先读取当前群最近消息，并按需要搜索飞书文档或历史消息。',
     `当前群 chat_id：${chatId || 'unknown'}`,
     `原始消息 message_id：${messageId || 'unknown'}`,
     `请求人 open_id：${requesterId || 'unknown'}`,
@@ -5195,8 +5174,6 @@ function buildDelegateDraftPrompt(event, rawText, options = {}) {
     '',
     '用户在群里的原消息：',
     rawText,
-    recentChatContext ? ['', recentChatContext].join('\n') : '',
-    memoryPromptContext ? ['', memoryPromptContext].join('\n') : '',
     '',
     '请完成：',
     '1. 判断对方要宋一凡做什么。',
@@ -5583,13 +5560,6 @@ function buildSensitiveOperationApprovalCard(approval) {
   const labels = Array.isArray(approval.sensitiveLabels) && approval.sensitiveLabels.length
     ? approval.sensitiveLabels.join('、')
     : '疑似非只读操作';
-  const capabilityLines = approval.capabilityId
-    ? [
-        `**Capability**：${approval.capabilityName || approval.capabilityId}`,
-        approval.capabilityKind ? `**能力类型**：${approval.capabilityKind}` : '',
-        approval.capabilityEffect ? `**影响范围**：${approval.capabilityEffect}` : '',
-      ].filter(Boolean)
-    : [];
   return {
     config: {
       wide_screen_mode: true,
@@ -5611,7 +5581,6 @@ function buildSensitiveOperationApprovalCard(approval) {
             `**来源群**：${approval.chatId || 'unknown'}`,
             `**请求 ID**：${approval.id}`,
             `**风险类型**：${labels}`,
-            ...capabilityLines,
           ].join('\n'),
         },
       },
@@ -5713,11 +5682,7 @@ async function sendSensitiveOperationApprovalRequest(approval) {
 }
 
 async function createSensitiveOperationApproval(event, rawText, classification) {
-  const approverOpenId =
-    config.delegateApproverOpenId ||
-    effectiveProfileOwners(profilePolicy.config)[0] ||
-    '';
-  if (!approverOpenId) {
+  if (!config.delegateApproverOpenId) {
     await replyToLark(
       event,
       '这个请求涉及非只读操作，但当前没有配置审批人，已拒绝执行。',
@@ -5732,7 +5697,7 @@ async function createSensitiveOperationApproval(event, rawText, classification) 
     kind: 'sensitive_operation',
     status: 'pending',
     createdAt: new Date().toISOString(),
-    approverOpenId,
+    approverOpenId: config.delegateApproverOpenId,
     chatId: extractChatId(event),
     chatType: extractChatType(event),
     originalMessageId: extractMessageId(event),
@@ -5742,10 +5707,6 @@ async function createSensitiveOperationApproval(event, rawText, classification) 
     requestText: rawText,
     sensitiveLabels: classification.labels,
     executionKind: classification.executionKind,
-    capabilityId: classification.capabilityId || '',
-    capabilityName: classification.capabilityName || '',
-    capabilityKind: classification.capabilityKind || '',
-    capabilityEffect: classification.capabilityEffect || '',
   };
   saveApproval(approval);
   const delivery = await sendSensitiveOperationApprovalRequest(approval);
@@ -5923,24 +5884,15 @@ async function shouldHandleDelegateMention(event, rawText) {
   return fetchedMessageMentionsDelegateUser(extractMessageId(event));
 }
 
-async function createDelegateDraft(event, rawText, options = {}) {
+async function createDelegateDraft(event, rawText) {
   const id = shortApprovalId();
   console.error(`[bridge] delegate draft ${id} starting for message ${extractMessageId(event)}`);
   const contextKey = contextKeyForBridgeEvent(event);
-  const recentChatContext = buildDelegateRecentChatContext(options.recentMessages || [], {
-    targetMessageId: extractMessageId(event),
-    maxMessages: config.delegateContextMessages,
-    maxChars: config.memoryPromptBudgetChars,
-  });
-  const memoryPromptContext = memoryPromptContextForEvent(event, rawText);
   const nonOwnerContext = createNonOwnerCodexExecutionContext(config);
   let draftOutput = '';
   try {
     draftOutput = await buildReply(
-      `${buildDelegateDraftPrompt(event, rawText, {
-        recentChatContext,
-        memoryPromptContext,
-      })}\n${nonOwnerGuardNotice(config, nonOwnerContext)}`,
+      `${buildDelegateDraftPrompt(event, rawText)}\n${nonOwnerGuardNotice(config, nonOwnerContext)}`,
       buildDelegateCodexRunOptions({
         contextKey,
         sandbox: nonOwnerContext.sandbox,
@@ -6087,6 +6039,7 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
 async function handleDelegateMention(event, rawText, options = {}) {
   const {
     source = 'delegate event',
+    allowDirectReviewAutomation = true,
   } = options;
   const messageId = extractMessageId(event);
   const reservationId = reserveMessageProcessing(event, source);
@@ -6106,21 +6059,19 @@ async function handleDelegateMention(event, rawText, options = {}) {
 
     if (shouldHandleDelegateReviewAutomation(rawText)) {
       const reviewClassification = classifyDirectExecution(rawText, { reviewAutomation: true });
-      const reviewOnly = isReviewAutomationOnlySensitive(reviewClassification);
       const canRunReviewDirectly =
-        reviewOnly &&
+        isReviewAutomationOnlySensitive(reviewClassification) &&
         canExecuteReviewAutomationDirectly(event, rawText);
-      const reviewMode = resolveReviewAutomationMode({
-        reviewOnly,
-        canRunDirectly: canRunReviewDirectly,
-      });
-      if (reviewMode === 'approval') {
+      if (
+        !allowDirectReviewAutomation ||
+        !isReviewAutomationOnlySensitive(reviewClassification)
+      ) {
         await createSensitiveOperationApproval(
           event,
           rawText,
           reviewClassification,
         );
-      } else if (reviewMode === 'read_only') {
+      } else if (!canRunReviewDirectly) {
         await createDelegateReviewAutomation(event, rawText, { readOnly: true });
       } else {
         await createDelegateReviewAutomation(event, rawText);
@@ -6128,7 +6079,7 @@ async function handleDelegateMention(event, rawText, options = {}) {
     } else if (!config.delegateDraftApprovalEnabled) {
       console.error(`[bridge] ${source} skipped delegate draft for ${messageId || '(unknown)'}: delegate draft approvals disabled`);
     } else {
-      await createDelegateDraft(event, rawText, options);
+      await createDelegateDraft(event, rawText);
     }
 
     clearMessageProcessingReservation(reservationId);
@@ -6362,11 +6313,6 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       sandbox: executionOptions.sandbox || config.codexSandbox,
       cwd: executionOptions.cwd || config.codexCwd,
       contextKey,
-      capabilityPolicyKey: executionOptions.capabilityPolicyKey || '',
-      codexApprovalPolicy: executionOptions.approvalPolicy || '',
-      codexConfigOverrides: executionOptions.codexConfigOverrides || undefined,
-      codexConfigArgs: executionOptions.codexConfigArgs || [],
-      codexAppServerArgs: executionOptions.codexAppServerArgs || [],
       messageIds: codexSessionMessageIdsForEvent(event),
       sessionTitle:
         executionOptions.sessionTitle ||
@@ -6381,19 +6327,16 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     const finalReply = normalizeDirectBotReply(reply);
     const relayPayload = trace ? relayReplyPayload(finalReply, trace, event) : null;
     const visibleReply = relayPayload?.text ? stripBridgeTraceText(relayPayload.text) : finalReply;
-    const readableReply = fallbackTaskDoneText(visibleReply, context);
-    const readableLarkReply = fallbackTaskDoneText(finalReply, context);
-
-    if (progress) await progress.finish(readableReply);
+    if (progress) await progress.finish(visibleReply);
     emitPet('task_done', {
       ...petContext,
-      text: readableReply,
+      text: visibleReply,
       tokens: petTokenUsage(usageRef.tokens, { codexEphemeral: config.codexEphemeral }),
     });
-    recordBridgeTaskEvent(taskRun?.id, 'task_done', { text: readableReply, tokens: usageRef.tokens || 0 });
-    finishBridgeTaskRun(taskRun?.id, { finalText: readableReply, tokens: usageRef.tokens || 0 });
-    recordThreadMemoryIfEnabled(event, rawText, readableReply, executionOptions);
-    recordMemoryCandidatesIfEnabled(event, rawText, readableReply);
+    recordBridgeTaskEvent(taskRun?.id, 'task_done', { text: visibleReply, tokens: usageRef.tokens || 0 });
+    finishBridgeTaskRun(taskRun?.id, { finalText: visibleReply, tokens: usageRef.tokens || 0 });
+    recordThreadMemoryIfEnabled(event, rawText, visibleReply, executionOptions);
+    recordMemoryCandidatesIfEnabled(event, rawText, visibleReply);
     if (shouldSendFinalReply) {
       if (relayPayload) {
         await replyRelayToLark(
@@ -6407,7 +6350,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       } else {
         await replyToLark(
           event,
-          readableLarkReply,
+          finalReply,
           {
             ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
             petEvent: false,
@@ -6598,19 +6541,6 @@ function buildDirectExecutionOptions({
     ...extra,
   };
   if (requesterIsOwner) return base;
-  if (base.profileActor === 'member') {
-    if (base.capabilityApprovedByOwner) {
-      return {
-        ...base,
-        sandbox: base.sandbox || config.codexSandbox,
-      };
-    }
-    return {
-      ...base,
-      nonOwnerQuery: true,
-      sandbox: base.sandbox || 'read-only',
-    };
-  }
   if (projectOptions.projectRunsInRealCwd) {
     return {
       ...base,
@@ -6693,13 +6623,7 @@ async function handleOncallCommand(event, command, requesterIsOwner) {
   return false;
 }
 
-function evaluateDirectProfilePolicy(
-  event,
-  rawText,
-  requesterIsOwner,
-  projectDecision = null,
-  approval = {},
-) {
+function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner, projectDecision = null) {
   const promptText = stripBotMentionText(stripBridgeTraceText(rawText));
   const result = evaluateProfilePolicy(
     profilePolicy,
@@ -6709,11 +6633,7 @@ function evaluateDirectProfilePolicy(
       senderId: extractSenderId(event),
     },
     promptText,
-    {
-      isOwner: requesterIsOwner,
-      approvedByOwner: approval.approvedByOwner === true,
-      approvedCapabilityId: approval.approvedCapabilityId || '',
-    },
+    { isOwner: requesterIsOwner },
   );
   if (
     !result.ok &&
@@ -6733,30 +6653,6 @@ function evaluateDirectProfilePolicy(
     };
   }
   if (!result.ok) return result;
-  let runtimeOptions = {};
-  if (result.enabled) {
-    try {
-      runtimeOptions = capabilityRuntimeOptions({
-        actor: result.actor,
-        capability: result.capability,
-        approvedByOwner: result.approvedByOwner === true,
-        ownerSandbox: config.codexSandbox,
-        knownSkills: discoverCodexSkills({
-          codexHome: config.codexHome,
-          cwd: projectDecision?.binding?.cwd || config.codexCwd,
-        }),
-        knownMcpServerNames: discoverCodexMcpServerNames({
-          codexHome: config.codexHome,
-        }),
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        reason: 'capability-runtime-invalid',
-        message: `Capability 运行策略配置无效：${error.message || error}`,
-      };
-    }
-  }
   return {
     ok: true,
     options: result.enabled
@@ -6765,44 +6661,9 @@ function evaluateDirectProfilePolicy(
           profileActor: result.actor,
           profileId: result.profile?.id || '',
           capabilityId: result.capability?.id || '',
-          capabilityName: result.capability?.name || '',
-          capabilityKind: result.capability?.kind || 'chat',
-          capabilityEffect: result.capability?.effect || '',
-          capabilityApprovedByOwner: result.approvedByOwner === true,
-          ...runtimeOptions,
         }
       : {},
   };
-}
-
-function capabilityApprovalClassification(profileDecision, fallbackLabels = []) {
-  const capability = profileDecision?.capability || {};
-  return {
-    sensitive: true,
-    labels: fallbackLabels.length
-      ? fallbackLabels
-      : [`Capability「${capability.name || capability.id || 'unknown'}」需要 Owner 审批`],
-    executionKind: 'capability_request',
-    capabilityId: capability.id || '',
-    capabilityName: capability.name || '',
-    capabilityKind: capability.kind || 'chat',
-    capabilityEffect: capability.effect || '',
-  };
-}
-
-async function handleProfilePolicyRejection(event, rawText, profileDecision) {
-  if (profileDecision.requiresOwnerApproval) {
-    await createSensitiveOperationApproval(
-      event,
-      rawText,
-      capabilityApprovalClassification(profileDecision),
-    );
-    return true;
-  }
-  if (!profileDecision.silent && profileDecision.message) {
-    await replyToLark(event, profileDecision.message);
-  }
-  return true;
 }
 
 function memoryRouteForEvent(event, rawText) {
@@ -7024,42 +6885,6 @@ async function executeApprovedSensitiveOperation(approval, operatorOpenId) {
     return { ok: true };
   }
 
-  if (approval.capabilityId) {
-    const projectDecision = await projectBindingDecisionForEvent(
-      event,
-      approval.requestText,
-      false,
-    );
-    if (!projectDecision.ok) throw new Error(projectDecision.message);
-    const profileDecision = evaluateDirectProfilePolicy(
-      event,
-      approval.requestText,
-      false,
-      projectDecision,
-      {
-        approvedByOwner: true,
-        approvedCapabilityId: approval.capabilityId,
-      },
-    );
-    if (!profileDecision.ok) {
-      throw new Error(
-        `审批后的 Capability 已失效或不再匹配：${profileDecision.message || profileDecision.reason}`,
-      );
-    }
-    const executionOptions = buildDirectExecutionOptions({
-      requesterIsOwner: false,
-      oncallOptions: oncallExecutionOptionsForEvent(event, true),
-      projectOptions: projectDecision.options,
-      profileOptions: profileDecision.options,
-      memoryOptions: memoryOptionsForEvent(event, approval.requestText),
-      extra: {
-        approvedBy: operatorOpenId,
-        idempotencyKey: `sensitive-approved-${approval.id}`,
-      },
-    });
-    return executeDirectCodexTaskQueued(event, approval.requestText, executionOptions);
-  }
-
   return executeDirectCodexTaskQueued(event, approval.requestText, {
     approvedBy: operatorOpenId,
     sandbox: config.codexSandbox,
@@ -7114,13 +6939,14 @@ async function handleSensitiveOperationDecision(approval, command, operatorOpenI
 }
 
 async function handleApprovalDecision(command, operatorOpenId, respond) {
+  if (!operatorOpenId || operatorOpenId !== config.delegateApproverOpenId) {
+    await respondApprovalBestEffort(respond, '这个确认只能由被代理用户本人操作。', `approval owner check ${command.id}`);
+    return;
+  }
+
   const approval = getApproval(command.id);
   if (!approval) {
     await respondApprovalBestEffort(respond, `没有找到待确认请求：${command.id}`, `missing approval ${command.id}`);
-    return;
-  }
-  if (!operatorOpenId || operatorOpenId !== approval.approverOpenId) {
-    await respondApprovalBestEffort(respond, '这个确认只能由指定的 Bridge Owner 操作。', `approval owner check ${command.id}`);
     return;
   }
   if (approval.status !== 'pending') {
@@ -7463,7 +7289,7 @@ async function handlePolledMessage(chatId, message, now = Date.now(), options = 
     console.error(`[bridge] ${source} matched message ${messageId} in ${chatId}`);
     return handleDelegateMention(event, rawText, {
       source,
-      recentMessages: options.recentMessages || [],
+      allowDirectReviewAutomation: false,
     });
   }
 
@@ -7511,7 +7337,6 @@ async function pollDelegateMentionsInChat(chatId) {
       source: 'delegate poll',
       recoverDirectBotMessages: true,
       startupGraceMs: config.delegatePollIntervalMs,
-      recentMessages: messages,
     });
   }
 }
@@ -7545,7 +7370,6 @@ async function pollDelegateMentionsByGlobalSearch(now = Date.now()) {
       source: 'delegate global search poll',
       recoverDirectBotMessages: false,
       startupGraceMs: config.delegateGlobalSearchWindowMs,
-      recentMessages: messages,
     });
   }
 }
@@ -8418,7 +8242,7 @@ function buildProgressCard(state) {
       tag: 'div',
       text: {
         tag: 'lark_md',
-        content: `**分析进度**\n${progressText}`,
+        content: `**过程**\n${progressText}`,
       },
     });
   }
@@ -8574,7 +8398,7 @@ async function createProgressReporter(event, prompt, options = {}) {
     add(item) {
       const text = clampText(redactForCard(item), 500);
       if (!text) return;
-      if (state.items.includes(text)) return;
+      if (state.items[state.items.length - 1] === text) return;
       state.items.push(text);
       if (state.items.length > config.progressCardMaxItems * 2) {
         state.items = state.items.slice(-config.progressCardMaxItems * 2);
@@ -8824,30 +8648,12 @@ async function replyRiskPreflightBlocked(event, rawText, preflight) {
   });
 }
 
-function capabilityClassificationFields(profileOptions = {}) {
-  if (!profileOptions.capabilityId) return {};
-  return {
-    capabilityId: profileOptions.capabilityId,
-    capabilityName: profileOptions.capabilityName || '',
-    capabilityKind: profileOptions.capabilityKind || '',
-    capabilityEffect: profileOptions.capabilityEffect || '',
-  };
-}
-
-async function maybeHandleRiskPreflight(
-  event,
-  rawText,
-  requesterIsOwner,
-  profileOptions = {},
-) {
+async function maybeHandleRiskPreflight(event, rawText, requesterIsOwner) {
   if (!config.riskPreflightEnabled || requesterIsOwner) return false;
   const taskText = stripBotMentionText(stripBridgeTraceText(rawText));
   const preflight = classifyRiskPreflight(taskText);
   if (!preflight.blocked) return false;
-  await replyRiskPreflightBlocked(event, rawText, {
-    ...preflight,
-    ...capabilityClassificationFields(profileOptions),
-  });
+  await replyRiskPreflightBlocked(event, rawText, preflight);
   console.error(`[bridge] risk preflight blocked message ${extractMessageId(event) || '(unknown)'}: ${preflight.labels.join(', ')}`);
   return true;
 }
@@ -9060,7 +8866,7 @@ async function handleEvent(event) {
   if (config.prefix && !rawText.startsWith(config.prefix)) return;
 
   const approvalCommand = parseApprovalCommand(rawText);
-  if (approvalCommand && (extractChatType(event) === 'p2p' || isBridgeOwnerEvent(event))) {
+  if (approvalCommand && (extractChatType(event) === 'p2p' || isApprovalOwnerEvent(event))) {
     let approvalResponseCount = 0;
     await handleApprovalDecision(approvalCommand, extractSenderId(event), async message => {
       approvalResponseCount += 1;
@@ -9086,6 +8892,7 @@ async function handleEvent(event) {
     try {
       await handleDelegateMention(event, rawText, {
         source: 'delegate event',
+        allowDirectReviewAutomation: true,
       });
     } catch (error) {
       console.error(`[bridge] delegate handling failed: ${error.stack || error.message}`);
@@ -9174,6 +8981,9 @@ async function handleEvent(event) {
       return;
     }
     await sendDirectTaskReceivedProgress(event);
+    if (await maybeHandleRiskPreflight(event, queueCommand.text, requesterIsOwner)) {
+      return;
+    }
     const projectDecision = await projectBindingDecisionForEvent(event, queueCommand.text, requesterIsOwner);
     if (!projectDecision.ok) {
       await replyProjectBindingInvalid(event, projectDecision.message);
@@ -9181,17 +8991,9 @@ async function handleEvent(event) {
     }
     const profileDecision = evaluateDirectProfilePolicy(event, queueCommand.text, requesterIsOwner, projectDecision);
     if (!profileDecision.ok) {
-      await handleProfilePolicyRejection(event, queueCommand.text, profileDecision);
-      return;
-    }
-    if (
-      await maybeHandleRiskPreflight(
-        event,
-        queueCommand.text,
-        requesterIsOwner,
-        profileDecision.options,
-      )
-    ) {
+      if (!profileDecision.silent && profileDecision.message) {
+        await replyToLark(event, profileDecision.message);
+      }
       return;
     }
     const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
@@ -9229,44 +9031,17 @@ async function handleEvent(event) {
 
   const reviewAutomation = shouldHandleDelegateReviewAutomation(rawText);
   const directCodexCandidate = !botSendCommand && !sessionShareCommand && !reviewAutomation;
-  let projectDecision = null;
-  let profileDecision = { ok: true, options: {} };
   if (directCodexCandidate) {
     await sendDirectTaskReceivedProgress(event);
-    projectDecision = await projectBindingDecisionForEvent(event, rawText, requesterIsOwner);
-    if (!projectDecision.ok) {
-      await replyProjectBindingInvalid(event, projectDecision.message);
-      return;
-    }
-    profileDecision = evaluateDirectProfilePolicy(
-      event,
-      rawText,
-      requesterIsOwner,
-      projectDecision,
-    );
-    if (!profileDecision.ok) {
-      await handleProfilePolicyRejection(event, rawText, profileDecision);
-      return;
-    }
-    if (
-      await maybeHandleRiskPreflight(
-        event,
-        rawText,
-        requesterIsOwner,
-        profileDecision.options,
-      )
-    ) {
+    if (await maybeHandleRiskPreflight(event, rawText, requesterIsOwner)) {
       return;
     }
   }
-  const classification = {
-    ...classifyDirectExecution(rawText, {
-      botSendCommand,
-      sessionShareCommand,
-      reviewAutomation,
-    }),
-    ...capabilityClassificationFields(profileDecision.options),
-  };
+  const classification = classifyDirectExecution(rawText, {
+    botSendCommand,
+    sessionShareCommand,
+    reviewAutomation,
+  });
   const canRunSensitiveDirectly =
     requesterIsOwner ||
     (
@@ -9306,6 +9081,20 @@ async function handleEvent(event) {
     } catch (error) {
       console.error(`[bridge] ${error.stack || error.message}`);
       await replyToLark(event, `导出 Codex session 快照失败：${clampReply(error.message || error)}`);
+    }
+    return;
+  }
+
+  const projectDecision = await projectBindingDecisionForEvent(event, rawText, requesterIsOwner);
+  if (!projectDecision.ok) {
+    await replyProjectBindingInvalid(event, projectDecision.message);
+    return;
+  }
+
+  const profileDecision = evaluateDirectProfilePolicy(event, rawText, requesterIsOwner, projectDecision);
+  if (!profileDecision.ok) {
+    if (!profileDecision.silent && profileDecision.message) {
+      await replyToLark(event, profileDecision.message);
     }
     return;
   }

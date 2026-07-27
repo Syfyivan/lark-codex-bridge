@@ -34,6 +34,7 @@ import {
   isDeletedLarkMessage,
   shouldSkipBridgeGeneratedMessage,
 } from './src/approval-message-policy.mjs';
+import { parseDelegateDraftResult } from './src/delegate-draft-result.mjs';
 import {
   createNonOwnerCodexExecutionContext,
   nonOwnerGuardNotice,
@@ -5093,34 +5094,6 @@ function parseJsonObjectLoose(text) {
   return null;
 }
 
-function normalizeDraftResult(output) {
-  const parsed = parseJsonObjectLoose(output);
-  if (!parsed) {
-    return {
-      operationPlan: '',
-      replyText: clampReply(output),
-      evidence: '',
-      confidence: '',
-      raw: output,
-    };
-  }
-
-  const operationPlan = Array.isArray(parsed.operation_plan)
-    ? parsed.operation_plan.join('\n')
-    : String(parsed.operation_plan || parsed.action_plan || parsed.plan || '').trim();
-  const evidence = Array.isArray(parsed.evidence)
-    ? parsed.evidence.join('\n')
-    : String(parsed.evidence || parsed.reason || parsed.basis || '').trim();
-
-  return {
-    operationPlan,
-    replyText: String(parsed.reply_text || parsed.reply || parsed.message || '').trim(),
-    evidence,
-    confidence: String(parsed.confidence || '').trim(),
-    raw: output,
-  };
-}
-
 function stripTrailingDraftMetadata(value) {
   const text = String(value || '')
     .trim()
@@ -5905,8 +5878,7 @@ async function createDelegateDraft(event, rawText) {
     nonOwnerContext.cleanup();
   }
   console.error(`[bridge] delegate draft ${id} codex completed`);
-  const draft = normalizeDraftResult(draftOutput);
-  const replyText = draft.replyText || '我看到了，我稍后处理。';
+  const draft = parseDelegateDraftResult(draftOutput);
   const approval = {
     id,
     status: 'pending',
@@ -5919,7 +5891,7 @@ async function createDelegateDraft(event, rawText) {
     requesterName: extractSenderName(event),
     requestText: rawText,
     operationPlan: draft.operationPlan,
-    replyText,
+    replyText: draft.replyText,
     evidence: draft.evidence,
     confidence: draft.confidence,
     rawDraft: draft.raw,

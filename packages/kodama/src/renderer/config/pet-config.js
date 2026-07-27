@@ -11,6 +11,7 @@ export const PET_CONFIG = {
     lark_message_received: { status: 'looking', motion: 'Idle', priority: 2, ms: 4000, silent: true, bubble: '' },
     task_started: { status: 'working', motion: 'Idle', priority: 2, ms: 4000, bubble: '{icon} {context} 开工 🛠️' },
     task_progress: { status: 'working', motion: null, priority: 1, ms: 2500, bubble: '{icon} {text}' },
+    session_changed: { status: 'done', motion: 'Idle', priority: 2, ms: 4000, bubble: '{icon} 已切换会话：{text}' },
     lark_reply_sent: { status: 'replying', motion: 'Idle', priority: 3, ms: 4500, bubble: '{icon} 菌子回复：{text}' },
     task_waiting: { status: 'waiting', motion: 'Idle', priority: 5, ms: 6000, notify: true, bubble: '{icon} {context} 需要你确认一下：{text} 👉' },
     agent_done: { status: 'done', motion: 'Tap', priority: 4, ms: 5000, notify: true, bubble: '{icon} {text} 🎉' },

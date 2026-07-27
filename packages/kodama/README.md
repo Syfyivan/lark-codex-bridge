@@ -77,7 +77,7 @@ PET_SYNC_MODE=safe         # safe=脱敏+截断摘要(默认推荐)；full=本�
 >
 > bridge 不是 `lark-codex-bridge` 也没关系，只要它在本机 loopback 上兼容 Kodama 的接口层即可。协议说明见 [docs/bridge-compatibility.md](./docs/bridge-compatibility.md)。
 
-**事件类型**：`lark_message_received`（看手机）/ `task_started`（开工）/ `task_progress`（进度）/ `lark_reply_sent`（回复摘要）/ `task_waiting`（待交互）/ `agent_done`（子 Agent 完成）/ `task_done`（撒花）/ `task_failed`（报错）。
+**事件类型**：`lark_message_received`（看手机）/ `task_started`（开工）/ `task_progress`（进度）/ `session_changed`（切换持久会话）/ `lark_reply_sent`（回复摘要）/ `task_waiting`（待交互）/ `agent_done`（子 Agent 完成）/ `task_done`（撒花）/ `task_failed`（报错）。
 
 菜单栏 Kodama 的「事件 / 配置面板」会保留最近事件、待交互项、Agent 完成项、可跳转会话和当前 bridge/hook 状态；气泡错过时可以从这里回看。气泡本身可点击：只有一个可跳转会话时直接打开；多个会话时打开列表。当前优先跳到飞书 chat，若事件 payload 将来带明确 URL，会优先打开该 URL。
 

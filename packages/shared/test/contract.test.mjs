@@ -12,7 +12,8 @@ import {
 test('event type vocabulary covers bridge + kodama events', () => {
   for (const t of [
     'task_started', 'task_progress', 'task_done', 'task_failed', 'task_waiting',
-    'lark_message_received', 'lark_reply_sent', 'pomodoro_completed', 'agent_done',
+    'session_changed', 'lark_message_received', 'lark_reply_sent',
+    'pomodoro_completed', 'agent_done',
   ]) {
     assert.ok(isPetEventType(t), `${t} should be a known type`);
   }

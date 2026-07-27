@@ -26,6 +26,17 @@ function bubbleTemplateForEvent(type, event, def) {
   return def.bubble
 }
 
+const EVENT_FALLBACK_TEXT = {
+  task_done: '任务已完成',
+  task_failed: '任务失败',
+  lark_reply_sent: '已发送飞书回复',
+}
+
+function eventTextOrFallback(event, type) {
+  const text = typeof event?.text === 'string' ? event.text.trim() : ''
+  return text || EVENT_FALLBACK_TEXT[type] || ''
+}
+
 // Native OS notification (popup + sound) for important events — the in-window
 // bubble is easy to miss. Guarded so node tests (no `window`) don't throw.
 function notify(title, body) {
@@ -80,11 +91,12 @@ export function reactToEvent(event, hooks, options = {}) {
 
   const src = PET_CONFIG.sources[event.source] || PET_CONFIG.sources.lark
   const context = eventBubbleContext(event) || src.label
+  const eventText = eventTextOrFallback(event, event.type)
   const text = interpolate(bubbleTemplateForEvent(event.type, event, def), {
     icon: src.icon,
     label: src.label,
     context,
-    text: event.text || '',
+    text: eventText,
   })
 
   if (def.motion) hooks.playMotion?.(def.motion)

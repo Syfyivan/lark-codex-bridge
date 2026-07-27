@@ -29,6 +29,7 @@ Kodama 当前认识的事件类型：
 - `lark_message_received`
 - `task_started`
 - `task_progress`
+- `session_changed`
 - `lark_reply_sent`
 - `task_waiting`
 - `agent_done`

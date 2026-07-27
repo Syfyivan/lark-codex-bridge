@@ -22,6 +22,24 @@ test('lark task_done renders a 💬-prefixed bubble with the summary', () => {
   assert.deepEqual(out.status, ['done'])
 })
 
+test('terminal bridge events show a readable fallback when text is empty', () => {
+  const completed = collect({ type: 'task_done', source: 'lark', text: '' })
+  const failed = collect({ type: 'task_failed', source: 'lark', text: '' })
+  const replied = collect({ type: 'lark_reply_sent', source: 'lark', text: '' })
+
+  assert.match(completed.says[0], /任务已完成/)
+  assert.match(failed.says[0], /任务失败/)
+  assert.match(replied.says[0], /已发送飞书回复/)
+})
+
+test('session_changed names the selected persistent session', () => {
+  const out = collect({ type: 'session_changed', source: 'lark', text: '线上问题排查' })
+
+  assert.match(out.says[0], /已切换会话/)
+  assert.match(out.says[0], /线上问题排查/)
+  assert.deepEqual(out.status, ['done'])
+})
+
 test('lark_message_received is silent because Feishu already notifies mentions', () => {
   const out = collect({ type: 'lark_message_received', source: 'lark', text: '有人喊我' })
   assert.deepEqual(out.says, [])

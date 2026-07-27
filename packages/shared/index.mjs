@@ -15,6 +15,7 @@ export const PET_EVENT_TYPES = Object.freeze({
   TASK_DONE: 'task_done',
   TASK_FAILED: 'task_failed',
   TASK_WAITING: 'task_waiting',
+  SESSION_CHANGED: 'session_changed',
   LARK_MESSAGE_RECEIVED: 'lark_message_received',
   LARK_REPLY_SENT: 'lark_reply_sent',
   POMODORO_COMPLETED: 'pomodoro_completed',

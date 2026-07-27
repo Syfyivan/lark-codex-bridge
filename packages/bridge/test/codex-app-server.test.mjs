@@ -104,6 +104,45 @@ class NotificationItemsAppServerClient extends FakeAppServerClient {
   }
 }
 
+class CommentaryThenFinalAppServerClient extends FakeAppServerClient {
+  async request(method, params) {
+    if (method !== 'turn/start') return super.request(method, params);
+    this.calls.push({ method, params });
+    this.turnCount += 1;
+    const turnId = `turn-${this.turnCount}`;
+    setImmediate(() => {
+      this.emit('notification', {
+        method: 'item/completed',
+        params: {
+          threadId: params.threadId,
+          turnId,
+          item: {
+            id: `commentary-${turnId}`,
+            type: 'agentMessage',
+            text: 'I will inspect the remaining evidence.',
+          },
+        },
+      });
+      this.emit('notification', {
+        method: 'turn/completed',
+        params: {
+          threadId: params.threadId,
+          turn: {
+            id: turnId,
+            status: 'completed',
+            items: [{
+              id: `final-${turnId}`,
+              type: 'agentMessage',
+              text: '{"reply_text":"final review result"}',
+            }],
+          },
+        },
+      });
+    });
+    return { turn: { id: turnId, status: 'inProgress' } };
+  }
+}
+
 class ConcurrentTurnDetectingClient extends FakeAppServerClient {
   constructor() {
     super();
@@ -206,6 +245,18 @@ test('Codex app-server runner keeps the final agent item emitted before turn com
   const result = await runner.run('prompt', { contextKey: 'chat:oc_group' });
 
   assert.equal(result.text, 'answer turn-1');
+});
+
+test('Codex app-server runner prefers the completed turn answer over earlier commentary', async () => {
+  const client = new CommentaryThenFinalAppServerClient();
+  const runner = createCodexAppServerRunner(baseConfig(), {
+    appServerClient: client,
+    clampReply: value => String(value).trim(),
+  });
+
+  const result = await runner.run('prompt', { contextKey: 'chat:oc_group' });
+
+  assert.equal(result.text, '{"reply_text":"final review result"}');
 });
 
 test('Codex app-server runner serializes turns that share one session', async () => {

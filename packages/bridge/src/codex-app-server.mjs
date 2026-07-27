@@ -35,8 +35,17 @@ export function extractFinalAgentText(turn) {
 }
 
 function mergeCompletedTurnItems(turnItems, completedItems) {
+  // A non-sparse turn/completed payload is authoritative. Earlier
+  // item/completed agent messages can be commentary, so retaining them after
+  // the turn answer would make reverse-selection return progress instead.
+  const turnHasAgentAnswer = turnItems.some(
+    item => item?.type === 'agentMessage' && String(item.text || '').trim(),
+  );
+  const notificationItems = turnHasAgentAnswer
+    ? completedItems.filter(item => item?.type !== 'agentMessage')
+    : completedItems;
   const merged = new Map();
-  for (const item of [...turnItems, ...completedItems]) {
+  for (const item of [...notificationItems, ...turnItems]) {
     const key = String(item?.id || `${item?.type || 'item'}:${merged.size}`);
     merged.set(key, item);
   }

@@ -17,8 +17,9 @@ Lark bot event -> lark-cli -> backend runner -> Lark reply or progress card
 - Reply only when the bot is mentioned in a group, unless configured otherwise.
 - Run Codex through `codex exec`, a persistent app-server connection, or
   `auto` fallback mode.
-- Keep one persistent Codex Session per Lark group by default, with explicit
-  `/new`, `/sessions`, `/session`, and `/use` controls.
+- Keep one persistent Codex Session per independent Lark task/topic by default,
+  while retaining group-level Session history and explicit `/new`, `/sessions`,
+  `/session`, and `/use` controls.
 - Select first-class backend runners with `BRIDGE_BACKEND=codex|claude|coco|agent|api`.
 - Show an interactive progress card while the selected backend is working.
 - Replace the progress card with the final answer when the task finishes.
@@ -26,7 +27,8 @@ Lark bot event -> lark-cli -> backend runner -> Lark reply or progress card
 - Render final answers with card Markdown so fenced code blocks display cleanly.
 - Find local Codex sessions and generate snapshot links from a card button.
 - Owner-only ops commands for health, version, and log tail checks from Lark.
-- Per-chat direct backend task queue with `/queue` and owner-only `/stop`.
+- Per-task direct backend queues, a global concurrency limit, `/queue`, and
+  owner-only `/stop`.
 - Bind oncall chats to local project directories with owner-only `/oncall bind`.
 - Optional profile/capability policy so configured chats can restrict what
   non-owners may ask Codex to do before a Codex process is started.
@@ -248,7 +250,8 @@ LOOP_HARD_MAX_TURNS=0             # optional emergency cap; 0 means no turn cap
 LOOP_IGNORE_SENDER_IDS=
 LOOP_ALLOW_SENDER_IDS=
 
-CONTEXT_QUEUE_ENABLED=1           # serialize Codex tasks per group; other backends keep chat/thread scope
+CONTEXT_QUEUE_ENABLED=1           # serialize turns in one task while independent tasks can run concurrently
+CONTEXT_QUEUE_MAX_CONCURRENT=4    # global protection for the local machine and downstream tools
 ONCALL_BINDINGS_FILE=~/.lark-codex-bridge/oncall-bindings.json
 PROFILE_POLICY_ENABLED=0          # enable profile/capability gate before direct backend runs
 PROFILE_CONFIG_FILE=~/.lark-codex-bridge/profiles.json
@@ -264,7 +267,8 @@ CODEX_APP_SERVER_START_TIMEOUT_MS=10000
 CODEX_APP_SERVER_REQUEST_TIMEOUT_MS=30000
 CODEX_TIMEOUT_MS=                 # empty or 0 means no Codex turn timeout
 CODEX_EPHEMERAL=0                 # persistent Sessions appear in the Codex local session store
-CODEX_GROUP_SESSION_ENABLED=1
+CODEX_GROUP_SESSION_ENABLED=1     # retain the group's Session registry and message bindings
+CODEX_TASK_SESSION_ENABLED=1      # new top-level group requests get independent Sessions
 CODEX_SESSION_STORE_FILE=~/.lark-codex-bridge/codex-sessions.json
 CODEX_SESSION_HISTORY_LIMIT=20
 
@@ -354,21 +358,26 @@ app-server `turn/steer` and `turn/interrupt` protocol support. That preflight is
 readiness information for the lower-latency app-server runtime.
 
 When `CODEX_GROUP_SESSION_ENABLED=1`, `CODEX_RUNTIME=app-server`, and
-`CODEX_EPHEMERAL=0`, every Lark group uses one active persistent Codex Session.
-Ordinary messages in that group keep using it across topics and Bridge restarts.
-`/new [title]` creates and activates another Session; `/sessions` lists retained
-Sessions, `/session` shows the current one, and `/use <number|id|title>` switches
-back. Creating and switching are owner-only and are rejected while the group has
-a running or queued task. Replies in an older Lark topic stay bound to the
-Session that originally handled that topic, even after the group's active
-Session changes. Group Memory remains a separate chat-level store, so `/new`
-does not erase the requirement group's shared memory.
+`CODEX_EPHEMERAL=0`, the bridge persists the group's Session registry and
+message bindings. With `CODEX_TASK_SESSION_ENABLED=1` (the default), every new
+top-level group request creates an independent Session; replies in the same
+topic resume that Session across Bridge restarts. `/new [title]` creates a
+Session for the current topic, `/sessions` lists the group's retained Sessions,
+`/session` shows the current topic binding, and `/use <number|id|title>` binds
+the current topic to an existing Session. Creating and binding are owner-only
+and are rejected while the current topic has a running or queued task.
 
-When `CONTEXT_QUEUE_ENABLED=1`, Codex tasks are serialized per group when group
-Sessions are enabled; other backends retain their chat/topic scope. A normal new
-request in the same context waits for the current backend task to finish. Use
-`/queue <message>` to append a follow-up and `/stop` as a bridge owner to abort
-the active task and clear pending queued tasks.
+Session isolation does not duplicate long-term group context. Group Profile and
+chat Memory remain keyed by `chat_id`; thread Memory and the Codex Session remain
+keyed by the task/topic. A stable safety-policy key keeps owner, member, sandbox,
+project, and approval boundaries separate while allowing a member's Session to survive
+the disposable scratch directory changing between turns.
+
+When `CONTEXT_QUEUE_ENABLED=1`, turns in the same task are serialized, while
+independent tasks can run in parallel up to `CONTEXT_QUEUE_MAX_CONCURRENT`.
+Excess tasks wait without sharing Session context. Use `/queue <message>` inside
+the task topic to append a follow-up and `/stop` in that topic as a bridge owner
+to abort its active task and clear its pending turns.
 
 ## Oncall Chat Binding
 

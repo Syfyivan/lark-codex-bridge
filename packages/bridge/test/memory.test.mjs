@@ -134,6 +134,47 @@ test('memory router reads only route-visible layered memory', () => {
   });
 });
 
+test('memory router shares chat memory but isolates independent top-level tasks', () => {
+  const config = { memoryDefaultProjectId: '' };
+  const first = resolveMemoryRoute(
+    config,
+    { chatId: 'chat-1', messageId: 'message-1' },
+    '查询用户 1001 的积分',
+  );
+  const second = resolveMemoryRoute(
+    config,
+    { chatId: 'chat-1', messageId: 'message-2' },
+    '查询用户 2002 的积分',
+  );
+  const reply = resolveMemoryRoute(
+    config,
+    {
+      chatId: 'chat-1',
+      chatType: 'group',
+      messageId: 'message-3',
+      threadId: 'generated-thread',
+      rootId: 'message-1',
+    },
+    '继续查询积分明细',
+  );
+  const topic = resolveMemoryRoute(
+    config,
+    {
+      chatId: 'chat-1',
+      chatType: 'topic_group',
+      messageId: 'message-4',
+      threadId: 'topic-1',
+      rootId: 'topic-root',
+    },
+    '继续话题任务',
+  );
+
+  assert.equal(first.chatId, second.chatId);
+  assert.notEqual(first.threadId, second.threadId);
+  assert.equal(reply.threadId, first.threadId);
+  assert.equal(topic.threadId, 'topic-1');
+});
+
 test('memory prompt respects priority and hard character budget', () => {
   const context = buildMemoryPromptContext({
     route: { chatId: 'chat-1', threadId: 'thread-1', projectId: 'project-1' },

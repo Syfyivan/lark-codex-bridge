@@ -108,13 +108,16 @@ export function formatHealthReport(input) {
     `codexRunner: ${input.codexRunner || input.backendRunner || 'codex'}`,
     input.codexRuntime ? `codexRuntime: ${input.codexRuntime}` : '',
     `groupSessions: ${input.codexGroupSessionEnabled ? 'enabled' : 'disabled'} persistent=${input.codexEphemeral ? 'no' : 'yes'}`,
+    input.codexGroupSessionEnabled
+      ? `taskSessions: ${input.codexTaskSessionEnabled ? 'enabled' : 'disabled'}`
+      : '',
     input.codexGroupSessionEnabled && input.codexSessionStoreFile
       ? `sessionStore: ${input.codexSessionStoreFile}`
       : '',
     `codexSandbox: ${input.codexSandbox}`,
     `codexNonOwnerSandbox: ${input.codexNonOwnerSandbox}`,
     `sessionShareOutput: ${input.sessionShareOutput}`,
-    `contextQueue: ${input.contextQueueEnabled ? 'enabled' : 'disabled'} active=${input.contextQueueActive || 0} queued=${input.contextQueueQueued || 0}`,
+    `contextQueue: ${input.contextQueueEnabled ? 'enabled' : 'disabled'} max=${input.contextQueueMaxConcurrent || 'unbounded'} active=${input.contextQueueActive || 0} queued=${input.contextQueueQueued || 0}`,
     `profilePolicy: ${input.profilePolicyEnabled ? 'enabled' : 'disabled'} loaded=${input.profilePolicyLoaded ? 'yes' : 'no'}`,
     input.profilePolicyEnabled && input.profileConfigFile ? `profileConfig: ${input.profileConfigFile}` : '',
     `memory: ${input.memoryEnabled ? 'enabled' : 'disabled'}`,

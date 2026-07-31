@@ -9,11 +9,11 @@ import { primaryProjectId } from './project-resolver.mjs';
 
 export function resolveMemoryRoute(config, event = {}, text = '') {
   const chatId = event.chatId || event.chat_id || '';
+  const chatType = String(event.chatType || event.chat_type || '').toLowerCase();
+  const eventThreadId = event.threadId || event.thread_id || '';
+  const rootId = event.rootId || event.root_id || '';
   const threadId =
-    event.threadId ||
-    event.thread_id ||
-    event.rootId ||
-    event.root_id ||
+    (chatType === 'topic_group' ? eventThreadId || rootId : rootId || eventThreadId) ||
     event.parentId ||
     event.parent_id ||
     event.messageId ||

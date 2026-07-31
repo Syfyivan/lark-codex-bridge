@@ -301,6 +301,10 @@ test('Codex session store persists one active session per group and keeps reply 
   assert.equal(restored.active('chat:oc_group').id, 'thread-2');
   assert.equal(restored.resolve('chat:oc_group', ['omt_first']).session.id, 'thread-1');
   assert.equal(restored.resolve('chat:oc_group', []).session.id, 'thread-2');
+  assert.equal(
+    restored.resolve('chat:oc_group', ['om_unbound'], { fallbackToActive: false }).session,
+    null,
+  );
   assert.deepEqual(restored.list('chat:oc_group').map(item => item.id), ['thread-2', 'thread-1']);
 
   assert.equal(restored.activate('chat:oc_group', '2').id, 'thread-1');
@@ -339,6 +343,184 @@ test('Codex app-server runner resumes the persisted group session after restart'
   assert.equal(secondClient.calls.filter(call => call.method === 'thread/start').length, 0);
   assert.equal(secondClient.calls.filter(call => call.method === 'thread/resume').length, 1);
   assert.equal(secondClient.calls.find(call => call.method === 'turn/start').params.threadId, 'thread-1');
+});
+
+test('task-scoped sessions isolate new requests in one group and run them concurrently', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-codex-task-sessions-'));
+  const client = new ConcurrentTurnDetectingClient();
+  const runner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
+    appServerClient: client,
+    sessionStore: codexAppServer.createCodexSessionStore({ file: join(root, 'sessions.json') }),
+  });
+  const shared = {
+    sessionScopeKey: 'chat:oc_group',
+    sessionSafetyKey: 'member:read-only:project-a',
+    resumeActiveSession: false,
+    activateSession: false,
+  };
+
+  const results = await Promise.all([
+    runner.run('query user 1001 points', {
+      ...shared,
+      contextKey: 'task:oc_group:om_points',
+      messageIds: ['om_points'],
+    }),
+    runner.run('query user 2002 signup', {
+      ...shared,
+      contextKey: 'task:oc_group:om_signup',
+      messageIds: ['om_signup'],
+    }),
+  ]);
+
+  assert.equal(new Set(results.map(result => result.sessionId)).size, 2);
+  assert.equal(client.calls.filter(call => call.method === 'thread/start').length, 2);
+  assert.equal(client.maxActiveTurns, 2);
+  assert.equal(runner.listSessions(shared).length, 2);
+});
+
+test('turns stay serialized when two task bindings point to one Session', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-codex-shared-session-'));
+  const client = new ConcurrentTurnDetectingClient();
+  const runner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
+    appServerClient: client,
+    sessionStore: codexAppServer.createCodexSessionStore({ file: join(root, 'sessions.json') }),
+  });
+  const shared = {
+    sessionScopeKey: 'chat:oc_group',
+    sessionSafetyKey: 'owner:read-only:project-a',
+    resumeActiveSession: false,
+    activateSession: false,
+  };
+  const first = await runner.run('seed task', {
+    ...shared,
+    contextKey: 'task:oc_group:om_first',
+    messageIds: ['om_first'],
+  });
+  runner.useSession({
+    ...shared,
+    contextKey: 'task:oc_group:om_second',
+    selector: first.sessionId,
+    messageIds: ['om_second'],
+  });
+
+  await Promise.all([
+    runner.run('continue first binding', {
+      ...shared,
+      contextKey: 'task:oc_group:om_first',
+      messageIds: ['om_first'],
+    }),
+    runner.run('continue second binding', {
+      ...shared,
+      contextKey: 'task:oc_group:om_second',
+      messageIds: ['om_second'],
+    }),
+  ]);
+
+  assert.equal(client.calls.filter(call => call.method === 'thread/start').length, 1);
+  assert.equal(client.maxActiveTurns, 1);
+});
+
+test('task-scoped session resumes by topic binding after restart', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-codex-task-resume-'));
+  const file = join(root, 'sessions.json');
+  const options = {
+    contextKey: 'task:oc_group:omt_points',
+    sessionScopeKey: 'chat:oc_group',
+    sessionSafetyKey: 'member:read-only:project-a',
+    resumeActiveSession: false,
+    activateSession: false,
+  };
+  const firstClient = new FakeAppServerClient();
+  const firstRunner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
+    appServerClient: firstClient,
+    sessionStore: codexAppServer.createCodexSessionStore({ file }),
+  });
+
+  const first = await firstRunner.run('query points', {
+    ...options,
+    messageIds: ['om_first', 'omt_points'],
+  });
+
+  const secondClient = new FakeAppServerClient();
+  const secondRunner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
+    appServerClient: secondClient,
+    sessionStore: codexAppServer.createCodexSessionStore({ file }),
+  });
+  const second = await secondRunner.run('query point details', {
+    ...options,
+    messageIds: ['om_reply', 'omt_points'],
+  });
+
+  assert.equal(second.sessionId, first.sessionId);
+  assert.equal(secondClient.calls.filter(call => call.method === 'thread/start').length, 0);
+  assert.equal(secondClient.calls.filter(call => call.method === 'thread/resume').length, 1);
+});
+
+test('task-scoped routing migrates an existing group message binding on first use', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-codex-task-migration-'));
+  const file = join(root, 'sessions.json');
+  const store = codexAppServer.createCodexSessionStore({ file });
+  store.record('chat:oc_group', {
+    id: 'thread-legacy',
+    title: 'legacy group task',
+    cwd: '/workspace',
+    sandbox: 'read-only',
+  });
+  store.bindMessages('chat:oc_group', 'thread-legacy', ['omt_legacy']);
+
+  const client = new FakeAppServerClient();
+  const runner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
+    appServerClient: client,
+    sessionStore: codexAppServer.createCodexSessionStore({ file }),
+  });
+  const result = await runner.run('continue legacy topic', {
+    contextKey: 'task:oc_group:omt_legacy',
+    sessionScopeKey: 'chat:oc_group',
+    sessionSafetyKey: 'owner:read-only:workspace',
+    messageIds: ['om_reply', 'omt_legacy'],
+    resumeActiveSession: false,
+    activateSession: false,
+  });
+
+  assert.equal(result.sessionId, 'thread-legacy');
+  assert.equal(client.calls.filter(call => call.method === 'thread/start').length, 0);
+  assert.equal(client.calls.filter(call => call.method === 'thread/resume').length, 1);
+  assert.equal(runner.listSessions({
+    sessionScopeKey: 'chat:oc_group',
+    sessionSafetyKey: 'owner:read-only:workspace',
+  })[0].id, 'thread-legacy');
+});
+
+test('stable safety policy keeps a member task session across disposable cwd changes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bridge-codex-member-scratch-'));
+  const client = new FakeAppServerClient();
+  const runner = createCodexAppServerRunner(baseConfig({ codexEphemeral: false }), {
+    appServerClient: client,
+    sessionStore: codexAppServer.createCodexSessionStore({ file: join(root, 'sessions.json') }),
+  });
+  const shared = {
+    contextKey: 'task:oc_group:omt_points',
+    sessionScopeKey: 'chat:oc_group',
+    sessionSafetyKey: 'member:read-only:project-a',
+    sandbox: 'workspace-write',
+    resumeActiveSession: false,
+    activateSession: false,
+  };
+
+  const first = await runner.run('first query', {
+    ...shared,
+    cwd: '/tmp/member-run-1',
+    messageIds: ['om_first', 'omt_points'],
+  });
+  const second = await runner.run('follow-up query', {
+    ...shared,
+    cwd: '/tmp/member-run-2',
+    messageIds: ['om_reply', 'omt_points'],
+  });
+
+  assert.equal(second.sessionId, first.sessionId);
+  assert.equal(client.calls.filter(call => call.method === 'thread/start').length, 1);
+  assert.equal(client.calls.filter(call => call.method === 'thread/resume').length, 1);
 });
 
 test('persistent sessions isolate custom cwd and sandbox from the default group session', async () => {

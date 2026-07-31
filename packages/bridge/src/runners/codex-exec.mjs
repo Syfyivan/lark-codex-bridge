@@ -18,6 +18,7 @@ export function createCodexBackendRunner(config, deps = {}) {
       listSessions: options => appServerRunner.listSessions(options),
       useSession: options => appServerRunner.useSession(options),
       activeSession: options => appServerRunner.activeSession(options),
+      resolveSession: options => appServerRunner.resolveSession(options),
       async run(prompt, options = {}) {
         try {
           return await appServerRunner.run(prompt, options);
@@ -54,6 +55,9 @@ function createUnifiedCodexRunner(runner) {
       : {}),
     ...(typeof runner.activeSession === 'function'
       ? { activeSession: options => runner.activeSession(options) }
+      : {}),
+    ...(typeof runner.resolveSession === 'function'
+      ? { resolveSession: options => runner.resolveSession(options) }
       : {}),
     async run(prompt, options = {}) {
       const result = await runner.run(prompt, options);

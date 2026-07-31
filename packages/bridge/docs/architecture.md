@@ -109,7 +109,8 @@ The bridge no longer has a single hard-coded Codex execution model.
 
 - `exec`: the original one-process-per-turn `codex exec` behavior.
 - `app-server`: a long-lived local app-server connection that creates one Codex
-  thread per Lark context/cwd/sandbox tuple and runs turns with `turn/start`.
+  thread per Lark task and stable safety-policy tuple, then runs turns with
+  `turn/start`.
 - `auto`: try app-server first, then fall back to `exec` if app-server startup
   or protocol calls fail.
 
@@ -117,6 +118,19 @@ The Lark event router still calls Codex through the generic backend runner
 interface. The app-server implementation stays in `src/codex-app-server.mjs` and
 does not leak into Lark event routing, profile policy, approval flow, progress
 cards, or memory prompt assembly.
+
+For persistent group use, `chat_id` is the collaboration boundary, not the task
+boundary. It selects group Profile, permissions, Session history, and chat
+Memory. A topic/root message selects the task Session and queue. A new top-level
+request therefore starts a new Session, while replies in the same topic resume
+the original Session. Turns sharing one Session are serialized; different
+Sessions can run concurrently up to the configured global limit.
+
+Session routing also separates stable policy identity from the current process
+cwd. Non-owner turns may use a new disposable scratch directory each time, but
+the same topic can still resume its Session when actor, sandbox, project, and
+approval mode remain unchanged. A changed safety policy selects a different
+Session instead of silently inheriting broader authority.
 
 Startup still runs a lightweight app-server protocol preflight inspired by the
 reference Feishu bridge. It verifies whether the installed Codex CLI exposes

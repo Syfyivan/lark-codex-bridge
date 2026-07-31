@@ -19,7 +19,7 @@ test('parseQueueCommand and isStopCommand recognize control commands', () => {
   assert.equal(isStopCommand('/logs 20'), false);
 });
 
-test('conversationKeyForEvent keeps group and topic-group tasks in one chat context', () => {
+test('conversationKeyForEvent can isolate group tasks while keeping p2p continuity', () => {
   assert.equal(
     conversationKeyForEvent({ chatId: 'oc_1', chatType: 'group' }),
     'chat:oc_1',
@@ -35,10 +35,47 @@ test('conversationKeyForEvent keeps group and topic-group tasks in one chat cont
       threadId: 'omt_1',
       groupScoped: false,
     }),
-    'thread:oc_1:omt_1',
+    'task:oc_1:omt_1',
   );
   assert.equal(
-    conversationKeyForEvent({ chatId: 'oc_p2p', chatType: 'p2p', senderId: 'ou_1' }),
+    conversationKeyForEvent({
+      chatId: 'oc_1',
+      chatType: 'group',
+      messageId: 'om_new_task',
+      groupScoped: false,
+    }),
+    'task:oc_1:om_new_task',
+  );
+  assert.equal(
+    conversationKeyForEvent({
+      chatId: 'oc_1',
+      chatType: 'group',
+      messageId: 'om_reply',
+      threadId: 'omt_generated',
+      rootId: 'om_new_task',
+      groupScoped: false,
+    }),
+    'task:oc_1:om_new_task',
+  );
+  assert.equal(
+    conversationKeyForEvent({
+      chatId: 'oc_1',
+      chatType: 'topic_group',
+      messageId: 'om_reply',
+      threadId: 'omt_topic',
+      rootId: 'om_topic_root',
+      groupScoped: false,
+    }),
+    'task:oc_1:omt_topic',
+  );
+  assert.equal(
+    conversationKeyForEvent({
+      chatId: 'oc_p2p',
+      chatType: 'p2p',
+      senderId: 'ou_1',
+      messageId: 'om_p2p',
+      groupScoped: false,
+    }),
     'p2p:oc_p2p',
   );
 });
@@ -123,6 +160,7 @@ test('executeCodexSessionCommand creates, lists, reports, and switches group ses
   ];
   let active = sessions[0];
   let newOptions = null;
+  let useOptions = null;
   const runner = {
     async newSession(options) {
       newOptions = options;
@@ -136,8 +174,12 @@ test('executeCodexSessionCommand creates, lists, reports, and switches group ses
     activeSession() {
       return active;
     },
-    useSession({ selector }) {
-      active = selector === '2' ? sessions[1] : null;
+    resolveSession({ messageIds }) {
+      return messageIds.includes('om_new') ? active : null;
+    },
+    useSession(options) {
+      useOptions = options;
+      active = options.selector === '2' ? sessions[1] : null;
       return active;
     },
   };
@@ -145,7 +187,9 @@ test('executeCodexSessionCommand creates, lists, reports, and switches group ses
   const created = await contextQueue.executeCodexSessionCommand({
     command: { action: 'new', title: '' },
     runner,
-    contextKey: 'chat:oc_1',
+    contextKey: 'task:oc_1:om_new',
+    sessionScopeKey: 'chat:oc_1',
+    sessionSafetyKey: 'owner:project-a',
     isOwner: true,
     cwd: '/repo',
     sandbox: 'workspace-write',
@@ -154,30 +198,38 @@ test('executeCodexSessionCommand creates, lists, reports, and switches group ses
   });
   assert.equal(newOptions.title, '需求群 · 新会话');
   assert.deepEqual(newOptions.messageIds, ['om_new']);
+  assert.equal(newOptions.contextKey, 'task:oc_1:om_new');
+  assert.equal(newOptions.sessionScopeKey, 'chat:oc_1');
   assert.match(created.message, /thread-3/);
 
   const listed = await contextQueue.executeCodexSessionCommand({
     command: { action: 'list' },
     runner,
     contextKey: 'chat:oc_1',
+    messageIds: ['om_new'],
   });
-  assert.match(listed.message, /当前/);
+  assert.match(listed.message, /\[当前话题\]/);
   assert.match(listed.message, /第二个需求/);
 
   const status = await contextQueue.executeCodexSessionCommand({
     command: { action: 'status' },
     runner,
     contextKey: 'chat:oc_1',
+    messageIds: ['om_new'],
   });
   assert.match(status.message, /thread-3/);
 
   const selected = await contextQueue.executeCodexSessionCommand({
     command: { action: 'use', selector: '2' },
     runner,
-    contextKey: 'chat:oc_1',
+    contextKey: 'task:oc_1:om_use',
+    sessionScopeKey: 'chat:oc_1',
+    messageIds: ['om_use'],
     isOwner: true,
   });
   assert.match(selected.message, /thread-2/);
+  assert.deepEqual(useOptions.messageIds, ['om_use']);
+  assert.equal(useOptions.sessionScopeKey, 'chat:oc_1');
 });
 
 test('createContextQueueRuntime serializes tasks per context only', async () => {
@@ -219,6 +271,43 @@ test('createContextQueueRuntime serializes tasks per context only', async () => 
   release.a2();
   release.b1();
   await Promise.all([second.done, other.done]);
+});
+
+test('createContextQueueRuntime runs independent task contexts up to the global limit', async () => {
+  const started = [];
+  const release = {};
+  const runtime = createContextQueueRuntime({
+    maxConcurrent: 2,
+    contextKeyForItem: item => item.context,
+    runItem: async item => {
+      started.push(item.id);
+      await new Promise(resolve => {
+        release[item.id] = resolve;
+      });
+    },
+  });
+
+  const first = runtime.dispatch({ id: 'task-1', context: 'task:chat:1' });
+  const second = runtime.dispatch({ id: 'task-2', context: 'task:chat:2' });
+  const third = runtime.dispatch({ id: 'task-3', context: 'task:chat:3' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(first.status, 'started');
+  assert.equal(second.status, 'started');
+  assert.equal(third.status, 'queued');
+  assert.equal(runtime.maxConcurrent, 2);
+  assert.equal(runtime.activeTotal(), 2);
+  assert.deepEqual(started.sort(), ['task-1', 'task-2']);
+
+  release['task-1']();
+  await first.done;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.activeTotal(), 2);
+  assert.deepEqual(started.sort(), ['task-1', 'task-2', 'task-3']);
+
+  release['task-2']();
+  release['task-3']();
+  await Promise.all([second.done, third.done]);
 });
 
 test('clearQueued resolves queued tasks without running them', async () => {

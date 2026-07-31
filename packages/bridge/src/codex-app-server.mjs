@@ -237,16 +237,56 @@ export function createCodexAppServerRunner(config, deps = {}) {
     if (trimmed) console.error(`[codex-app-server] ${trimmed}`);
   });
 
-  function sessionKeyFor(options) {
-    if (!options.contextKey) return '';
+  function scopedSessionKey(scopeKey, options = {}) {
+    if (!scopeKey) return '';
+    const sessionSafetyKey = String(options.sessionSafetyKey || '').trim();
+    if (sessionSafetyKey) {
+      return [scopeKey, `policy:${sessionSafetyKey}`, config.codexModel || ''].join('\u001f');
+    }
     const cwd = resolve(options.cwd || config.codexCwd);
     const sandbox = options.sandbox || config.codexSandbox;
     const defaultCwd = resolve(config.codexCwd);
     const defaultSandbox = config.codexSandbox;
     if (!config.codexEphemeral && cwd === defaultCwd && sandbox === defaultSandbox) {
-      return options.contextKey;
+      return scopeKey;
     }
-    return [options.contextKey, cwd, sandbox, config.codexModel || ''].join('\u001f');
+    return [scopeKey, cwd, sandbox, config.codexModel || ''].join('\u001f');
+  }
+
+  function executionKeyFor(options = {}) {
+    return scopedSessionKey(options.contextKey, options);
+  }
+
+  function storeKeyFor(options = {}) {
+    return scopedSessionKey(options.sessionScopeKey || options.contextKey, options);
+  }
+
+  function legacyStoreKeyFor(options = {}) {
+    if (!options.sessionSafetyKey) return storeKeyFor(options);
+    return scopedSessionKey(
+      options.sessionScopeKey || options.contextKey,
+      { ...options, sessionSafetyKey: '' },
+    );
+  }
+
+  function sessionsForOptions(options = {}) {
+    const key = storeKeyFor(options);
+    const current = sessionStore?.list(key) || [];
+    const legacyStoreKey = legacyStoreKeyFor(options);
+    if (!legacyStoreKey || legacyStoreKey === key) return current;
+    const seen = new Set(current.map(session => session.id));
+    return [
+      ...current,
+      ...(sessionStore?.list(legacyStoreKey) || []).filter(session => !seen.has(session.id)),
+    ];
+  }
+
+  function cacheKeyForThread(threadId) {
+    return threadId ? `thread:${threadId}` : '';
+  }
+
+  function cacheKeyForExecution(executionKey) {
+    return executionKey ? `context:${executionKey}` : '';
   }
 
   async function runInSessionOrder(key, operation) {
@@ -262,11 +302,20 @@ export function createCodexAppServerRunner(config, deps = {}) {
   }
 
   async function startThread(options, { forceNew = false } = {}) {
-    const key = sessionKeyFor(options);
-    if (sessionStore && !key) throw new Error('missing Codex session context key');
+    const executionKey = executionKeyFor(options);
+    const storeKey = storeKeyFor(options);
+    if (sessionStore && !storeKey) throw new Error('missing Codex session context key');
     const cwd = resolve(options.cwd || config.codexCwd);
     const sandbox = options.sandbox || config.codexSandbox;
-    if (!forceNew && key && sessions.has(key)) return sessions.get(key);
+    const executionCacheKey = cacheKeyForExecution(executionKey);
+    if (
+      config.codexEphemeral &&
+      !forceNew &&
+      executionCacheKey &&
+      sessions.has(executionCacheKey)
+    ) {
+      return sessions.get(executionCacheKey);
+    }
     const response = await client.request('thread/start', {
       cwd,
       model: config.codexModel || undefined,
@@ -283,27 +332,55 @@ export function createCodexAppServerRunner(config, deps = {}) {
         timeoutMs: config.codexAppServerRequestTimeoutMs || 30_000,
       });
     }
-    const session = { threadId, id: threadId, title, key, cwd, sandbox };
-    if (key) sessions.set(key, session);
-    sessionStore?.record(key, session, { activate: options.activateSession !== false });
-    sessionStore?.bindMessages(key, threadId, options.messageIds || []);
+    const session = {
+      threadId,
+      id: threadId,
+      title,
+      key: storeKey || executionKey,
+      executionKey,
+      cwd,
+      sandbox,
+    };
+    const cacheKey = config.codexEphemeral
+      ? executionCacheKey
+      : cacheKeyForThread(threadId);
+    if (cacheKey) sessions.set(cacheKey, session);
+    sessionStore?.record(storeKey, session, { activate: options.activateSession !== false });
+    sessionStore?.bindMessages(storeKey, threadId, options.messageIds || []);
     return session;
   }
 
   async function ensureThread(options) {
-    const key = sessionKeyFor(options);
-    if (config.codexEphemeral || !sessionStore || !key) return startThread(options);
+    const storeKey = storeKeyFor(options);
+    if (config.codexEphemeral || !sessionStore || !storeKey) return startThread(options);
 
-    const resolved = options.sessionId
+    let resolved = options.sessionId
       ? { session: { id: options.sessionId }, source: 'explicit' }
-      : sessionStore.resolve(key, options.messageIds || []);
+      : sessionStore.resolve(
+          storeKey,
+          options.messageIds || [],
+          { fallbackToActive: options.resumeActiveSession !== false },
+        );
+    const legacyStoreKey = legacyStoreKeyFor(options);
+    if (!resolved.session && legacyStoreKey && legacyStoreKey !== storeKey) {
+      resolved = sessionStore.resolve(
+        legacyStoreKey,
+        options.messageIds || [],
+        { fallbackToActive: options.resumeActiveSession !== false },
+      );
+      if (resolved.session) {
+        sessionStore.record(storeKey, resolved.session, {
+          activate: resolved.source !== 'message' && options.activateSession !== false,
+        });
+      }
+    }
     const targetId = resolved.session?.id || '';
-    const cached = sessions.get(key);
     if (!targetId) return startThread(options);
+    const cached = sessions.get(cacheKeyForThread(targetId));
     const cwd = resolve(options.cwd || resolved.session?.cwd || config.codexCwd);
     const sandbox = options.sandbox || resolved.session?.sandbox || config.codexSandbox;
     if (cached?.threadId === targetId && cached.cwd === cwd && cached.sandbox === sandbox) {
-      sessionStore.bindMessages(key, targetId, options.messageIds || []);
+      sessionStore.bindMessages(storeKey, targetId, options.messageIds || []);
       return cached;
     }
 
@@ -319,15 +396,16 @@ export function createCodexAppServerRunner(config, deps = {}) {
       threadId,
       id: threadId,
       title: resolved.session?.title || '',
-      key,
+      key: storeKey,
+      executionKey: executionKeyFor(options),
       cwd,
       sandbox,
     };
-    sessions.set(key, session);
-    sessionStore.record(key, session, {
+    sessions.set(cacheKeyForThread(threadId), session);
+    sessionStore.record(storeKey, session, {
       activate: resolved.source !== 'message' && options.activateSession !== false,
     });
-    sessionStore.bindMessages(key, threadId, options.messageIds || []);
+    sessionStore.bindMessages(storeKey, threadId, options.messageIds || []);
     return session;
   }
 
@@ -338,7 +416,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
     sessions,
     async newSession(options = {}) {
       if (config.codexEphemeral || !sessionStore) {
-        throw new Error('Codex group sessions require CODEX_EPHEMERAL=0');
+        throw new Error('Persistent Codex sessions require CODEX_EPHEMERAL=0');
       }
       const session = await startThread({
         ...options,
@@ -348,21 +426,58 @@ export function createCodexAppServerRunner(config, deps = {}) {
       return { ...session, id: session.threadId };
     },
     listSessions(options = {}) {
-      return sessionStore?.list(sessionKeyFor(options)) || [];
+      return sessionsForOptions(options);
     },
     useSession(options = {}) {
-      const key = sessionKeyFor(options);
-      const selected = sessionStore?.activate(key, options.selector);
-      if (selected) sessions.delete(key);
+      const key = storeKeyFor(options);
+      const query = String(options.selector || '').trim();
+      const numbered = /^\d+$/.test(query)
+        ? sessionsForOptions(options)[Number(query) - 1]?.id || query
+        : query;
+      let selected = sessionStore?.activate(key, numbered);
+      if (!selected) {
+        const legacyStoreKey = legacyStoreKeyFor(options);
+        if (legacyStoreKey && legacyStoreKey !== key) {
+          selected = sessionStore?.activate(legacyStoreKey, numbered);
+          if (selected) sessionStore?.record(key, selected, { activate: true });
+        }
+      }
+      if (selected) sessionStore?.bindMessages(key, selected.id, options.messageIds || []);
       return selected;
     },
     activeSession(options = {}) {
-      return sessionStore?.active(sessionKeyFor(options)) || null;
+      const key = storeKeyFor(options);
+      const active = sessionStore?.active(key);
+      if (active) return active;
+      const legacyStoreKey = legacyStoreKeyFor(options);
+      return legacyStoreKey && legacyStoreKey !== key
+        ? sessionStore?.active(legacyStoreKey) || null
+        : null;
+    },
+    resolveSession(options = {}) {
+      const key = storeKeyFor(options);
+      const resolved = sessionStore?.resolve(
+        key,
+        options.messageIds || [],
+        { fallbackToActive: options.fallbackToActive !== false },
+      )?.session;
+      if (resolved) return resolved;
+      const legacyStoreKey = legacyStoreKeyFor(options);
+      return legacyStoreKey && legacyStoreKey !== key
+        ? sessionStore?.resolve(
+            legacyStoreKey,
+            options.messageIds || [],
+            { fallbackToActive: options.fallbackToActive !== false },
+          )?.session || null
+        : null;
     },
     async run(prompt, options = {}) {
-      const key = sessionKeyFor(options);
-      return runInSessionOrder(key, async () => {
-        const session = await ensureThread(options);
+      const executionKey = executionKeyFor(options);
+      const storeKey = storeKeyFor(options);
+      const resolutionKey = storeKey || executionKey;
+      const session = await runInSessionOrder(`resolve:${resolutionKey}`, () =>
+        ensureThread(options));
+      return runInSessionOrder(`thread:${session.threadId}`, async () => {
         const fullPrompt = buildCodexPromptText(config, prompt, { progress: options.progress });
         const turn = await runAppServerTurn({
           client,

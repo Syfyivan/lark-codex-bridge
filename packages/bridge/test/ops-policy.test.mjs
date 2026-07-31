@@ -78,11 +78,16 @@ test('formatHealthReport includes startup checks', () => {
     codexRunner: 'claude',
     codexRuntime: 'app-server',
     codexGroupSessionEnabled: true,
+    codexTaskSessionEnabled: true,
     codexEphemeral: false,
     codexSessionStoreFile: '/tmp/codex-sessions.json',
     codexSandbox: 'danger-full-access',
     codexNonOwnerSandbox: 'workspace-write',
     sessionShareOutput: 'goofy',
+    contextQueueEnabled: true,
+    contextQueueMaxConcurrent: 4,
+    contextQueueActive: 2,
+    contextQueueQueued: 1,
     memoryEnabled: true,
     memoryRootDir: '/tmp/memory',
     memoryExtractorEnabled: true,
@@ -99,6 +104,8 @@ test('formatHealthReport includes startup checks', () => {
   assert.match(report, /backendLabel: Claude Code/);
   assert.match(report, /codexRunner: claude/);
   assert.match(report, /groupSessions: enabled persistent=yes/);
+  assert.match(report, /taskSessions: enabled/);
+  assert.match(report, /contextQueue: enabled max=4 active=2 queued=1/);
   assert.match(report, /sessionStore: \/tmp\/codex-sessions.json/);
   assert.match(report, /memory: enabled/);
   assert.match(report, /memoryRoot: \/tmp\/memory/);

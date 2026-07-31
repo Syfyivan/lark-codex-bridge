@@ -94,7 +94,7 @@ export function createCodexSessionStore(options = {}) {
     return changed;
   }
 
-  function resolveSession(contextKey, messageIds = []) {
+  function resolveSession(contextKey, messageIds = [], resolveOptions = {}) {
     const value = context(contextKey);
     if (!value) return { session: null, source: 'none' };
     for (const rawId of messageIds) {
@@ -102,6 +102,9 @@ export function createCodexSessionStore(options = {}) {
       const sessionId = id ? value.messageBindings[id] : '';
       const session = value.sessions.find(item => item.id === sessionId);
       if (session) return { session: { ...session }, source: 'message' };
+    }
+    if (resolveOptions.fallbackToActive === false) {
+      return { session: null, source: 'none' };
     }
     const session = value.sessions.find(item => item.id === value.activeSessionId);
     return session

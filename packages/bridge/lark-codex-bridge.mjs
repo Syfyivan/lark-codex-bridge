@@ -410,6 +410,7 @@ const config = {
   loopTraceTtlMs: Math.max(60_000, Number(env.LOOP_TRACE_TTL_MS || 6 * 60 * 60 * 1000)),
   traceMarker: env.BRIDGE_TRACE_MARKER || 'bridge_trace',
   contextQueueEnabled: envFlag('CONTEXT_QUEUE_ENABLED', true),
+  contextQueueMaxConcurrent: Math.max(1, Number(env.CONTEXT_QUEUE_MAX_CONCURRENT || 4)),
   oncallBindingsFile:
     expandHomePath(env.ONCALL_BINDINGS_FILE || join(homedir(), '.lark-codex-bridge', 'oncall-bindings.json')),
   profilePolicyEnabled: envFlag(
@@ -585,6 +586,7 @@ const config = {
   codexTimeoutMs: optionalTimeoutMs(env.CODEX_TIMEOUT_MS),
   codexEphemeral: env.CODEX_EPHEMERAL !== '0',
   codexGroupSessionEnabled: envFlag('CODEX_GROUP_SESSION_ENABLED', env.CODEX_EPHEMERAL === '0'),
+  codexTaskSessionEnabled: envFlag('CODEX_TASK_SESSION_ENABLED', true),
   codexSessionStoreFile: expandHomePath(
     env.CODEX_SESSION_STORE_FILE || join(homedir(), '.lark-codex-bridge', 'codex-sessions.json'),
   ),
@@ -814,6 +816,7 @@ const profilePolicy = loadProfilePolicy({
 });
 const stopRegistry = createStopRegistry();
 const directTaskQueue = createContextQueueRuntime({
+  maxConcurrent: config.contextQueueMaxConcurrent,
   contextKeyForItem: item => item.contextKey || contextKeyForBridgeEvent(item.event),
   runItem: item => executeDirectCodexTask(item.event, item.rawText, {
     ...item.options,
@@ -983,18 +986,59 @@ function extractSenderName(event) {
 }
 
 function contextKeyForBridgeEvent(event) {
+  const taskScoped = usesTaskScopedCodexSession(event);
   return conversationKeyForEvent({
     chatId: extractChatId(event),
     chatType: extractChatType(event),
     senderId: extractSenderId(event),
+    messageId: taskScoped ? extractMessageId(event) : '',
     threadId: findStringDeep(event, ['thread_id', 'threadId']),
     rootId: findStringDeep(event, ['root_id', 'rootId']),
     parentId: findStringDeep(event, ['parent_id', 'parentId']),
     replyToMessageId: findStringDeep(event, ['reply_to_message_id', 'replyToMessageId']),
-    groupScoped:
+    groupScoped: !taskScoped && (
       config.backend === 'codex' &&
       config.codexGroupSessionEnabled &&
-      !config.codexEphemeral,
+      !config.codexEphemeral
+    ),
+  });
+}
+
+function usesTaskScopedCodexSession(event) {
+  return (
+    config.backend === 'codex' &&
+    config.codexGroupSessionEnabled &&
+    config.codexTaskSessionEnabled &&
+    !config.codexEphemeral &&
+    extractChatType(event) !== 'p2p'
+  );
+}
+
+function sessionScopeKeyForBridgeEvent(event) {
+  return conversationKeyForEvent({
+    chatId: extractChatId(event),
+    chatType: extractChatType(event),
+    senderId: extractSenderId(event),
+    groupScoped: true,
+  });
+}
+
+function sessionSafetyKeyForExecution(options = {}) {
+  const actor = options.requesterRole || options.profileActor || (
+    options.nonOwnerQuery ? 'member' : 'owner'
+  );
+  const sandbox = options.sandbox || config.codexSandbox;
+  const workspace = resolve(
+    options.realWorkspace ||
+    options.oncallCwd ||
+    options.cwd ||
+    config.codexCwd,
+  );
+  return JSON.stringify({
+    actor,
+    sandbox,
+    workspace,
+    approved: Boolean(options.approvedBy),
   });
 }
 
@@ -6285,6 +6329,10 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       sandbox: executionOptions.sandbox || config.codexSandbox,
       cwd: executionOptions.cwd || config.codexCwd,
       contextKey,
+      sessionScopeKey: sessionScopeKeyForBridgeEvent(event),
+      sessionSafetyKey: sessionSafetyKeyForExecution(executionOptions),
+      resumeActiveSession: !usesTaskScopedCodexSession(event),
+      activateSession: !usesTaskScopedCodexSession(event),
       messageIds: codexSessionMessageIdsForEvent(event),
       sessionTitle:
         executionOptions.sessionTitle ||
@@ -6511,6 +6559,7 @@ function buildDirectExecutionOptions({
     ...profileOptions,
     ...memoryOptions,
     ...extra,
+    requesterRole: requesterIsOwner ? 'owner' : 'member',
   };
   if (requesterIsOwner) return base;
   if (projectOptions.projectRunsInRealCwd) {
@@ -7466,11 +7515,13 @@ function bridgeHealthPayload() {
     codex_runner: backendRunner.id,
     codex_runtime: config.codexRuntime,
     codex_group_session_enabled: config.codexGroupSessionEnabled,
+    codex_task_session_enabled: config.codexTaskSessionEnabled,
     codex_session_persistent: !config.codexEphemeral,
     codex_session_store_file: config.codexSessionStoreFile,
     codex_session_history_limit: config.codexSessionHistoryLimit,
     session_share_output: config.sessionShareOutput,
     context_queue_enabled: config.contextQueueEnabled,
+    context_queue_max_concurrent: config.contextQueueMaxConcurrent,
     context_queue_active: directTaskQueue.activeTotal(),
     context_queue_queued: directTaskQueue.queuedTotal(),
     stop_registry_active: stopRegistry.activeTotal(),
@@ -7507,10 +7558,12 @@ function bridgeHealthText() {
     codexRunner: backendRunner.id,
     codexRuntime: config.codexRuntime,
     codexGroupSessionEnabled: config.codexGroupSessionEnabled,
+    codexTaskSessionEnabled: config.codexTaskSessionEnabled,
     codexEphemeral: config.codexEphemeral,
     codexSessionStoreFile: config.codexSessionStoreFile,
     sessionShareOutput: config.sessionShareOutput,
     contextQueueEnabled: config.contextQueueEnabled,
+    contextQueueMaxConcurrent: config.contextQueueMaxConcurrent,
     contextQueueActive: directTaskQueue.activeTotal(),
     contextQueueQueued: directTaskQueue.queuedTotal(),
     profilePolicyEnabled: profilePolicy.enabled,
@@ -8912,17 +8965,27 @@ async function handleEvent(event) {
     const contextKey = contextKeyForBridgeEvent(event);
     const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
     const projectBinding = projectBindingForEvent(event);
+    const sessionCwd = oncallOptions.cwd || projectBinding?.cwd || config.codexCwd;
+    const sessionSandbox = requesterIsOwner ? config.codexSandbox : config.codexNonOwnerSandbox;
     const result = await executeCodexSessionCommand({
       command: sessionCommand,
       runner: backendRunner,
       contextKey,
+      sessionScopeKey: sessionScopeKeyForBridgeEvent(event),
+      sessionSafetyKey: sessionSafetyKeyForExecution({
+        ...oncallOptions,
+        cwd: sessionCwd,
+        realWorkspace: projectBinding?.cwd || oncallOptions.oncallCwd || sessionCwd,
+        sandbox: sessionSandbox,
+        requesterRole: requesterIsOwner ? 'owner' : 'member',
+      }),
       isOwner: requesterIsOwner,
       activeCount: stopRegistry.activeCount(contextKey),
       queuedCount: directTaskQueue.queuedCount(contextKey),
-      cwd: oncallOptions.cwd || projectBinding?.cwd || config.codexCwd,
-      sandbox: requesterIsOwner ? config.codexSandbox : config.codexNonOwnerSandbox,
+      cwd: sessionCwd,
+      sandbox: sessionSandbox,
       messageIds: codexSessionMessageIdsForEvent(event),
-      defaultTitle: `${config.botDisplayName} · 群会话`,
+      defaultTitle: `${config.botDisplayName} · 任务会话`,
     });
     if (result.handled) {
       if (result.session?.id) {

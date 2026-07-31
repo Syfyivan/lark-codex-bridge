@@ -7710,6 +7710,10 @@ function openApiSpec(request) {
                       type: 'string',
                       description: 'Optional caller trace id for log correlation.',
                     },
+                    context_key: {
+                      type: 'string',
+                      description: 'Optional persistent Codex session context. Defaults to one context per source.',
+                    },
                   },
                 },
               },
@@ -7993,6 +7997,9 @@ async function handleHttpRequest(request, response) {
 
     const source = String(body.source || '').trim();
     const traceId = String(body.trace_id || randomUUID()).trim();
+    const contextKey = String(
+      body.context_key || body.contextKey || `http:${source || 'api'}`,
+    ).trim();
     const contextualPrompt = [
       source ? `调用来源：${source}` : '',
       `trace_id：${traceId}`,
@@ -8000,10 +8007,14 @@ async function handleHttpRequest(request, response) {
     ]
       .filter(Boolean)
       .join('\n\n');
-    const answer = await buildReply(contextualPrompt);
+    const usageRef = {};
+    const answer = await buildReply(contextualPrompt, { contextKey, usageRef });
     jsonResponse(response, 200, {
       ok: true,
       trace_id: traceId,
+      session_id: usageRef.sessionId || '',
+      task_id: usageRef.taskId || '',
+      tokens: usageRef.tokens || 0,
       answer,
     });
   } catch (error) {

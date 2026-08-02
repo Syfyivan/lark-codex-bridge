@@ -68,6 +68,35 @@ export function parseCodexProgressLine(line) {
   return '';
 }
 
+export function summarizeCommandForProgress(command) {
+  const source = String(command || '')
+    .replace(/\\\r?\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!source) return '继续分析当前任务';
+
+  const rules = [
+    [/\bcodebase\s+mr\s+comment\s+list\b/iu, '核对 MR 已有评论'],
+    [/\bcodebase\s+mr\s+diff\b/iu, '分析 MR 代码变更'],
+    [/\bcodebase\s+mr\s+(?:get|status)\b/iu, '核对 MR 状态与基本信息'],
+    [/\bcodebase\s+search\s+mr\b/iu, '搜索相关 MR'],
+    [/\bcodebase\s+repo\s+(?:file|directory)\b/iu, '读取相关仓库代码'],
+    [/\bgit\s+diff\b/iu, '梳理代码变更范围'],
+    [/\bgit\s+(?:status|rev-parse|branch|cat-file)\b/iu, '确认仓库、分支与提交状态'],
+    [/\bgit\s+(?:show|log|blame)\b/iu, '阅读相关代码和提交历史'],
+    [/(?:^|[\s;&|])(?:rg|grep|find)\b/iu, '搜索相关代码和调用关系'],
+    [/(?:^|[\s;&|])(?:cat|sed|head|tail|nl)\b/iu, '阅读相关代码'],
+    [/\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|check|lint|typecheck|build)\b|\bnode\s+--test\b|\bgo\s+test\b/iu, '运行检查和测试'],
+    [/\b(?:command\s+-v|which)\b/iu, '检查本地分析工具'],
+    [/\b(?:curl|wget)\b/iu, '调用接口核对结果'],
+    [/\b(?:mktemp|mkdir)\b|\/tmp\//iu, '准备临时分析环境'],
+    [/\bbytedcli\b/iu, '查询研发平台信息'],
+    [/\bgit\s+(?:commit|cherry-pick|merge|rebase)\b/iu, '整理并提交代码变更'],
+    [/\bgit\s+push\b/iu, '推送代码变更'],
+  ];
+  return rules.find(([pattern]) => pattern.test(source))?.[1] || '执行下一步分析检查';
+}
+
 function extractTextFromCodexMessageContent(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -84,7 +113,7 @@ function extractTextFromCodexMessageContent(content) {
 function summarizeFunctionCall(payload) {
   const name = payload?.name || payload?.function_name || 'tool';
   const args = typeof payload?.arguments === 'string' ? tryJson(payload.arguments) : payload?.arguments;
-  if (name === 'exec_command' && args?.cmd) return `运行命令：${args.cmd}`;
+  if (name === 'exec_command' && args?.cmd) return summarizeCommandForProgress(args.cmd);
   if (name === 'web_search' || name === 'search_query') return '检索资料';
   if (name === 'apply_patch') return '修改本地文件';
   return `调用工具：${name}`;
@@ -163,6 +192,8 @@ export async function callCodexExec(prompt, options = {}) {
     clampReply = value => String(value || ''),
     runProcessFn = runProcess,
     signal = null,
+    codexApprovalPolicy = '',
+    codexConfigArgs = [],
   } = options;
   const tmp = mkdtempSync(join(tmpdir(), 'lark-codex-'));
   const outputFile = join(tmp, 'last-message.txt');
@@ -175,6 +206,10 @@ export async function callCodexExec(prompt, options = {}) {
     else args.push(config.codexResume);
     if (config.codexModel) args.push('--model', config.codexModel);
     if (progress) args.push('--json');
+    if (codexApprovalPolicy) {
+      args.push('--config', `approval_policy=${JSON.stringify(codexApprovalPolicy)}`);
+    }
+    args.push(...codexConfigArgs);
     args.push('--output-last-message', outputFile, '-');
   } else {
     args.push(
@@ -191,6 +226,10 @@ export async function callCodexExec(prompt, options = {}) {
     if (progress) args.push('--json');
     if (config.codexSkipGitRepoCheck) args.push('--skip-git-repo-check');
     if (config.codexEphemeral) args.push('--ephemeral');
+    if (codexApprovalPolicy) {
+      args.push('--config', `approval_policy=${JSON.stringify(codexApprovalPolicy)}`);
+    }
+    args.push(...codexConfigArgs);
     args.push('-');
   }
 

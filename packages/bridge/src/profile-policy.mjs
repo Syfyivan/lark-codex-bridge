@@ -159,6 +159,12 @@ function validateCapability(profileId, capability, configPath) {
   if (capability.safeForMembers !== undefined && typeof capability.safeForMembers !== 'boolean') {
     throw new Error(`${configPath}: profile ${profileId} capability ${capability.id} has invalid safeForMembers`);
   }
+  if (
+    capability.approvalMode !== undefined &&
+    !['auto', 'owner_review'].includes(capability.approvalMode)
+  ) {
+    throw new Error(`${configPath}: profile ${profileId} capability ${capability.id} has invalid approvalMode`);
+  }
   if (capability.kind === 'exec' && capability.safeForMembers === true) {
     throw new Error(`${configPath}: profile ${profileId} capability ${capability.id} cannot mark exec as safeForMembers`);
   }
@@ -292,8 +298,20 @@ export function isCapabilitySafeForMember(capability) {
 export function authorizeCapabilityForActor(capability, actor, context = {}) {
   if (actor === 'owner') return { ok: true };
 
+  let approvedByOwner = false;
   if (!isCapabilitySafeForMember(capability)) {
-    return { ok: false, message: memberExecutionDenyMessage };
+    if (capability.approvalMode === 'owner_review' && context.approvedByOwner !== true) {
+      return {
+        ok: false,
+        requiresOwnerApproval: true,
+        message: `「${capability.name}」能力需要 Owner 审批后才能执行。`,
+      };
+    }
+    if (capability.approvalMode === 'owner_review' && context.approvedByOwner === true) {
+      approvedByOwner = true;
+    } else {
+      return { ok: false, message: memberExecutionDenyMessage };
+    }
   }
 
   const senderId = context.senderId || context.sender_id || '';
@@ -310,7 +328,7 @@ export function authorizeCapabilityForActor(capability, actor, context = {}) {
     return { ok: false, message: memberExecutionDenyMessage };
   }
 
-  return { ok: true };
+  return approvedByOwner ? { ok: true, approvedByOwner: true } : { ok: true };
 }
 
 export function resolveSoulText(profile, configPath = '') {
@@ -407,15 +425,29 @@ export function evaluateProfilePolicy(policy, event, content, options = {}) {
     senderId: profileEvent.senderId,
     chatId: profileEvent.chatId,
     content,
+    approvedByOwner:
+      options.approvedByOwner === true &&
+      options.approvedCapabilityId === selected.capability.id,
   });
   if (!authorized.ok) {
-    return { ok: false, actor, reason: 'capability-denied', message: authorized.message };
+    return {
+      ok: false,
+      actor,
+      reason: authorized.requiresOwnerApproval
+        ? 'capability-owner-review'
+        : 'capability-denied',
+      message: authorized.message,
+      requiresOwnerApproval: authorized.requiresOwnerApproval === true,
+      profile: profileResult.profile,
+      capability: selected.capability,
+    };
   }
 
   return {
     ok: true,
     enabled: true,
     actor,
+    approvedByOwner: authorized.approvedByOwner === true,
     profile: profileResult.profile,
     capability: selected.capability,
     promptContext: buildProfilePromptContext({

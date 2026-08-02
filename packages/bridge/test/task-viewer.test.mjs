@@ -117,7 +117,7 @@ test('task viewer renders a static visual timeline', () => {
   assert.match(html, /运行命令：rg task/);
   assert.match(html, /可分享过程/);
   assert.match(html, /飞书用户请求/);
-  assert.match(html, /机器人思考\/操作过程/);
+  assert.match(html, /机器人分析\/操作进度/);
   assert.match(html, /机器人最终回复/);
   assert.match(html, /Codex Session<\/b><code>019f-session/);
   assert.match(html, /chat-bubble/);

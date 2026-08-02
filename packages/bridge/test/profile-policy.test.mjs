@@ -92,6 +92,24 @@ test('validateProfilePolicyConfig rejects unsafe exec capabilities for members',
   );
 });
 
+test('validateProfilePolicyConfig accepts only supported capability approval modes', () => {
+  assert.throws(
+    () => validateProfilePolicyConfig({
+      ...config,
+      profiles: {
+        direct: {
+          ...config.profiles.direct,
+          capabilities: [{
+            ...config.profiles.direct.capabilities[0],
+            approvalMode: 'model_decides',
+          }],
+        },
+      },
+    }),
+    /invalid approvalMode/,
+  );
+});
+
 test('loadProfilePolicy is opt-in and reads configured JSON when enabled', () => {
   const dir = mkdtempSync(join(tmpdir(), 'profile-policy-'));
   const file = join(dir, 'profiles.json');
@@ -184,4 +202,55 @@ test('evaluateProfilePolicy builds prompt context for allowed capability and own
   assert.equal(owner.ok, true);
   assert.equal(owner.actor, 'owner');
   assert.equal(owner.capability.id, 'owner_directive');
+});
+
+test('owner_review capability pauses a member request and resumes only the approved capability', () => {
+  const ownerReviewConfig = structuredClone(config);
+  ownerReviewConfig.profiles.ops.capabilities.unshift({
+    id: 'edit_code',
+    name: '修改代码',
+    description: '在绑定项目内修改代码',
+    kind: 'exec',
+    effect: 'write',
+    safeForMembers: false,
+    approvalMode: 'owner_review',
+    match: ['修改代码'],
+    allowedOpenIds: ['ou_member'],
+    allowedChats: ['oc_ops'],
+  });
+  const policy = { enabled: true, loaded: true, path: '', config: ownerReviewConfig };
+  const event = {
+    chatId: 'oc_ops',
+    chatType: 'group',
+    senderId: 'ou_member',
+  };
+
+  const pending = evaluateProfilePolicy(policy, event, '修改代码');
+  assert.equal(pending.ok, false);
+  assert.equal(pending.requiresOwnerApproval, true);
+  assert.equal(pending.capability.id, 'edit_code');
+
+  const approved = evaluateProfilePolicy(policy, event, '修改代码', {
+    approvedByOwner: true,
+    approvedCapabilityId: 'edit_code',
+  });
+  assert.equal(approved.ok, true);
+  assert.equal(approved.approvedByOwner, true);
+
+  const wrongCapability = evaluateProfilePolicy(policy, event, '修改代码', {
+    approvedByOwner: true,
+    approvedCapabilityId: 'different_capability',
+  });
+  assert.equal(wrongCapability.ok, false);
+  assert.equal(wrongCapability.requiresOwnerApproval, true);
+
+  const wrongMember = evaluateProfilePolicy(policy, {
+    ...event,
+    senderId: 'ou_other',
+  }, '修改代码', {
+    approvedByOwner: true,
+    approvedCapabilityId: 'edit_code',
+  });
+  assert.equal(wrongMember.ok, false);
+  assert.match(wrongMember.message, /没有被授权/);
 });

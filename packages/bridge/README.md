@@ -128,6 +128,7 @@ src/env.mjs             Environment parsing and option normalization
 src/lark-format.mjs     Lark reply formatting helpers
 src/memory-*.mjs        Layered Soul/Memory storage, routing, policy, prompt helpers
 src/process-manager.mjs Child process execution helper
+src/capability-runtime-policy.mjs Capability-to-Codex sandbox/integration/Skill policy
 src/profile-policy.mjs  Optional profile/capability policy helpers
 src/project-resolver.mjs Project anchor detection for shared project memory
 src/runners/*.mjs       Backend runner adapters for Codex, Claude, Coco, agent, API
@@ -438,8 +439,9 @@ user explicitly references recent chat context or an unresolved link/repo.
 The profile policy is optional. It is disabled unless
 `PROFILE_POLICY_ENABLED=1` or `PROFILE_CONFIG_FILE` is set. When enabled, the
 bridge evaluates direct backend requests against `profiles.json` before starting
-the runner. This is intentionally a lightweight subset of the internal
-`codex-feishu-bridge` model: no Bun, no business catalog, and no skill injection.
+the runner. Capability matching is default-deny: the selected capability controls
+member/chat scope, read/write effect, Owner review, the Codex sandbox, and the
+visible Skill allowlist.
 
 Minimal example:
 
@@ -480,11 +482,23 @@ Minimal example:
           "id": "docs",
           "name": "文档查询",
           "description": "只读查询和总结文档。",
-          "kind": "chat",
+          "kind": "safe_skill",
           "effect": "read",
           "safeForMembers": true,
           "match": ["文档", "查一下", "总结"],
           "allowedOpenIds": ["ou_member_open_id"],
+          "allowedChats": ["oc_group_chat_id"],
+          "allowedSkills": ["approved-doc-query"]
+        },
+        {
+          "id": "edit_project",
+          "name": "修改项目代码",
+          "description": "Owner 审批后修改已绑定项目。",
+          "kind": "exec",
+          "effect": "write",
+          "safeForMembers": false,
+          "approvalMode": "owner_review",
+          "match": ["修改代码", "实现功能", "修复问题"],
           "allowedChats": ["oc_group_chat_id"]
         }
       ]
@@ -496,10 +510,35 @@ Minimal example:
 }
 ```
 
+The complete starter policy is
+[`config/profiles.example.json`](./config/profiles.example.json). Put narrow
+capabilities before a catch-all `chat` capability because selection uses the
+first matching rule.
+
 Configured `authority.owners` are treated as bridge owners for direct execution,
-ops commands, and `/stop`. Approval-card clicks still use
-`DELEGATE_APPROVER_OPEN_ID`, so enabling profile owners does not silently change
-who can approve existing delegated requests.
+ops commands, and `/stop`. Sensitive-operation cards prefer
+`DELEGATE_APPROVER_OPEN_ID`; when it is empty, the first configured profile Owner
+is used. Each card records its designated approver, and only that Open ID can
+confirm it.
+
+For a non-Owner request, the selected capability is also translated into a
+Codex runtime policy:
+
+- the sandbox is forced to `read-only` unless an `exec`/write capability has
+  been approved by the Owner;
+- ambient plugins, apps, hooks, multi-agent delegation, remote plugins, and MCP
+  servers are disabled;
+- no local Skill is visible unless its name appears in `allowedSkills`;
+- the Capability/Skill policy is part of the app-server Session key, so a
+  Session created with broader visibility is not reused after the policy
+  changes;
+- a missing allowlisted Skill fails closed before Codex starts.
+
+An `owner_review` approval authorizes only the capability recorded on the card.
+When the card is confirmed, the Bridge re-evaluates the current Profile and
+Capability before resuming the original request. A renamed, removed, or no
+longer matching Capability is rejected instead of inheriting unrestricted Owner
+access.
 
 Profiles may use either inline `soul` text or `soulFile`. Relative `soulFile`
 paths are resolved from the directory containing `profiles.json` and must stay
@@ -832,7 +871,11 @@ original conversation only after approval. With `DELEGATE_REPLY_IN_THREAD=1`,
 approved replies are sent inside the original-message thread/topic instead of
 as a normal main-stream group reply. `DELEGATE_ALLOW_BOT_SENDERS=1` allows
 app/bot-authored messages to trigger the delegated workflow when they explicitly
-mention the delegated user.
+mention the delegated user. Before drafting, the Bridge reads up to
+`DELEGATE_CONTEXT_MESSAGES` recent messages with the authenticated user identity,
+trims and labels them, and injects that public chat context into the prompt. If
+the pre-read fails, drafting continues with the existing model-side read-only
+lookup instructions.
 
 Set `DELEGATE_DRAFT_APPROVAL_ENABLED=0` to suppress ordinary delegated-reply
 approval cards while keeping the MR review automation classifier available for
@@ -965,7 +1008,8 @@ secrets, token files, concrete internal URLs, or production chat IDs.
   `workspace-write`.
 - When `PROFILE_POLICY_ENABLED=1`, non-owner direct Codex requests must match a
   configured capability before the backend starts. `kind: "exec"` cannot be marked
-  `safeForMembers: true`.
+  `safeForMembers: true`; member capabilities additionally run with the
+  Capability-derived read-only/integration/Skill policy described above.
 - Treat `PROFILE_CONFIG_FILE` as policy, not user content. Review owner IDs,
   allowed member IDs, allowed chats, and regex patterns before enabling it for a
   bot used in shared groups.

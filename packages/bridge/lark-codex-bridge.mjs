@@ -34,6 +34,12 @@ import {
   isDeletedLarkMessage,
   shouldSkipBridgeGeneratedMessage,
 } from './src/approval-message-policy.mjs';
+import {
+  capabilityRuntimeOptions,
+  discoverCodexMcpServerNames,
+  discoverCodexSkills,
+} from './src/capability-runtime-policy.mjs';
+import { buildDelegateRecentChatContext } from './src/delegate-context.mjs';
 import { parseDelegateDraftResult } from './src/delegate-draft-result.mjs';
 import {
   createNonOwnerCodexExecutionContext,
@@ -112,6 +118,7 @@ import {
 } from './src/oncall-policy.mjs';
 import { runProcess } from './src/process-manager.mjs';
 import {
+  effectiveProfileOwners,
   evaluateProfilePolicy,
   isProfileOwner,
   loadProfilePolicy,
@@ -124,6 +131,7 @@ import {
 import {
   canDirectReviewAutomation,
   extractCodebaseMrUrls,
+  resolveReviewAutomationMode,
   shouldTriggerReviewAutomation,
 } from './src/review-automation-policy.mjs';
 import { buildDelegateCodexRunOptions } from './src/delegate-run-options.mjs';
@@ -1056,12 +1064,16 @@ function isMentionableUserOpenId(value) {
   return typeof value === 'string' && value.startsWith('ou_');
 }
 
-function isApprovalOwnerOpenId(openId) {
-  return Boolean(openId && config.delegateApproverOpenId && openId === config.delegateApproverOpenId);
+function effectiveApprovalOwnerOpenId() {
+  return (
+    config.delegateApproverOpenId ||
+    (profilePolicy.enabled ? effectiveProfileOwners(profilePolicy.config)[0] : '') ||
+    ''
+  );
 }
 
-function isApprovalOwnerEvent(event) {
-  return isApprovalOwnerOpenId(extractSenderId(event));
+function isApprovalOwnerOpenId(openId) {
+  return Boolean(openId && openId === effectiveApprovalOwnerOpenId());
 }
 
 function isBridgeOwnerOpenId(openId) {
@@ -1294,9 +1306,14 @@ function shouldHandleDelegateReviewAutomation(rawText) {
 }
 
 function canExecuteReviewAutomationDirectly(event, rawText) {
+  const senderId = extractSenderId(event);
   return canDirectReviewAutomation({
     requesterIsOwner: isBridgeOwnerEvent(event),
     senderIsKnownBot: isKnownBotSender(event),
+    senderIsTrustedBot:
+      isKnownBotSender(event) &&
+      Boolean(senderId) &&
+      config.loopBotAllowSenderIds.includes(senderId),
     rawText,
   });
 }
@@ -5173,7 +5190,7 @@ function normalizeDirectBotReply(output) {
   return directReply ? clampReply(directReply) : text;
 }
 
-function buildDelegateDraftPrompt(event, rawText) {
+function buildDelegateDraftPrompt(event, rawText, recentChatContext = '') {
   const chatId = extractChatId(event);
   const messageId = extractMessageId(event);
   const requesterId = extractSenderId(event);
@@ -5188,6 +5205,7 @@ function buildDelegateDraftPrompt(event, rawText) {
     `请求人 open_id：${requesterId || 'unknown'}`,
     `请求人显示名：${requesterName}`,
     `最多参考最近 ${config.delegateContextMessages} 条群消息。`,
+    recentChatContext,
     '',
     '用户在群里的原消息：',
     rawText,
@@ -5202,6 +5220,39 @@ function buildDelegateDraftPrompt(event, rawText) {
     '只输出一个 JSON 对象，不要输出 Markdown 解释。字段：',
     '{"operation_plan":["..."],"reply_text":"...","evidence":["..."],"confidence":"high|medium|low"}',
   ].join('\n');
+}
+
+async function readDelegateRecentChatContext(event) {
+  const chatId = extractChatId(event);
+  if (!chatId) return '';
+  try {
+    const stdout = await runCli(
+      [
+        'im',
+        '+chat-messages-list',
+        '--as',
+        'user',
+        '--chat-id',
+        chatId,
+        '--page-size',
+        String(Math.min(50, config.delegateContextMessages)),
+        '--format',
+        'json',
+      ],
+      '',
+      { timeoutMs: cappedTimeoutMs(config.codexTimeoutMs, 60_000) },
+    );
+    const payload = tryJsonLoose(stdout) || {};
+    const messages = payload?.data?.messages || payload?.messages || [];
+    return buildDelegateRecentChatContext(messages, {
+      targetMessageId: extractMessageId(event),
+      maxMessages: config.delegateContextMessages,
+      maxChars: Math.min(12_000, Math.max(2_000, config.projectContextBudgetChars)),
+    });
+  } catch (error) {
+    console.error(`[bridge] failed to pre-read delegate chat context: ${error.message || error}`);
+    return '';
+  }
 }
 
 function buildDelegateReviewAutomationPrompt(event, rawText, mrUrls, options = {}) {
@@ -5598,7 +5649,10 @@ function buildSensitiveOperationApprovalCard(approval) {
             `**来源群**：${approval.chatId || 'unknown'}`,
             `**请求 ID**：${approval.id}`,
             `**风险类型**：${labels}`,
-          ].join('\n'),
+            approval.capabilityName
+              ? `**Capability**：${approval.capabilityName}（${approval.capabilityKind || 'unknown'} / ${approval.capabilityEffect || '未标注'}）`
+              : '',
+          ].filter(Boolean).join('\n'),
         },
       },
       {
@@ -5613,7 +5667,7 @@ function buildSensitiveOperationApprovalCard(approval) {
         elements: [
           {
             tag: 'plain_text',
-            content: `确认前不会启动 Codex 执行；只有宋一凡本人点击按钮有效。按钮不可用时，在本话题 @机器人回复：同意执行 ${approval.id} / 取消执行 ${approval.id}`,
+            content: `确认前不会启动 Codex 执行；只有这张卡指定的审批人操作有效。按钮不可用时，在本话题 @机器人回复：同意执行 ${approval.id} / 取消执行 ${approval.id}`,
           },
         ],
       },
@@ -5666,6 +5720,9 @@ async function sendSensitiveOperationApprovalRequest(approval) {
     `请求人：${approval.requesterName || approval.requesterOpenId || '未知'}`,
     `来源群：${approval.chatId || 'unknown'}`,
     `风险类型：${(approval.sensitiveLabels || []).join('、') || '疑似非只读操作'}`,
+    ...(approval.capabilityName
+      ? [`Capability：${approval.capabilityName}（${approval.capabilityKind || 'unknown'} / ${approval.capabilityEffect || '未标注'}）`]
+      : []),
     '',
     '原消息：',
     approval.requestText,
@@ -5698,8 +5755,44 @@ async function sendSensitiveOperationApprovalRequest(approval) {
   return { target: 'p2p', type: 'text' };
 }
 
+async function resolveDirectProfileForApproval(event, rawText) {
+  if (!profilePolicy.enabled) return { ok: true, metadata: {} };
+
+  const projectDecision = await projectBindingDecisionForEvent(event, rawText, false);
+  if (!projectDecision.ok) {
+    await replyProjectBindingInvalid(event, projectDecision.message);
+    return { ok: false };
+  }
+  const profileDecision = evaluateDirectProfilePolicy(
+    event,
+    rawText,
+    false,
+    projectDecision,
+  );
+  if (!profileDecision.ok && !profileDecision.requiresOwnerApproval) {
+    if (!profileDecision.silent && profileDecision.message) {
+      await replyToLark(event, profileDecision.message);
+    }
+    return { ok: false };
+  }
+
+  const profile = profileDecision.profile || null;
+  const capability = profileDecision.capability || null;
+  return {
+    ok: true,
+    metadata: {
+      profileId: profile?.id || '',
+      capabilityId: capability?.id || '',
+      capabilityName: capability?.name || '',
+      capabilityKind: capability?.kind || '',
+      capabilityEffect: capability?.effect || '',
+    },
+  };
+}
+
 async function createSensitiveOperationApproval(event, rawText, classification) {
-  if (!config.delegateApproverOpenId) {
+  const approverOpenId = effectiveApprovalOwnerOpenId();
+  if (!approverOpenId) {
     await replyToLark(
       event,
       '这个请求涉及非只读操作，但当前没有配置审批人，已拒绝执行。',
@@ -5708,22 +5801,33 @@ async function createSensitiveOperationApproval(event, rawText, classification) 
     return;
   }
 
+  const profileApproval = classification.executionKind === 'direct_codex'
+    || classification.executionKind === 'risk_preflight'
+    ? await resolveDirectProfileForApproval(event, rawText)
+    : { ok: true, metadata: {} };
+  if (!profileApproval.ok) return;
+
   const id = `op-${shortApprovalId()}`;
   const approval = {
     id,
     kind: 'sensitive_operation',
     status: 'pending',
     createdAt: new Date().toISOString(),
-    approverOpenId: config.delegateApproverOpenId,
+    approverOpenId,
     chatId: extractChatId(event),
     chatType: extractChatType(event),
     originalMessageId: extractMessageId(event),
+    threadId: findStringDeep(event, ['thread_id', 'threadId']),
+    rootId: findStringDeep(event, ['root_id', 'rootId']),
+    parentId: findStringDeep(event, ['parent_id', 'parentId']),
+    replyToMessageId: findStringDeep(event, ['reply_to_message_id', 'replyToMessageId']),
     requesterOpenId: extractSenderId(event),
     requesterSenderType: extractSenderType(event),
     requesterName: extractSenderName(event),
     requestText: rawText,
     sensitiveLabels: classification.labels,
     executionKind: classification.executionKind,
+    ...profileApproval.metadata,
   };
   saveApproval(approval);
   const delivery = await sendSensitiveOperationApprovalRequest(approval);
@@ -5753,7 +5857,8 @@ function snapshotEventForApproval(event) {
 }
 
 async function createReviewFollowupApproval(rootEvent, rootText, replyEvent, replyText, round) {
-  if (!config.delegateApproverOpenId) {
+  const approverOpenId = effectiveApprovalOwnerOpenId();
+  if (!approverOpenId) {
     console.error('[bridge] review follow-up requires owner approval but no approver is configured');
     return;
   }
@@ -5766,7 +5871,7 @@ async function createReviewFollowupApproval(rootEvent, rootText, replyEvent, rep
     kind: 'sensitive_operation',
     status: 'pending',
     createdAt: new Date().toISOString(),
-    approverOpenId: config.delegateApproverOpenId,
+    approverOpenId,
     chatId: extractChatId(rootEvent),
     chatType: extractChatType(rootEvent),
     originalMessageId: replyMessageId || rootMessageId,
@@ -5887,7 +5992,7 @@ async function shouldHandleDelegateMention(event, rawText) {
   const reviewAutomationCandidate = shouldHandleDelegateReviewAutomation(rawText);
   if (!config.delegateDraftApprovalEnabled && !reviewAutomationCandidate) return false;
   if (!config.delegateUserOpenId && !config.delegateUserNames.length) return false;
-  if (!config.delegateApproverOpenId) return false;
+  if (!effectiveApprovalOwnerOpenId()) return false;
   if (extractChatType(event) === 'p2p') return false;
   const senderId = extractSenderId(event);
   if (senderId === config.delegateUserOpenId) return false;
@@ -5903,13 +6008,16 @@ async function shouldHandleDelegateMention(event, rawText) {
 
 async function createDelegateDraft(event, rawText) {
   const id = shortApprovalId();
+  const approverOpenId = effectiveApprovalOwnerOpenId();
+  if (!approverOpenId) throw new Error('代理草稿未配置审批人');
   console.error(`[bridge] delegate draft ${id} starting for message ${extractMessageId(event)}`);
   const contextKey = contextKeyForBridgeEvent(event);
   const nonOwnerContext = createNonOwnerCodexExecutionContext(config);
+  const recentChatContext = await readDelegateRecentChatContext(event);
   let draftOutput = '';
   try {
     draftOutput = await buildReply(
-      `${buildDelegateDraftPrompt(event, rawText)}\n${nonOwnerGuardNotice(config, nonOwnerContext)}`,
+      `${buildDelegateDraftPrompt(event, rawText, recentChatContext)}\n${nonOwnerGuardNotice(config, nonOwnerContext)}`,
       buildDelegateCodexRunOptions({
         contextKey,
         sandbox: nonOwnerContext.sandbox,
@@ -5927,7 +6035,7 @@ async function createDelegateDraft(event, rawText) {
     id,
     status: 'pending',
     createdAt: new Date().toISOString(),
-    approverOpenId: config.delegateApproverOpenId,
+    approverOpenId,
     chatId: extractChatId(event),
     originalMessageId: extractMessageId(event),
     requesterOpenId: extractSenderId(event),
@@ -6055,7 +6163,6 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
 async function handleDelegateMention(event, rawText, options = {}) {
   const {
     source = 'delegate event',
-    allowDirectReviewAutomation = true,
   } = options;
   const messageId = extractMessageId(event);
   const reservationId = reserveMessageProcessing(event, source);
@@ -6075,22 +6182,20 @@ async function handleDelegateMention(event, rawText, options = {}) {
 
     if (shouldHandleDelegateReviewAutomation(rawText)) {
       const reviewClassification = classifyDirectExecution(rawText, { reviewAutomation: true });
-      const canRunReviewDirectly =
-        isReviewAutomationOnlySensitive(reviewClassification) &&
-        canExecuteReviewAutomationDirectly(event, rawText);
-      if (
-        !allowDirectReviewAutomation ||
-        !isReviewAutomationOnlySensitive(reviewClassification)
-      ) {
+      const mode = resolveReviewAutomationMode({
+        reviewOnly: isReviewAutomationOnlySensitive(reviewClassification),
+        canRunDirectly: canExecuteReviewAutomationDirectly(event, rawText),
+      });
+      if (mode === 'approval') {
         await createSensitiveOperationApproval(
           event,
           rawText,
           reviewClassification,
         );
-      } else if (!canRunReviewDirectly) {
-        await createDelegateReviewAutomation(event, rawText, { readOnly: true });
       } else {
-        await createDelegateReviewAutomation(event, rawText);
+        await createDelegateReviewAutomation(event, rawText, {
+          readOnly: mode === 'read_only',
+        });
       }
     } else if (!config.delegateDraftApprovalEnabled) {
       console.error(`[bridge] ${source} skipped delegate draft for ${messageId || '(unknown)'}: delegate draft approvals disabled`);
@@ -6166,6 +6271,10 @@ function eventFromApproval(approval) {
     id: approval.originalMessageId || approval.id || '',
     chat_id: approval.chatId || '',
     chat_type: approval.chatType || 'group',
+    thread_id: approval.threadId || '',
+    root_id: approval.rootId || '',
+    parent_id: approval.parentId || '',
+    reply_to_message_id: approval.replyToMessageId || '',
     content: approval.requestText || '',
     sender_id: approval.requesterOpenId || '',
     sender_type: approval.requesterSenderType || '',
@@ -6331,6 +6440,11 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
       contextKey,
       sessionScopeKey: sessionScopeKeyForBridgeEvent(event),
       sessionSafetyKey: sessionSafetyKeyForExecution(executionOptions),
+      capabilityPolicyKey: executionOptions.capabilityPolicyKey,
+      codexApprovalPolicy: executionOptions.codexApprovalPolicy,
+      codexConfigOverrides: executionOptions.codexConfigOverrides,
+      codexConfigArgs: executionOptions.codexConfigArgs,
+      codexAppServerArgs: executionOptions.codexAppServerArgs,
       resumeActiveSession: !usesTaskScopedCodexSession(event),
       activateSession: !usesTaskScopedCodexSession(event),
       messageIds: codexSessionMessageIdsForEvent(event),
@@ -6549,10 +6663,11 @@ function buildDirectExecutionOptions({
   requesterIsOwner,
   oncallOptions = {},
   projectOptions = {},
-  profileOptions = {},
+  profileDecision = {},
   memoryOptions = {},
   extra = {},
 } = {}) {
+  const profileOptions = profileDecision.options || {};
   const base = {
     ...oncallOptions,
     ...projectOptions,
@@ -6562,17 +6677,57 @@ function buildDirectExecutionOptions({
     requesterRole: requesterIsOwner ? 'owner' : 'member',
   };
   if (requesterIsOwner) return base;
+  const runtimeOptions = profileDecision.enabled
+    ? capabilityRuntimeOptions({
+        actor: profileDecision.actor || 'member',
+        capability: profileDecision.capability,
+        approvedByOwner: profileDecision.approvedByOwner === true,
+        ownerSandbox: config.codexSandbox,
+        knownSkills: discoverCodexSkills({
+          codexHome: config.codexHome,
+          cwd: base.realWorkspace || base.cwd || config.codexCwd,
+        }),
+        knownMcpServerNames: discoverCodexMcpServerNames({
+          codexHome: config.codexHome,
+        }),
+      })
+    : {};
+  const memberBase = {
+    ...base,
+    ...runtimeOptions,
+    codexApprovalPolicy: runtimeOptions.approvalPolicy || base.codexApprovalPolicy,
+  };
+  if (
+    profileDecision.approvedByOwner === true &&
+    runtimeOptions.sandbox &&
+    runtimeOptions.sandbox !== 'read-only'
+  ) {
+    return memberBase;
+  }
   if (projectOptions.projectRunsInRealCwd) {
     return {
-      ...base,
-      sandbox: base.sandbox || config.codexNonOwnerSandbox,
+      ...memberBase,
+      sandbox: runtimeOptions.sandbox || base.sandbox || config.codexNonOwnerSandbox,
     };
   }
   return {
-    ...base,
+    ...memberBase,
     nonOwnerQuery: true,
-    sandbox: config.codexNonOwnerSandbox,
+    sandbox: runtimeOptions.sandbox || config.codexNonOwnerSandbox,
   };
+}
+
+async function buildDirectExecutionOptionsOrReply(event, input) {
+  try {
+    return buildDirectExecutionOptions(input);
+  } catch (error) {
+    const message = `Capability 运行策略无效，未启动 Codex：${error.message || error}`;
+    console.error(`[bridge] ${message}`);
+    await replyToLark(event, message, {
+      idempotencyKey: `capability-policy-${extractMessageId(event) || randomUUID()}`,
+    });
+    return null;
+  }
 }
 
 async function handleOncallCommand(event, command, requesterIsOwner) {
@@ -6644,7 +6799,13 @@ async function handleOncallCommand(event, command, requesterIsOwner) {
   return false;
 }
 
-function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner, projectDecision = null) {
+function evaluateDirectProfilePolicy(
+  event,
+  rawText,
+  requesterIsOwner,
+  projectDecision = null,
+  approval = {},
+) {
   const promptText = stripBotMentionText(stripBridgeTraceText(rawText));
   const result = evaluateProfilePolicy(
     profilePolicy,
@@ -6654,15 +6815,32 @@ function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner, projectDe
       senderId: extractSenderId(event),
     },
     promptText,
-    { isOwner: requesterIsOwner },
+    {
+      isOwner: requesterIsOwner,
+      approvedByOwner: approval.approvedByOwner === true,
+      approvedCapabilityId: approval.capabilityId || '',
+    },
   );
   if (
     !result.ok &&
     projectDecision?.binding &&
     ['unconfigured-group', 'unconfigured-chat'].includes(result.reason)
   ) {
+    const projectCanWrite = projectDecision.options?.projectRunsInRealCwd === true;
     return {
       ok: true,
+      enabled: profilePolicy.enabled,
+      actor: requesterIsOwner ? 'owner' : 'member',
+      approvedByOwner: Boolean(approval.approvedByOwner),
+      capability: {
+        id: 'project_binding',
+        name: '项目绑定',
+        description: '按当前群绑定的项目动作范围执行。',
+        kind: projectCanWrite ? 'exec' : 'safe_exec',
+        effect: projectCanWrite ? 'write' : 'read',
+        safeForMembers: !projectCanWrite,
+        allowedSkills: [],
+      },
       options: projectDecision.options?.projectProfilePromptContext
         ? {
             profilePromptContext: projectDecision.options.projectProfilePromptContext,
@@ -6673,9 +6851,19 @@ function evaluateDirectProfilePolicy(event, rawText, requesterIsOwner, projectDe
         : {},
     };
   }
-  if (!result.ok) return result;
+  if (!result.ok) {
+    return {
+      ...result,
+      enabled: profilePolicy.enabled,
+    };
+  }
   return {
     ok: true,
+    enabled: result.enabled === true,
+    actor: result.actor,
+    approvedByOwner: result.approvedByOwner === true,
+    profile: result.profile,
+    capability: result.capability,
     options: result.enabled
       ? {
           profilePromptContext: result.promptContext,
@@ -6906,11 +7094,60 @@ async function executeApprovedSensitiveOperation(approval, operatorOpenId) {
     return { ok: true };
   }
 
-  return executeDirectCodexTaskQueued(event, approval.requestText, {
-    approvedBy: operatorOpenId,
-    sandbox: config.codexSandbox,
-    idempotencyKey: `sensitive-approved-${approval.id}`,
+  if (!profilePolicy.enabled) {
+    return executeDirectCodexTaskQueued(event, approval.requestText, {
+      approvedBy: operatorOpenId,
+      sandbox: config.codexSandbox,
+      idempotencyKey: `sensitive-approved-${approval.id}`,
+    });
+  }
+
+  const projectDecision = await projectBindingDecisionForEvent(
+    event,
+    approval.requestText,
+    false,
+  );
+  if (!projectDecision.ok) {
+    throw new Error(projectDecision.message || '审批后项目绑定校验失败');
+  }
+  const profileDecision = evaluateDirectProfilePolicy(
+    event,
+    approval.requestText,
+    false,
+    projectDecision,
+    {
+      approvedByOwner: true,
+      capabilityId: approval.capabilityId || '',
+    },
+  );
+  if (!profileDecision.ok) {
+    throw new Error(profileDecision.message || '审批后 Profile/Capability 校验失败');
+  }
+  if (
+    approval.profileId &&
+    profileDecision.profile?.id !== approval.profileId
+  ) {
+    throw new Error('审批后 Profile 已变化，拒绝沿用旧审批');
+  }
+  if (
+    approval.capabilityId &&
+    profileDecision.capability?.id !== approval.capabilityId
+  ) {
+    throw new Error('审批后 Capability 已变化，拒绝沿用旧审批');
+  }
+
+  const executionOptions = buildDirectExecutionOptions({
+    requesterIsOwner: false,
+    oncallOptions: oncallExecutionOptionsForEvent(event, false),
+    projectOptions: projectDecision.options,
+    profileDecision,
+    memoryOptions: memoryOptionsForEvent(event, approval.requestText),
+    extra: {
+      approvedBy: operatorOpenId,
+      idempotencyKey: `sensitive-approved-${approval.id}`,
+    },
   });
+  return executeDirectCodexTaskQueued(event, approval.requestText, executionOptions);
 }
 
 async function respondApprovalBestEffort(respond, message, context) {
@@ -6945,29 +7182,43 @@ async function handleSensitiveOperationDecision(approval, command, operatorOpenI
     decidedBy: operatorOpenId,
   });
   await respondApprovalBestEffort(respond, `已同意执行：${command.id}，开始处理。`, `sensitive approval start ${command.id}`);
-  const result = await executeApprovedSensitiveOperation(approval, operatorOpenId);
-  updateApproval(command.id, {
-    status: result.ok ? 'done' : 'failed',
-    completedAt: new Date().toISOString(),
-    decidedBy: operatorOpenId,
-    error: result.error || '',
-  });
-  await respondApprovalBestEffort(
-    respond,
-    result.ok ? `执行完成：${command.id}` : `执行失败：${command.id}`,
-    `sensitive approval final ${command.id}`,
-  );
+  try {
+    const result = await executeApprovedSensitiveOperation(approval, operatorOpenId);
+    updateApproval(command.id, {
+      status: result.ok ? 'done' : 'failed',
+      completedAt: new Date().toISOString(),
+      decidedBy: operatorOpenId,
+      error: result.error || '',
+    });
+    await respondApprovalBestEffort(
+      respond,
+      result.ok ? `执行完成：${command.id}` : `执行失败：${command.id}`,
+      `sensitive approval final ${command.id}`,
+    );
+  } catch (error) {
+    updateApproval(command.id, {
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+      decidedBy: operatorOpenId,
+      error: String(error?.message || error),
+    });
+    await respondApprovalBestEffort(
+      respond,
+      `执行失败：${command.id}（${clampReply(error?.message || error)}）`,
+      `sensitive approval failure ${command.id}`,
+    );
+    throw error;
+  }
 }
 
 async function handleApprovalDecision(command, operatorOpenId, respond) {
-  if (!operatorOpenId || operatorOpenId !== config.delegateApproverOpenId) {
-    await respondApprovalBestEffort(respond, '这个确认只能由被代理用户本人操作。', `approval owner check ${command.id}`);
-    return;
-  }
-
   const approval = getApproval(command.id);
   if (!approval) {
     await respondApprovalBestEffort(respond, `没有找到待确认请求：${command.id}`, `missing approval ${command.id}`);
+    return;
+  }
+  if (!operatorOpenId || operatorOpenId !== approval.approverOpenId) {
+    await respondApprovalBestEffort(respond, '这个确认只能由该请求指定的审批人操作。', `approval owner check ${command.id}`);
     return;
   }
   if (approval.status !== 'pending') {
@@ -7092,7 +7343,7 @@ async function handleCardActionEvent(event) {
         }
       }
 
-      const targetOpenId = operatorOpenId || config.delegateApproverOpenId;
+      const targetOpenId = operatorOpenId || effectiveApprovalOwnerOpenId();
       if (targetOpenId) {
         await runCli([
           'im',
@@ -7310,7 +7561,6 @@ async function handlePolledMessage(chatId, message, now = Date.now(), options = 
     console.error(`[bridge] ${source} matched message ${messageId} in ${chatId}`);
     return handleDelegateMention(event, rawText, {
       source,
-      allowDirectReviewAutomation: false,
     });
   }
 
@@ -8902,7 +9152,7 @@ async function handleEvent(event) {
   if (config.prefix && !rawText.startsWith(config.prefix)) return;
 
   const approvalCommand = parseApprovalCommand(rawText);
-  if (approvalCommand && (extractChatType(event) === 'p2p' || isApprovalOwnerEvent(event))) {
+  if (approvalCommand) {
     let approvalResponseCount = 0;
     await handleApprovalDecision(approvalCommand, extractSenderId(event), async message => {
       approvalResponseCount += 1;
@@ -8928,18 +9178,18 @@ async function handleEvent(event) {
     try {
       await handleDelegateMention(event, rawText, {
         source: 'delegate event',
-        allowDirectReviewAutomation: true,
       });
     } catch (error) {
       console.error(`[bridge] delegate handling failed: ${error.stack || error.message}`);
-      if (config.delegateApproverOpenId) {
+      const approverOpenId = effectiveApprovalOwnerOpenId();
+      if (approverOpenId) {
         await runCli([
           'im',
           '+messages-send',
           '--as',
           'bot',
           '--user-id',
-          config.delegateApproverOpenId,
+          approverOpenId,
           '--text',
           `处理群内 @ 代理失败：${clampReply(error.message || error)}`,
           '--idempotency-key',
@@ -9037,20 +9287,31 @@ async function handleEvent(event) {
     }
     const profileDecision = evaluateDirectProfilePolicy(event, queueCommand.text, requesterIsOwner, projectDecision);
     if (!profileDecision.ok) {
+      if (profileDecision.requiresOwnerApproval) {
+        await createSensitiveOperationApproval(event, queueCommand.text, {
+          sensitive: true,
+          labels: [
+            `${profileDecision.capability?.name || '当前 Capability'} 需要 Owner 审批`,
+          ],
+          executionKind: 'direct_codex',
+        });
+        return;
+      }
       if (!profileDecision.silent && profileDecision.message) {
         await replyToLark(event, profileDecision.message);
       }
       return;
     }
     const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
-    const executionOptions = buildDirectExecutionOptions({
+    const executionOptions = await buildDirectExecutionOptionsOrReply(event, {
       requesterIsOwner,
       oncallOptions,
       projectOptions: projectDecision.options,
-      profileOptions: profileDecision.options,
+      profileDecision,
       memoryOptions: memoryOptionsForEvent(event, queueCommand.text),
       extra: { queuedByCommand: true },
     });
+    if (!executionOptions) return;
     await executeDirectCodexTaskQueued(
       event,
       queueCommand.text,
@@ -9088,19 +9349,22 @@ async function handleEvent(event) {
     sessionShareCommand,
     reviewAutomation,
   });
-  const canRunSensitiveDirectly =
-    requesterIsOwner ||
-    (
-      reviewAutomation &&
-      isReviewAutomationOnlySensitive(classification) &&
-      canExecuteReviewAutomationDirectly(event, rawText)
-    );
-
-  if (classification.sensitive && !canRunSensitiveDirectly) {
-    if (reviewAutomation && isReviewAutomationOnlySensitive(classification)) {
-      await createDelegateReviewAutomation(event, rawText, { readOnly: true });
-      return;
+  if (reviewAutomation) {
+    const mode = resolveReviewAutomationMode({
+      reviewOnly: isReviewAutomationOnlySensitive(classification),
+      canRunDirectly: canExecuteReviewAutomationDirectly(event, rawText),
+    });
+    if (mode === 'approval') {
+      await createSensitiveOperationApproval(event, rawText, classification);
+    } else {
+      await createDelegateReviewAutomation(event, rawText, {
+        readOnly: mode === 'read_only',
+      });
     }
+    return;
+  }
+
+  if (classification.sensitive && !requesterIsOwner) {
     await createSensitiveOperationApproval(event, rawText, classification);
     return;
   }
@@ -9113,11 +9377,6 @@ async function handleEvent(event) {
       console.error(`[bridge] ${error.stack || error.message}`);
       await replyToLark(event, `发送给机器人失败：${clampReply(error.message || error)}`);
     }
-    return;
-  }
-
-  if (reviewAutomation) {
-    await createDelegateReviewAutomation(event, rawText);
     return;
   }
 
@@ -9139,6 +9398,16 @@ async function handleEvent(event) {
 
   const profileDecision = evaluateDirectProfilePolicy(event, rawText, requesterIsOwner, projectDecision);
   if (!profileDecision.ok) {
+    if (profileDecision.requiresOwnerApproval) {
+      await createSensitiveOperationApproval(event, rawText, {
+        sensitive: true,
+        labels: [
+          `${profileDecision.capability?.name || '当前 Capability'} 需要 Owner 审批`,
+        ],
+        executionKind: 'direct_codex',
+      });
+      return;
+    }
     if (!profileDecision.silent && profileDecision.message) {
       await replyToLark(event, profileDecision.message);
     }
@@ -9146,13 +9415,14 @@ async function handleEvent(event) {
   }
 
   const oncallOptions = oncallExecutionOptionsForEvent(event, requesterIsOwner);
-  const executionOptions = buildDirectExecutionOptions({
+  const executionOptions = await buildDirectExecutionOptionsOrReply(event, {
     requesterIsOwner,
     oncallOptions,
     projectOptions: projectDecision.options,
-    profileOptions: profileDecision.options,
+    profileDecision,
     memoryOptions: memoryOptionsForEvent(event, rawText),
   });
+  if (!executionOptions) return;
   await executeDirectCodexTaskQueued(
     event,
     rawText,

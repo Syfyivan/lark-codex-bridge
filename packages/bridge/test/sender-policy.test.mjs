@@ -109,7 +109,6 @@ test('shouldSkipSenderPolicy can require bridge_trace from bot senders', () => {
       loopBotAllowSenderIds: ['ou_colleague_bot'],
       loopRequireTraceFromBotSenders: true,
       hasActionableText: true,
-      mentionsBot: true,
     }),
     'bot_sender_missing_trace',
   );
@@ -124,6 +123,23 @@ test('shouldSkipSenderPolicy can require bridge_trace from bot senders', () => {
       nowMs: 5_000,
       hasActionableText: true,
       mentionsBot: true,
+    }),
+    '',
+  );
+});
+
+test('shouldSkipSenderPolicy lets explicit actionable bot mentions bypass trace-only loop guard', () => {
+  assert.equal(
+    shouldSkipSenderPolicy({
+      senderType: 'app',
+      senderId: 'cli_review_bot',
+      loopBotAllowSenderIds: ['cli_review_bot'],
+      loopRequireTraceFromBotSenders: true,
+      delegateAllowBotSenders: true,
+      delegateMentionEnabled: true,
+      hasActionableText: true,
+      mentionsDelegate: true,
+      loopRespondToBotSenders: false,
     }),
     '',
   );

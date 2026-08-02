@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import {
+  appServerLaunchArgs,
   appServerInputFromPrompt,
   createCodexAppServerRunner,
   extractFinalAgentText,
@@ -184,6 +185,10 @@ test('normalizeCodexRuntime accepts exec app-server and auto', () => {
 });
 
 test('app-server helpers extract inputs and final assistant text', () => {
+  assert.deepEqual(
+    appServerLaunchArgs(['--disable', 'plugins', '--config', 'mcp_servers={}']),
+    ['app-server', '--disable', 'plugins', '--config', 'mcp_servers={}', '--stdio'],
+  );
   assert.deepEqual(appServerInputFromPrompt('hello'), [{ type: 'text', text: 'hello', text_elements: [] }]);
   assert.equal(
     extractFinalAgentText({
@@ -200,7 +205,7 @@ test('app-server helpers extract inputs and final assistant text', () => {
       method: 'item/completed',
       params: { item: { type: 'commandExecution', command: 'rg foo' } },
     }),
-    '运行命令：rg foo',
+    '搜索相关代码和调用关系',
   );
 });
 
@@ -232,7 +237,7 @@ test('Codex app-server runner reuses a thread for the same context key', async (
   );
   assert.equal(client.calls.filter(call => call.method === 'turn/start').length, 2);
   assert.equal(client.calls.find(call => call.method === 'turn/start').params.input[0].text.includes('prefix'), true);
-  assert.deepEqual(progressItems, ['运行命令：rg bridge']);
+  assert.deepEqual(progressItems, ['搜索相关代码和调用关系']);
 });
 
 test('Codex app-server runner keeps the final agent item emitted before turn completion', async () => {
@@ -285,6 +290,40 @@ test('Codex app-server runner starts separate threads for different safety conte
   await runner.run('readonly', { contextKey: 'chat:oc_x', cwd: '/scratch', sandbox: 'read-only' });
 
   assert.equal(client.calls.filter(call => call.method === 'thread/start').length, 2);
+});
+
+test('Codex app-server applies capability config and isolates sessions by policy key', async () => {
+  const client = new FakeAppServerClient();
+  const runner = createCodexAppServerRunner(baseConfig(), {
+    appServerClient: client,
+  });
+  const isolatedConfig = {
+    features: { plugins: false, remote_plugin: false },
+    mcp_servers: {},
+    skills: { include_instructions: false },
+  };
+
+  await runner.run('docs', {
+    contextKey: 'chat:oc_x',
+    capabilityPolicyKey: 'capability:member:docs',
+    codexApprovalPolicy: 'never',
+    codexConfigOverrides: isolatedConfig,
+  });
+  await runner.run('logs', {
+    contextKey: 'chat:oc_x',
+    capabilityPolicyKey: 'capability:member:logs',
+    codexApprovalPolicy: 'never',
+    codexConfigOverrides: isolatedConfig,
+  });
+
+  const starts = client.calls.filter(call => call.method === 'thread/start');
+  assert.equal(starts.length, 2);
+  assert.deepEqual(starts[0].params.config, isolatedConfig);
+  assert.equal(starts[0].params.approvalPolicy, 'never');
+  assert.equal(
+    client.calls.find(call => call.method === 'turn/start').params.approvalPolicy,
+    'never',
+  );
 });
 
 test('Codex session store persists one active session per group and keeps reply bindings', () => {

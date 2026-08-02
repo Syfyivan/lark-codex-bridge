@@ -49,9 +49,23 @@ export function canDirectReviewAutomation(input = {}) {
   const {
     requesterIsOwner = false,
     senderIsKnownBot = false,
+    senderIsTrustedBot = false,
     rawText = '',
   } = input;
-  return Boolean(requesterIsOwner || (senderIsKnownBot && isAiPolishedHumanRelayText(rawText)));
+  return Boolean(
+    requesterIsOwner ||
+      senderIsTrustedBot ||
+      (senderIsKnownBot && isAiPolishedHumanRelayText(rawText)),
+  );
+}
+
+export function resolveReviewAutomationMode(input = {}) {
+  const {
+    reviewOnly = false,
+    canRunDirectly = false,
+  } = input;
+  if (!reviewOnly) return 'approval';
+  return canRunDirectly ? 'write' : 'read_only';
 }
 
 function stripUrls(text) {

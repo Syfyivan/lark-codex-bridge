@@ -38,6 +38,11 @@ export function shouldSkipSenderPolicy(input) {
   }
 
   const senderIsKnownBot = isKnownBotSender({ senderType, senderId, loopBotSenderIds });
+  const delegateMentionFromBot =
+    delegateAllowBotSenders && delegateMentionEnabled && hasActionableText && mentionsDelegate;
+  const botMentionFromBot = hasActionableText && mentionsBot;
+  const actionableMentionFromBot = delegateMentionFromBot || botMentionFromBot;
+
   if (senderIsKnownBot && trace) {
     const hardMaxTurns = Math.max(0, Number(trace.hardMaxTurns || loopHardMaxTurns || 0));
     if (hardMaxTurns > 0 && Number(trace.turn || 0) >= hardMaxTurns) {
@@ -55,16 +60,13 @@ export function shouldSkipSenderPolicy(input) {
     if (loopBotAllowSenderIds.length && !loopBotAllowSenderIds.includes(senderId)) {
       return 'bot_sender_not_allowed';
     }
-    if (loopRequireTraceFromBotSenders && !trace) {
+    if (loopRequireTraceFromBotSenders && !trace && !actionableMentionFromBot) {
       return 'bot_sender_missing_trace';
     }
   }
 
   if (senderIsKnownBot && !loopRespondToBotSenders) {
-    const delegateMentionFromBot =
-      delegateAllowBotSenders && delegateMentionEnabled && hasActionableText && mentionsDelegate;
-    const botMentionFromBot = hasActionableText && mentionsBot;
-    if (!delegateMentionFromBot && !botMentionFromBot) return 'bot_sender_ignored';
+    if (!actionableMentionFromBot) return 'bot_sender_ignored';
   }
 
   return '';

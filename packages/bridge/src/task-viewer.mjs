@@ -124,7 +124,7 @@ function eventBubbleTitle(event) {
   const role = eventBubbleRole(event);
   if (role === 'user') return '飞书用户请求';
   if (role === 'error') return eventLabel(event.type);
-  if (event.type === 'task_progress') return '机器人思考/操作过程';
+  if (event.type === 'task_progress') return '机器人分析/操作进度';
   if (event.type === 'task_done' || event.type === 'lark_reply_sent') return '机器人最终回复';
   return eventLabel(event.type);
 }

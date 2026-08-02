@@ -6,6 +6,7 @@ import {
   extractCodebaseMrUrls,
   hasApproveShorthand,
   isAiPolishedHumanRelayText,
+  resolveReviewAutomationMode,
   shouldTriggerReviewAutomation,
 } from '../src/review-automation-policy.mjs';
 
@@ -70,5 +71,54 @@ test('canDirectReviewAutomation trusts owners and explicit AI-polished bot relay
       rawText: AI_POLISHED_APPROVE_REQUEST,
     }),
     false,
+  );
+});
+
+test('canDirectReviewAutomation trusts an explicitly allowlisted review bot without relay boilerplate', () => {
+  assert.equal(
+    canDirectReviewAutomation({
+      senderIsKnownBot: true,
+      senderIsTrustedBot: true,
+      rawText: '@宋一凡 麻烦给 MR 个 A：https://code.byted.org/magic/fanqie/merge_requests/4345',
+    }),
+    true,
+  );
+  assert.equal(
+    canDirectReviewAutomation({
+      senderIsKnownBot: true,
+      senderIsTrustedBot: false,
+      rawText: '@宋一凡 麻烦给 MR 个 A：https://code.byted.org/magic/fanqie/merge_requests/4345',
+    }),
+    false,
+  );
+});
+
+test('resolveReviewAutomationMode lets trusted review-only requests write regardless of delivery path', () => {
+  assert.equal(
+    resolveReviewAutomationMode({
+      reviewOnly: true,
+      canRunDirectly: true,
+    }),
+    'write',
+  );
+});
+
+test('resolveReviewAutomationMode keeps untrusted review-only requests read-only without approval', () => {
+  assert.equal(
+    resolveReviewAutomationMode({
+      reviewOnly: true,
+      canRunDirectly: false,
+    }),
+    'read_only',
+  );
+});
+
+test('resolveReviewAutomationMode requires approval for requests mixed with non-review writes', () => {
+  assert.equal(
+    resolveReviewAutomationMode({
+      reviewOnly: false,
+      canRunDirectly: true,
+    }),
+    'approval',
   );
 });

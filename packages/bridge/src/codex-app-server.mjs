@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { resolve } from 'node:path';
 
-import { buildCodexPromptText } from './codex-runner.mjs';
+import {
+  buildCodexPromptText,
+  summarizeCommandForProgress,
+} from './codex-runner.mjs';
 import {
   createCodexSessionStore,
   defaultCodexSessionStoreFile,
@@ -21,6 +24,10 @@ export function normalizeCodexRuntime(value) {
 
 export function appServerInputFromPrompt(text) {
   return [{ type: 'text', text: String(text || ''), text_elements: [] }];
+}
+
+export function appServerLaunchArgs(extraArgs = []) {
+  return ['app-server', ...extraArgs, '--stdio'];
 }
 
 export function extractFinalAgentText(turn) {
@@ -67,7 +74,9 @@ export function summarizeAppServerNotification(message) {
   if (method !== 'item/completed') return '';
 
   const item = params.item || {};
-  if (item.type === 'commandExecution' && item.command) return `运行命令：${item.command}`;
+  if (item.type === 'commandExecution' && item.command) {
+    return summarizeCommandForProgress(item.command);
+  }
   if (item.type === 'fileChange') return '修改本地文件';
   if (item.type === 'mcpToolCall') return `调用 MCP 工具：${item.server || 'mcp'}.${item.tool || 'tool'}`;
   if (item.type === 'dynamicToolCall') return `调用工具：${item.tool || 'tool'}`;
@@ -81,6 +90,7 @@ export class JsonLineCodexAppServerClient extends EventEmitter {
     super();
     this.config = config;
     this.spawnFn = deps.spawnFn || spawn;
+    this.launchArgs = Array.isArray(deps.launchArgs) ? [...deps.launchArgs] : [];
     this.child = null;
     this.nextId = 1;
     this.pending = new Map();
@@ -90,11 +100,15 @@ export class JsonLineCodexAppServerClient extends EventEmitter {
 
   async ensureStarted() {
     if (this.readyPromise) return this.readyPromise;
-    this.child = this.spawnFn(this.config.codexBin || 'codex', ['app-server', '--stdio'], {
+    this.child = this.spawnFn(
+      this.config.codexBin || 'codex',
+      appServerLaunchArgs(this.launchArgs),
+      {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
       cwd: resolve(this.config.codexCwd || process.cwd()),
-    });
+      },
+    );
     this.child.stdout.on('data', chunk => this.handleStdout(chunk));
     this.child.stderr.on('data', chunk => this.emit('stderr', chunk.toString('utf8')));
     this.child.on('error', error => this.failAll(error));
@@ -219,7 +233,8 @@ export class JsonLineCodexAppServerClient extends EventEmitter {
 }
 
 export function createCodexAppServerRunner(config, deps = {}) {
-  const client = deps.appServerClient || new JsonLineCodexAppServerClient(config, deps);
+  const injectedClient = deps.appServerClient || null;
+  const clients = new Map();
   const clampReply = deps.clampReply || (value => String(value || ''));
   const sessions = new Map();
   const sessionRunChains = new Map();
@@ -232,25 +247,77 @@ export function createCodexAppServerRunner(config, deps = {}) {
         })
   );
 
-  client.on?.('stderr', text => {
-    const trimmed = String(text || '').trim();
-    if (trimmed) console.error(`[codex-app-server] ${trimmed}`);
-  });
+  function attachClient(key, client) {
+    if (clients.has(key)) return clients.get(key);
+    client.on?.('stderr', text => {
+      const trimmed = String(text || '').trim();
+      if (trimmed) console.error(`[codex-app-server] ${trimmed}`);
+    });
+    clients.set(key, client);
+    return client;
+  }
+
+  if (injectedClient) attachClient('default', injectedClient);
+
+  function clientKeyFor(options = {}) {
+    if (injectedClient) return 'default';
+    return String(
+      options.capabilityPolicyKey ||
+      (
+        options.codexAppServerArgs?.length
+          ? `runtime:${JSON.stringify(options.codexAppServerArgs)}`
+          : 'default'
+      ),
+    );
+  }
+
+  function clientFor(options = {}) {
+    const key = clientKeyFor(options);
+    const existing = clients.get(key);
+    if (existing) return { key, client: existing };
+    return {
+      key,
+      client: attachClient(
+        key,
+        new JsonLineCodexAppServerClient(config, {
+          ...deps,
+          launchArgs: options.codexAppServerArgs || [],
+        }),
+      ),
+    };
+  }
 
   function scopedSessionKey(scopeKey, options = {}) {
     if (!scopeKey) return '';
     const sessionSafetyKey = String(options.sessionSafetyKey || '').trim();
+    const capabilityPolicyKey = String(options.capabilityPolicyKey || '').trim();
     if (sessionSafetyKey) {
-      return [scopeKey, `policy:${sessionSafetyKey}`, config.codexModel || ''].join('\u001f');
+      return [
+        scopeKey,
+        `policy:${sessionSafetyKey}`,
+        config.codexModel || '',
+        capabilityPolicyKey,
+      ].join('\u001f');
     }
     const cwd = resolve(options.cwd || config.codexCwd);
     const sandbox = options.sandbox || config.codexSandbox;
     const defaultCwd = resolve(config.codexCwd);
     const defaultSandbox = config.codexSandbox;
-    if (!config.codexEphemeral && cwd === defaultCwd && sandbox === defaultSandbox) {
+    if (
+      !config.codexEphemeral &&
+      cwd === defaultCwd &&
+      sandbox === defaultSandbox &&
+      !capabilityPolicyKey
+    ) {
       return scopeKey;
     }
-    return [scopeKey, cwd, sandbox, config.codexModel || ''].join('\u001f');
+    return [
+      scopeKey,
+      cwd,
+      sandbox,
+      config.codexModel || '',
+      capabilityPolicyKey,
+    ].join('\u001f');
   }
 
   function executionKeyFor(options = {}) {
@@ -307,6 +374,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
     if (sessionStore && !storeKey) throw new Error('missing Codex session context key');
     const cwd = resolve(options.cwd || config.codexCwd);
     const sandbox = options.sandbox || config.codexSandbox;
+    const { key: clientKey, client } = clientFor(options);
     const executionCacheKey = cacheKeyForExecution(executionKey);
     if (
       config.codexEphemeral &&
@@ -320,7 +388,8 @@ export function createCodexAppServerRunner(config, deps = {}) {
       cwd,
       model: config.codexModel || undefined,
       sandbox,
-      approvalPolicy: 'never',
+      approvalPolicy: options.codexApprovalPolicy || 'never',
+      config: options.codexConfigOverrides || undefined,
       ephemeral: Boolean(config.codexEphemeral),
     }, { timeoutMs: config.codexAppServerRequestTimeoutMs || 30_000 });
     const threadId = response?.thread?.id;
@@ -340,6 +409,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
       executionKey,
       cwd,
       sandbox,
+      clientKey,
     };
     const cacheKey = config.codexEphemeral
       ? executionCacheKey
@@ -379,7 +449,13 @@ export function createCodexAppServerRunner(config, deps = {}) {
     const cached = sessions.get(cacheKeyForThread(targetId));
     const cwd = resolve(options.cwd || resolved.session?.cwd || config.codexCwd);
     const sandbox = options.sandbox || resolved.session?.sandbox || config.codexSandbox;
-    if (cached?.threadId === targetId && cached.cwd === cwd && cached.sandbox === sandbox) {
+    const { key: clientKey, client } = clientFor(options);
+    if (
+      cached?.threadId === targetId &&
+      cached.cwd === cwd &&
+      cached.sandbox === sandbox &&
+      cached.clientKey === clientKey
+    ) {
       sessionStore.bindMessages(storeKey, targetId, options.messageIds || []);
       return cached;
     }
@@ -388,7 +464,8 @@ export function createCodexAppServerRunner(config, deps = {}) {
       threadId: targetId,
       cwd,
       sandbox,
-      approvalPolicy: 'never',
+      approvalPolicy: options.codexApprovalPolicy || 'never',
+      config: options.codexConfigOverrides || undefined,
       model: config.codexModel || undefined,
     }, { timeoutMs: config.codexAppServerRequestTimeoutMs || 30_000 });
     const threadId = response?.thread?.id || targetId;
@@ -400,6 +477,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
       executionKey: executionKeyFor(options),
       cwd,
       sandbox,
+      clientKey,
     };
     sessions.set(cacheKeyForThread(threadId), session);
     sessionStore.record(storeKey, session, {
@@ -478,6 +556,8 @@ export function createCodexAppServerRunner(config, deps = {}) {
       const session = await runInSessionOrder(`resolve:${resolutionKey}`, () =>
         ensureThread(options));
       return runInSessionOrder(`thread:${session.threadId}`, async () => {
+        const client = clients.get(session.clientKey || clientKeyFor(options));
+        if (!client) throw new Error('missing Codex app-server client for capability policy');
         const fullPrompt = buildCodexPromptText(config, prompt, { progress: options.progress });
         const turn = await runAppServerTurn({
           client,
@@ -486,6 +566,7 @@ export function createCodexAppServerRunner(config, deps = {}) {
           progress: options.progress,
           timeoutMs: config.codexTimeoutMs,
           signal: options.signal,
+          approvalPolicy: options.codexApprovalPolicy || 'never',
         });
         sessionStore?.bindMessages(session.key, session.threadId, options.messageIds || []);
         const text = extractFinalAgentText(turn);
@@ -523,6 +604,7 @@ export async function runAppServerTurn(input) {
     progress = null,
     timeoutMs = 0,
     signal = null,
+    approvalPolicy = 'never',
   } = input;
   if (signal?.aborted) throw abortError(signal.reason);
 
@@ -541,6 +623,7 @@ export async function runAppServerTurn(input) {
       threadId,
       clientUserMessageId: randomUUID(),
       input: appServerInputFromPrompt(prompt),
+      approvalPolicy,
     }, { timeoutMs: 30_000 });
   } catch (error) {
     completion.cancel();

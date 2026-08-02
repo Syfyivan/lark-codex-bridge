@@ -62,6 +62,11 @@ src/ops-policy.mjs
   - owner ops command parsing and formatting
   - health/version report formatting
   - Codex app-server protocol preflight
+
+src/capability-runtime-policy.mjs
+  - capability-to-sandbox policy
+  - ambient plugin/MCP/hook/app isolation for members
+  - explicit local Skill allowlist and policy-key generation
 ```
 
 ## Execution Model
@@ -70,13 +75,18 @@ Owner or owner-approved sensitive operations use `CODEX_SANDBOX` for the Codex
 backend and the equivalent runner-specific permission settings for other
 backends.
 
-Non-owner ordinary queries use `CODEX_NON_OWNER_SANDBOX` from a disposable
-scratch cwd. This lets Codex inspect and diagnose while keeping writes away from
-the real workspace. `danger-full-access` is never accepted for the non-owner
-ordinary-query sandbox.
+Without Profile policy, non-owner ordinary queries use
+`CODEX_NON_OWNER_SANDBOX` from a disposable scratch cwd. With Profile policy,
+the selected Capability becomes the stronger boundary: member requests use a
+read-only sandbox, disable ambient integrations, and expose only explicitly
+allowlisted Skills. The Capability policy key participates in app-server
+Session identity so broader tool visibility cannot leak through Session reuse.
 
-Sensitive non-owner requests are rejected before the backend starts and converted into
-an owner approval card in the source thread.
+Sensitive non-owner requests are rejected before the backend starts and
+converted into an Owner approval card in the source thread. For
+`approvalMode=owner_review`, the card records the selected Capability. Approval
+re-evaluates that same Capability against the current policy before execution;
+it does not turn the requester into an unrestricted Owner.
 
 Direct Lark tasks are routed through `createRunner(config)`. The Lark event
 router, progress cards, profile policy, approval flow, and memory prompt

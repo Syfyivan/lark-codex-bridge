@@ -29,13 +29,47 @@ const SENSITIVE_RULES = [
   },
 ];
 
+const REVIEW_MIXED_ACTION_CUE =
+  /(?:请|麻烦|帮我|顺便|另外|同时|然后|再|并且|直接|把|将|给我|替我|需要你|你来)/giu;
+const REVIEW_CONTEXT_ONLY_PREFIX =
+  /^(?:已|已经|正在|准备|计划|预计|待|后续|当前|本次|这次|之前|目前|通过后|内容|分支|修复内容|代码需|代码需要)/iu;
+
 export function sensitiveOperationKeywordMatches(text) {
   const source = String(text || '');
   return SENSITIVE_RULES.filter(rule => rule.pattern.test(source)).map(rule => rule.label);
 }
 
+function reviewAutomationMixedActionMatches(text) {
+  const clauses = String(text || '')
+    .split(/[\n，,。！？!?；;]/u)
+    .map(clause => clause.trim())
+    .filter(Boolean);
+
+  return SENSITIVE_RULES
+    .filter(rule => rule.label !== '代码平台写操作')
+    .filter(rule => clauses.some(clause => clauseExplicitlyRequests(clause, rule.pattern)))
+    .map(rule => rule.label);
+}
+
+function clauseExplicitlyRequests(clause, pattern) {
+  const action = pattern.exec(clause);
+  if (!action) return false;
+
+  const actionIndex = action.index;
+  const beforeAction = clause.slice(0, actionIndex);
+  const cues = [...beforeAction.matchAll(REVIEW_MIXED_ACTION_CUE)];
+  const nearestCue = cues.at(-1);
+  if (nearestCue && actionIndex - nearestCue.index <= 40) return true;
+
+  return actionIndex <= 4 && !REVIEW_CONTEXT_ONLY_PREFIX.test(clause);
+}
+
 export function classifyDirectExecution(rawText, parsed = {}) {
-  const labels = new Set(sensitiveOperationKeywordMatches(rawText));
+  const labels = new Set(
+    parsed.reviewAutomation
+      ? reviewAutomationMixedActionMatches(rawText)
+      : sensitiveOperationKeywordMatches(rawText),
+  );
   let executionKind = 'direct_codex';
 
   if (parsed.botSendCommand) {

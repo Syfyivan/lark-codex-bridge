@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "authority": {
+    "owners": [
+      "ou_owner_open_id"
+    ],
+    "ownerBypassesCapabilities": true
+  },
+  "defaults": {
+    "groupBehavior": "deny",
+    "p2pProfile": "direct"
+  },
+  "profiles": {
+    "direct": {
+      "id": "direct",
+      "name": "Direct Codex",
+      "soul": "你是通过飞书接入的个人 Codex 助手。",
+      "capabilities": [
+        {
+          "id": "chat",
+          "name": "普通对话",
+          "description": "回答一般问题，不执行本机操作。",
+          "kind": "chat",
+          "effect": "read",
+          "safeForMembers": true,
+          "match": [
+            ".*"
+          ]
+        }
+      ]
+    },
+    "engineering_group": {
+      "id": "engineering_group",
+      "name": "研发协作群",
+      "soul": "只处理当前群明确开放的研发能力，未匹配的请求默认拒绝。",
+      "denyMessage": "这个群没有开放对应的研发能力。",
+      "capabilities": [
+        {
+          "id": "read_code",
+          "name": "代码查询与问题定位",
+          "description": "只读检索代码、日志和 Git 状态。",
+          "kind": "safe_exec",
+          "effect": "read",
+          "safeForMembers": true,
+          "match": [
+            "查代码",
+            "问题定位",
+            "日志分析",
+            "git status"
+          ],
+          "allowedChats": [
+            "oc_engineering_group_id"
+          ]
+        },
+        {
+          "id": "codebase_review",
+          "name": "Codebase MR 查询",
+          "description": "使用已审核的 Codebase Skill 查询 MR，不写评论或审批。",
+          "kind": "safe_skill",
+          "effect": "read",
+          "safeForMembers": true,
+          "match": [
+            "MR",
+            "Codebase",
+            "代码评审"
+          ],
+          "allowedSkills": [
+            "approved-codebase-query"
+          ],
+          "allowedChats": [
+            "oc_engineering_group_id"
+          ]
+        },
+        {
+          "id": "edit_project_code",
+          "name": "修改项目代码",
+          "description": "在已绑定项目中修改代码；执行前必须由 Owner 审批。",
+          "kind": "exec",
+          "effect": "write",
+          "safeForMembers": false,
+          "approvalMode": "owner_review",
+          "match": [
+            "修改代码",
+            "实现功能",
+            "修复问题"
+          ],
+          "allowedChats": [
+            "oc_engineering_group_id"
+          ]
+        },
+        {
+          "id": "chat",
+          "name": "普通研发问答",
+          "description": "只回答问题，不调用本机执行能力。",
+          "kind": "chat",
+          "effect": "read",
+          "safeForMembers": true,
+          "match": [
+            ".*"
+          ]
+        }
+      ]
+    }
+  },
+  "chats": {
+    "oc_engineering_group_id": {
+      "profile": "engineering_group"
+    }
+  }
+}

@@ -10,6 +10,7 @@ import {
   normalizeNonOwnerSandboxMode,
   normalizeSandboxMode,
   parseCodexProgressLine,
+  summarizeCommandForProgress,
 } from '../src/codex-runner.mjs';
 
 test('normalizeSandboxMode accepts only supported Codex sandbox modes', () => {
@@ -77,7 +78,7 @@ test('parseCodexProgressLine summarizes Codex JSON events', () => {
         item: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'rg foo' }) },
       }),
     ),
-    '运行命令：rg foo',
+    '搜索相关代码和调用关系',
   );
   assert.equal(
     parseCodexProgressLine(
@@ -87,6 +88,29 @@ test('parseCodexProgressLine summarizes Codex JSON events', () => {
       }),
     ),
     '阶段完成',
+  );
+});
+
+test('summarizeCommandForProgress hides shell syntax behind readable progress text', () => {
+  assert.equal(
+    summarizeCommandForProgress(
+      `/bin/zsh -lc 'TMP=$(cat /tmp/domain_activity_base_mr189_repo_path.txt); grep -RIn "withGameInvasionReadDB" "$TMP/service/activity"'`,
+    ),
+    '搜索相关代码和调用关系',
+  );
+  assert.equal(
+    summarizeCommandForProgress(
+      'bytedcli --json codebase mr diff 189 -R novel/domain_activity_base --file handler.go',
+    ),
+    '分析 MR 代码变更',
+  );
+  assert.equal(
+    summarizeCommandForProgress('git rev-parse --show-toplevel && git status --short'),
+    '确认仓库、分支与提交状态',
+  );
+  assert.equal(
+    summarizeCommandForProgress('printf complicated-shell-syntax'),
+    '执行下一步分析检查',
   );
 });
 
@@ -131,4 +155,43 @@ test('createCodexExecRunner wraps codex exec behind a stable runner interface', 
   assert.equal(captured.options.timeoutMs, 1234);
   assert.match(captured.options.stdin, /prefix/);
   assert.match(captured.options.stdin, /飞书用户消息：\nhello/);
+});
+
+test('codex exec receives capability-scoped config before starting', async () => {
+  let capturedArgs = [];
+  const runner = createCodexExecRunner(
+    {
+      codexBin: 'codex-test',
+      codexPromptPrefix: 'prefix',
+      codexSandbox: 'read-only',
+      codexCwd: '/workspace',
+      codexTimeoutMs: 1234,
+      codexModel: '',
+      codexResume: '',
+      codexSkipGitRepoCheck: true,
+      codexEphemeral: true,
+    },
+    {
+      runProcessFn: async (_command, args) => {
+        capturedArgs = args;
+        const outputIndex = args.indexOf('--output-last-message') + 1;
+        writeFileSync(args[outputIndex], 'done');
+        return { stdout: '', stderr: '' };
+      },
+    },
+  );
+
+  await runner.run('hello', {
+    codexApprovalPolicy: 'never',
+    codexConfigArgs: [
+      '--disable', 'plugins',
+      '--config', 'mcp_servers={}',
+      '--config', 'skills.include_instructions=false',
+    ],
+  });
+
+  assert.equal(capturedArgs.includes('approval_policy="never"'), true);
+  assert.equal(capturedArgs.includes('plugins'), true);
+  assert.equal(capturedArgs.includes('mcp_servers={}'), true);
+  assert.equal(capturedArgs.includes('skills.include_instructions=false'), true);
 });

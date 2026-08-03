@@ -5,11 +5,13 @@ import { buildDelegateCodexRunOptions } from '../src/delegate-run-options.mjs';
 
 test('delegate Codex run options preserve persistent session context', () => {
   const progress = { add() {} };
+  const signal = new AbortController().signal;
   const options = buildDelegateCodexRunOptions({
     progress,
     contextKey: 'chat:oc_group',
     cwd: '/workspace',
     sandbox: 'danger-full-access',
+    signal,
     messageIds: ['om_message', 'omt_thread'],
     sessionTitle: 'Lark · MR review 自动化',
   });
@@ -19,6 +21,7 @@ test('delegate Codex run options preserve persistent session context', () => {
     contextKey: 'chat:oc_group',
     cwd: '/workspace',
     sandbox: 'danger-full-access',
+    signal,
     messageIds: ['om_message', 'omt_thread'],
     sessionTitle: 'Lark · MR review 自动化',
   });

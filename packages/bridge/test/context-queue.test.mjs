@@ -350,3 +350,23 @@ test('createStopRegistry aborts active controllers and records cancellation', ()
   unregister();
   assert.equal(registry.activeCount('chat:1'), 0);
 });
+
+test('createStopRegistry can stop one task without aborting its context neighbors', () => {
+  const registry = createStopRegistry();
+  const first = new AbortController();
+  const second = new AbortController();
+  const unregisterFirst = registry.register('chat:1', first, { taskId: 'task-1' });
+  const unregisterSecond = registry.register('chat:1', second, { taskId: 'task-2' });
+
+  assert.equal(registry.activeTaskCount('task-1'), 1);
+  assert.equal(registry.activeTaskCount('task-2'), 1);
+  assert.deepEqual(registry.cancelTask('task-1', 'card stop'), { aborted: 1 });
+  assert.equal(first.signal.aborted, true);
+  assert.equal(second.signal.aborted, false);
+  assert.equal(registry.activeCount('chat:1'), 2);
+
+  unregisterFirst();
+  unregisterSecond();
+  assert.equal(registry.activeTaskCount('task-1'), 0);
+  assert.equal(registry.activeTaskCount('task-2'), 0);
+});

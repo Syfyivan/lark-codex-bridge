@@ -315,16 +315,28 @@ export function createStopRegistry(deps = {}) {
   const now = deps.now || (() => Date.now());
   const cancelledContexts = new Map();
   const controllersByContext = new Map();
+  const controllersByTask = new Map();
 
   return {
-    register(contextKey, controller) {
+    register(contextKey, controller, options = {}) {
       if (!contextKey || !controller) return () => {};
+      const taskId = String(options.taskId || '').trim();
       const controllers = controllersByContext.get(contextKey) || new Set();
       controllers.add(controller);
       controllersByContext.set(contextKey, controllers);
+      if (taskId) {
+        const taskControllers = controllersByTask.get(taskId) || new Set();
+        taskControllers.add(controller);
+        controllersByTask.set(taskId, taskControllers);
+      }
       return () => {
         controllers.delete(controller);
         if (!controllers.size) controllersByContext.delete(contextKey);
+        if (taskId) {
+          const taskControllers = controllersByTask.get(taskId);
+          taskControllers?.delete(controller);
+          if (!taskControllers?.size) controllersByTask.delete(taskId);
+        }
       };
     },
 
@@ -342,6 +354,18 @@ export function createStopRegistry(deps = {}) {
       return { cancelledAt, aborted };
     },
 
+    cancelTask(taskId, reason = 'stopped') {
+      const controllers = controllersByTask.get(String(taskId || '').trim()) || new Set();
+      let aborted = 0;
+      for (const controller of controllers) {
+        if (!controller.signal?.aborted) {
+          controller.abort(new Error(reason));
+          aborted += 1;
+        }
+      }
+      return { aborted };
+    },
+
     isCancelled(contextKey, startedAt) {
       const cancelledAt = cancelledContexts.get(contextKey);
       return Boolean(cancelledAt && startedAt <= cancelledAt);
@@ -349,6 +373,10 @@ export function createStopRegistry(deps = {}) {
 
     activeCount(contextKey) {
       return controllersByContext.get(contextKey)?.size || 0;
+    },
+
+    activeTaskCount(taskId) {
+      return controllersByTask.get(String(taskId || '').trim())?.size || 0;
     },
 
     activeTotal() {

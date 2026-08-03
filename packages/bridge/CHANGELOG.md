@@ -14,6 +14,7 @@
 - 新增 `approvalMode: "owner_review"`；审批卡会记录 Capability 类型与读写影响，确认后重新校验同一个 Capability，再继续原请求。
 - Bridge 任务记录与桌宠事件增加 `sessionId`，便于把机器人执行过程关联到 Codex App 中的任务。
 - 新增 Changelog 校验脚本和 Bridge CI 门禁；Bridge 代码变更必须同步更新本文件。
+- 运行中的飞书进度卡片新增“停止”按钮，按 `task_id` 精确中断对应 Codex 任务；停止后卡片进入“已停止”状态。
 
 ### Changed
 
@@ -40,3 +41,4 @@
 - 敏感审批优先使用 `DELEGATE_APPROVER_OPEN_ID`，未配置时回退到 Profile 的首位 Owner；只有审批记录中的指定 Open ID 可以确认。
 - 只有 Bridge owner 可以为话题新建或改绑 Session；查询 Session 状态和群内列表保持只读开放。
 - 当前话题存在运行中或排队任务时拒绝新建、改绑 Session，避免任务被中途切换。
+- 卡片停止操作在 Bridge 服务端校验操作者 Open ID，只有 Bridge owner 可以执行；同群其他任务不会被连带中断。

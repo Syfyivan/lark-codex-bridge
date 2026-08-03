@@ -8,6 +8,7 @@ export function buildDelegateCodexRunOptions(input = {}) {
   copyIfPresent('contextKey', input.contextKey);
   copyIfPresent('cwd', input.cwd);
   copyIfPresent('sandbox', input.sandbox);
+  copyIfPresent('signal', input.signal);
   if (Array.isArray(input.messageIds) && input.messageIds.length) {
     options.messageIds = [...input.messageIds];
   }

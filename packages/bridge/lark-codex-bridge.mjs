@@ -807,6 +807,15 @@ function combineProgressReporters(...reporters) {
     async fail(errorText) {
       await Promise.all(active.map(reporter => reporter.fail?.(errorText)).filter(Boolean));
     },
+    async stop(message = '任务已停止。') {
+      await Promise.all(
+        active.map(reporter => (
+          typeof reporter.stop === 'function'
+            ? reporter.stop(message)
+            : reporter.fail?.(message)
+        )).filter(Boolean),
+      );
+    },
   };
 }
 const backendRunner = createRunner(config, { clampReply, runProcessFn: runProcess });
@@ -5467,6 +5476,10 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
     cwd: config.codexCwd,
     sandbox: config.codexSandbox,
   });
+  const abortController = new AbortController();
+  const unregisterStop = stopRegistry.register(contextKey, abortController, {
+    taskId: taskRun?.id || '',
+  });
   const petContext = {
     taskId: taskRun?.id || '',
     contextKey,
@@ -5494,7 +5507,10 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
     createBridgeTaskProgressSink(taskRun?.id, petContext),
   );
   try {
-    const output = await buildReply(prompt, { progress });
+    const output = await buildReply(prompt, {
+      progress,
+      signal: abortController.signal,
+    });
     const result = normalizeReviewFollowupResult(output);
     saveReviewFollowupReply(rootMessageId, replyMessageId, {
       status: 'done',
@@ -5514,6 +5530,26 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
     finishBridgeTaskRun(taskRun?.id, { finalText: output });
     console.error(`[bridge] review follow-up ${id} completed`);
   } catch (error) {
+    if (abortController.signal.aborted || error?.name === 'AbortError') {
+      saveReviewFollowupReply(rootMessageId, replyMessageId, {
+        status: 'cancelled',
+        completedAt: new Date().toISOString(),
+      });
+      updateReviewFollowupRoot(rootMessageId, {
+        status: 'cancelled',
+        lastReplyMessageId: replyMessageId,
+      });
+      if (progress) await progress.stop('任务已停止。');
+      recordBridgeTaskEvent(taskRun?.id, 'task_cancelled', {
+        text: '任务已停止',
+        reason: 'stopped',
+      });
+      failBridgeTaskRun(taskRun?.id, {
+        status: 'cancelled',
+        errorText: '任务已停止',
+      });
+      return;
+    }
     saveReviewFollowupReply(rootMessageId, replyMessageId, {
       status: 'failed',
       completedAt: new Date().toISOString(),
@@ -5528,6 +5564,8 @@ async function createReviewFollowupAutomation(rootEvent, rootText, replyEvent, r
     recordBridgeTaskEvent(taskRun?.id, 'task_failed', { text: String(error?.message || error), reason: 'error' });
     failBridgeTaskRun(taskRun?.id, { errorText: String(error?.message || error) });
     throw error;
+  } finally {
+    unregisterStop();
   }
 }
 
@@ -6097,6 +6135,10 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
     cwd: config.codexCwd,
     sandbox: config.codexSandbox,
   });
+  const abortController = new AbortController();
+  const unregisterStop = stopRegistry.register(contextKey, abortController, {
+    taskId: taskRun?.id || '',
+  });
   const petContext = {
     taskId: taskRun?.id || '',
     contextKey,
@@ -6125,6 +6167,7 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
       contextKey,
       cwd: config.codexCwd,
       sandbox: config.codexSandbox,
+      signal: abortController.signal,
       messageIds: codexSessionMessageIdsForEvent(event),
       sessionTitle: 'Lark · MR review 自动化',
     }));
@@ -6148,6 +6191,22 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
       }
     }
   } catch (error) {
+    if (abortController.signal.aborted || error?.name === 'AbortError') {
+      updateApproval(id, {
+        status: 'cancelled',
+        completedAt: new Date().toISOString(),
+      });
+      if (progress) await progress.stop('任务已停止。');
+      recordBridgeTaskEvent(taskRun?.id, 'task_cancelled', {
+        text: '任务已停止',
+        reason: 'stopped',
+      });
+      failBridgeTaskRun(taskRun?.id, {
+        status: 'cancelled',
+        errorText: '任务已停止',
+      });
+      return;
+    }
     updateApproval(id, {
       status: 'failed',
       completedAt: new Date().toISOString(),
@@ -6157,6 +6216,8 @@ async function createDelegateReviewAutomation(event, rawText, options = {}) {
     recordBridgeTaskEvent(taskRun?.id, 'task_failed', { text: String(error?.message || error), reason: 'error' });
     failBridgeTaskRun(taskRun?.id, { errorText: String(error?.message || error) });
     throw error;
+  } finally {
+    unregisterStop();
   }
 }
 
@@ -6372,7 +6433,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
   const contextKey = executionOptions.contextKey || contextKeyForBridgeEvent(event);
   const startedAt = Date.now();
   const abortController = new AbortController();
-  const unregisterStop = stopRegistry.register(contextKey, abortController);
+  let unregisterStop = () => {};
   if (executionOptions.nonOwnerQuery) {
     nonOwnerContext = createNonOwnerCodexExecutionContext(config, {
       realWorkspace: executionOptions.realWorkspace || executionOptions.cwd || config.codexCwd,
@@ -6395,6 +6456,9 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
     contextKey,
     cwd: executionOptions.cwd || config.codexCwd,
     sandbox: executionOptions.sandbox || config.codexSandbox,
+  });
+  unregisterStop = stopRegistry.register(contextKey, abortController, {
+    taskId: taskRun?.id || '',
   });
   const petContext = {
     taskId: taskRun?.id || '',
@@ -6496,7 +6560,7 @@ async function executeDirectCodexTask(event, rawText, options = {}) {
   } catch (error) {
     if (abortController.signal.aborted || error?.name === 'AbortError') {
       console.error(`[bridge] direct task stopped in ${contextKey}: ${error.message || error}`);
-      if (progress) await progress.fail('任务已停止。');
+      if (progress) await progress.stop('任务已停止。');
       emitPet('task_failed', { ...petContext, text: '任务已停止', reason: 'stopped' });
       recordBridgeTaskEvent(taskRun?.id, 'task_cancelled', { text: '任务已停止', reason: 'stopped' });
       failBridgeTaskRun(taskRun?.id, { status: 'cancelled', errorText: '任务已停止' });
@@ -7301,6 +7365,69 @@ function extractCardOperatorOpenId(event) {
   return candidates.find(value => typeof value === 'string' && value.trim()) || '';
 }
 
+async function notifyCardOperator(event, message, idempotencyKey) {
+  const operatorOpenId = extractCardOperatorOpenId(event);
+  if (operatorOpenId) {
+    await runCli([
+      'im',
+      '+messages-send',
+      '--as',
+      'bot',
+      '--user-id',
+      operatorOpenId,
+      '--text',
+      message,
+      '--idempotency-key',
+      idempotencyKey,
+    ]);
+    return;
+  }
+  await replyToLark(event, message, { idempotencyKey });
+}
+
+async function handleTaskStopAction(event, value) {
+  const operatorOpenId = extractCardOperatorOpenId(event);
+  const taskId = String(value.task_id || value.taskId || '').trim();
+  const notificationKey = `task-stop-${taskId || 'unknown'}-${randomUUID()}`;
+  if (!isBridgeOwnerOpenId(operatorOpenId)) {
+    await notifyCardOperator(event, '只有 bridge owner 可以停止 Codex 任务。', notificationKey);
+    return true;
+  }
+  if (!taskId) {
+    await notifyCardOperator(event, '停止失败：卡片没有关联 task_id。', notificationKey);
+    return true;
+  }
+
+  const task = taskRecorder?.getTask(taskId);
+  if (!task) {
+    await notifyCardOperator(event, `停止失败：没有找到任务 ${taskId}。`, notificationKey);
+    return true;
+  }
+  if (task.status !== 'running') {
+    await notifyCardOperator(
+      event,
+      `任务 ${taskId} 已经是 ${task.status} 状态，不会重复停止。`,
+      notificationKey,
+    );
+    return true;
+  }
+
+  const stopped = stopRegistry.cancelTask(
+    taskId,
+    `Bridge task stop requested by ${operatorOpenId}`,
+  );
+  if (!stopped.aborted) {
+    await notifyCardOperator(
+      event,
+      `停止失败：任务 ${taskId} 当前没有 active runner。`,
+      notificationKey,
+    );
+    return true;
+  }
+  await notifyCardOperator(event, `已请求停止任务 ${taskId}。`, notificationKey);
+  return true;
+}
+
 async function handleCardActionEvent(event) {
   const value = extractCardActionValue(event);
   const action = value.bridge_action;
@@ -7310,6 +7437,10 @@ async function handleCardActionEvent(event) {
   }
   if (action === 'task_viewer_share') {
     await handleTaskViewerShareAction(event, value);
+    return;
+  }
+  if (action === 'task_stop') {
+    await handleTaskStopAction(event, value);
     return;
   }
 
@@ -8466,6 +8597,7 @@ async function runDoctor() {
 
 function progressStatusMeta(status) {
   if (status === 'done') return { template: 'green', title: '分析完成' };
+  if (status === 'cancelled') return { template: 'grey', title: '已停止' };
   if (status === 'failed') return { template: 'red', title: '分析失败' };
   return { template: 'blue', title: '正在分析' };
 }
@@ -8534,25 +8666,49 @@ function buildProgressCard(state) {
   }
 
   if (state.taskId) {
-    elements.push({
-      tag: 'action',
-      actions: [
-        {
-          tag: 'button',
-          type: 'default',
+    const actions = [];
+    if (state.status === 'running') {
+      actions.push({
+        tag: 'button',
+        type: 'danger',
+        text: {
+          tag: 'plain_text',
+          content: '停止',
+        },
+        value: {
+          bridge_action: 'task_stop',
+          task_id: state.taskId,
+        },
+        confirm: {
+          title: {
+            tag: 'plain_text',
+            content: '停止当前任务？',
+          },
           text: {
             tag: 'plain_text',
-            content: '分享过程',
-          },
-          value: {
-            bridge_action: 'task_viewer_share',
-            task_id: state.taskId,
-            chat_id: state.chatId || '',
-            message_id: state.messageId || '',
-            context_key: state.contextKey || '',
+            content: '停止后不会自动恢复，只有 bridge owner 可以执行。',
           },
         },
-      ],
+      });
+    }
+    actions.push({
+      tag: 'button',
+      type: 'default',
+      text: {
+        tag: 'plain_text',
+        content: '分享过程',
+      },
+      value: {
+        bridge_action: 'task_viewer_share',
+        task_id: state.taskId,
+        chat_id: state.chatId || '',
+        message_id: state.messageId || '',
+        context_key: state.contextKey || '',
+      },
+    });
+    elements.push({
+      tag: 'action',
+      actions,
     });
   }
 
@@ -8712,6 +8868,12 @@ async function createProgressReporter(event, prompt, options = {}) {
     async fail(errorText) {
       state.status = 'failed';
       state.errorText = errorText;
+      this.scheduleUpdate(true);
+      await this.updateQueue;
+    },
+    async stop(message = '任务已停止。') {
+      state.status = 'cancelled';
+      state.errorText = message;
       this.scheduleUpdate(true);
       await this.updateQueue;
     },

@@ -113,3 +113,15 @@ test('startup-interrupted tasks can update stale progress cards and send a final
   assert.match(source, /updateCardMessage\(task\.progressCardMessageId/);
   assert.match(source, /startup-interrupted-\$\{task\.id\}/);
 });
+
+test('running progress cards expose owner-gated task-specific stop controls', () => {
+  const source = readFileSync(here('../lark-codex-bridge.mjs'), 'utf8');
+
+  assert.match(source, /state\.status === 'running'/);
+  assert.match(source, /bridge_action:\s*'task_stop'/);
+  assert.match(source, /type:\s*'danger'/);
+  assert.match(source, /isBridgeOwnerOpenId\(operatorOpenId\)/);
+  assert.match(source, /stopRegistry\.cancelTask\(/);
+  assert.match(source, /state\.status = 'cancelled'/);
+  assert.match(source, /title:\s*'已停止'/);
+});

@@ -305,6 +305,8 @@ export function createContextQueueRuntime(deps = {}) {
       if (!queue?.length) return 0;
       queuedTasks.delete(contextKey);
       readyContextSet.delete(contextKey);
+      const readyIndex = readyContexts.indexOf(contextKey);
+      if (readyIndex >= 0) readyContexts.splice(readyIndex, 1);
       for (const task of queue) task.finish();
       return queue.length;
     },

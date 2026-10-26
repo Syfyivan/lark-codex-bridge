@@ -333,6 +333,45 @@ test('clearQueued resolves queued tasks without running them', async () => {
   await first.done;
 });
 
+for (const front of [false, true]) {
+  test(`clearQueued discards the old scheduling position when requeued with front=${front}`, async t => {
+    const started = [];
+    let release;
+    const blocked = new Promise(resolve => {
+      release = resolve;
+    });
+    t.after(() => release());
+    const runtime = createContextQueueRuntime({
+      maxConcurrent: 1,
+      contextKeyForItem: item => item.context,
+      runItem: async item => {
+        started.push(item.id);
+        if (item.id === 'active') await blocked;
+      },
+    });
+
+    const active = runtime.dispatch({ id: 'active', context: 'active' });
+    const cancelled = runtime.dispatch({ id: 'cancelled', context: 'retry' });
+    const waiting = runtime.dispatch({ id: 'waiting', context: 'waiting' });
+    assert.equal(runtime.clearQueued('retry'), 1);
+    assert.equal(runtime.clearQueued('retry'), 0);
+    await cancelled.done;
+    assert.deepEqual(started, ['active']);
+
+    const retried = runtime.dispatch({ id: 'retried', context: 'retry' }, { front });
+    assert.equal(retried.status, 'queued');
+    assert.equal(runtime.queuedTotal(), 2);
+    release();
+    await Promise.all([active.done, waiting.done, retried.done]);
+
+    assert.deepEqual(started, front
+      ? ['active', 'retried', 'waiting']
+      : ['active', 'waiting', 'retried']);
+    assert.equal(runtime.activeTotal(), 0);
+    assert.equal(runtime.queuedTotal(), 0);
+  });
+}
+
 test('createStopRegistry aborts active controllers and records cancellation', () => {
   let now = 100;
   const registry = createStopRegistry({ now: () => now });

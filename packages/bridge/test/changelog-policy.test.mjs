@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 let changelogPolicy = {};
@@ -10,7 +11,7 @@ try {
   // The first TDD run intentionally reaches the assertions below.
 }
 
-const packageDir = new URL('..', import.meta.url).pathname;
+const packageDir = fileURLToPath(new URL('..', import.meta.url));
 
 test('bridge package ships a Keep a Changelog file', () => {
   const changelog = join(packageDir, 'CHANGELOG.md');

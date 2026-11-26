@@ -173,14 +173,16 @@ export function conversationKeyForEvent(input = {}) {
   return `chat:${chatId || 'unknown'}`;
 }
 
+export function normalizeQueueMaxConcurrent(value) {
+  const parsed = Number(String(value ?? '').trim() || 4);
+  return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 4;
+}
+
 export function createContextQueueRuntime(deps = {}) {
   const contextKeyForItem = deps.contextKeyForItem || conversationKeyForEvent;
   const runItem = deps.runItem;
   const onError = deps.onError || (() => {});
-  const configuredMaxConcurrent = Number(deps.maxConcurrent);
-  const maxConcurrent = Number.isFinite(configuredMaxConcurrent) && configuredMaxConcurrent > 0
-    ? Math.floor(configuredMaxConcurrent)
-    : Number.POSITIVE_INFINITY;
+  const maxConcurrent = normalizeQueueMaxConcurrent(deps.maxConcurrent);
   if (typeof runItem !== 'function') throw new Error('createContextQueueRuntime requires runItem');
 
   const activeCounts = new Map();

@@ -310,6 +310,35 @@ test('createContextQueueRuntime runs independent task contexts up to the global 
   await Promise.all([second.done, third.done]);
 });
 
+test('queue concurrency remains a positive integer for fractional or invalid configuration', () => {
+  for (const [value, expected] of [
+    [undefined, 4], ['', 4], ['  ', 4], ['invalid', 4], [NaN, 4], [Infinity, 4],
+    ['Infinity', 4], [-1, 1], [0, 1], [0.5, 1], ['2.9', 2], [3, 3],
+  ]) {
+    const runtime = createContextQueueRuntime({ maxConcurrent: value, runItem: async () => {} });
+    assert.equal(runtime.maxConcurrent, expected, String(value));
+  }
+});
+
+test('invalid concurrency keeps excess tasks queued until a slot becomes available', async t => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const runtime = createContextQueueRuntime({
+    maxConcurrent: 'invalid',
+    contextKeyForItem: item => item.id,
+    runItem: () => blocked,
+  });
+  const tasks = Array.from({ length: 5 }, (_, id) => runtime.dispatch({ id }));
+  assert.deepEqual(tasks.map(task => task.status), ['started', 'started', 'started', 'started', 'queued']);
+  assert.equal(runtime.activeTotal(), 4);
+  assert.equal(runtime.queuedTotal(), 1);
+  release();
+  await Promise.all(tasks.map(task => task.done));
+  assert.equal(runtime.activeTotal(), 0);
+  assert.equal(runtime.queuedTotal(), 0);
+});
+
 test('clearQueued resolves queued tasks without running them', async () => {
   const started = [];
   const release = {};

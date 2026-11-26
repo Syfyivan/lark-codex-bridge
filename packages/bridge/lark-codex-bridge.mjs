@@ -55,6 +55,7 @@ import {
   createStopRegistry,
   executeCodexSessionCommand,
   isStopCommand,
+  normalizeQueueMaxConcurrent,
   parseCodexSessionCommand,
   parseQueueCommand,
 } from './src/context-queue.mjs';
@@ -418,7 +419,7 @@ const config = {
   loopTraceTtlMs: Math.max(60_000, Number(env.LOOP_TRACE_TTL_MS || 6 * 60 * 60 * 1000)),
   traceMarker: env.BRIDGE_TRACE_MARKER || 'bridge_trace',
   contextQueueEnabled: envFlag('CONTEXT_QUEUE_ENABLED', true),
-  contextQueueMaxConcurrent: Math.max(1, Number(env.CONTEXT_QUEUE_MAX_CONCURRENT || 4)),
+  contextQueueMaxConcurrent: normalizeQueueMaxConcurrent(env.CONTEXT_QUEUE_MAX_CONCURRENT),
   oncallBindingsFile:
     expandHomePath(env.ONCALL_BINDINGS_FILE || join(homedir(), '.lark-codex-bridge', 'oncall-bindings.json')),
   profilePolicyEnabled: envFlag(

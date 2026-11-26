@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -22,14 +22,32 @@ export function createTaskRecorder(options = {}) {
   const tasksDir = join(storeDir, 'tasks');
   const indexFile = join(storeDir, 'index.jsonl');
   const tasks = new Map();
+  let indexStamp;
 
   function ensureStore() {
     mkdirSync(tasksDir, { recursive: true });
   }
 
   function loadIndex() {
-    if (!existsSync(indexFile)) return;
-    const lines = readFileSync(indexFile, 'utf8').split('\n').filter(Boolean);
+    const stat = statSync(indexFile, { throwIfNoEntry: false });
+    if (!stat) {
+      tasks.clear();
+      indexStamp = undefined;
+      return;
+    }
+    const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    if (stamp === indexStamp) return;
+    let text;
+    try {
+      text = readFileSync(indexFile, 'utf8');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      tasks.clear();
+      indexStamp = undefined;
+      return;
+    }
+    tasks.clear();
+    const lines = text.split('\n').filter(Boolean);
     for (const line of lines) {
       try {
         const task = JSON.parse(line);
@@ -39,6 +57,7 @@ export function createTaskRecorder(options = {}) {
       }
     }
     trimMemory();
+    indexStamp = stamp;
   }
 
   function appendIndex(task) {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -50,6 +50,23 @@ test('task recorder persists safe bridge task timelines', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('task recorder refreshes its index after external appends or replacement', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'task-viewer-index-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const reader = createTaskRecorder({ storeDir: dir });
+  const writer = createTaskRecorder({ storeDir: dir });
+  writer.startTask({ id: 'existing' });
+  assert.equal(reader.getTask('existing').status, 'running');
+  writer.finishTask('existing', { finalText: 'completed elsewhere' });
+  assert.equal(reader.getTask('existing').finalText, 'completed elsewhere');
+
+  const replacement = join(dir, 'replacement.jsonl');
+  writeFileSync(replacement, JSON.stringify({ id: 'replacement', status: 'done' }) + '\n');
+  renameSync(replacement, join(dir, 'index.jsonl'));
+  assert.deepEqual(reader.listTasks().map(task => task.id), ['replacement']);
+  assert.equal(reader.getTask('existing'), null);
 });
 
 test('scoped export reads event logs only for tasks within the final result', t => {

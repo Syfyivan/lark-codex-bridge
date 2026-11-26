@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -23,9 +24,12 @@ test('parseOncallCommand handles bind status unbind and help', () => {
 });
 
 test('normalizeOncallPath resolves home absolute and relative paths', () => {
-  assert.equal(normalizeOncallPath('~/repo', { home: '/home/user' }), '/home/user/repo');
-  assert.equal(normalizeOncallPath('/repo', { cwd: '/tmp' }), '/repo');
-  assert.equal(normalizeOncallPath('repo', { cwd: '/tmp' }), '/tmp/repo');
+  const home = resolve('fixture-home');
+  const cwd = resolve('fixture-cwd');
+  const workspace = resolve('fixture-workspace');
+  assert.equal(normalizeOncallPath('~/repo', { home }), join(home, 'repo'));
+  assert.equal(normalizeOncallPath(workspace, { cwd }), workspace);
+  assert.equal(normalizeOncallPath('repo', { cwd }), join(cwd, 'repo'));
 });
 
 test('oncall bindings are read set queried and cleared', () => {

@@ -57,20 +57,20 @@ function isDeletedMessage(message) {
   return Boolean(message?.deleted || message?.is_deleted || message?.isDeleted);
 }
 
-function formatRecentMessage(message, targetMessageId, maxContentChars) {
+function formatRecentMessage(message, targetMessageId, maxContentChars, maxLineChars) {
   const id = messageId(message);
   const text = messageText(message);
   if (!id || !text || isDeletedMessage(message)) return '';
-  const parts = [
-    messageTime(message) || 'unknown-time',
-    `${messageSenderName(message)}: ${clampSingleLine(text, maxContentChars)}`,
-  ];
+  const prefix = `- ${messageTime(message) || 'unknown-time'} ${messageSenderName(message)}: `;
   const meta = [
     id ? `message_id=${id}` : '',
     message?.reply_to ? `reply_to=${message.reply_to}` : '',
     id && id === targetMessageId ? 'target=true' : '',
   ].filter(Boolean);
-  return `- ${parts.join(' ')}${meta.length ? ` (${meta.join(', ')})` : ''}`;
+  const suffix = ` (${meta.join(', ')})`;
+  const contentBudget = Math.min(maxContentChars, maxLineChars - prefix.length - suffix.length);
+  if (contentBudget < 4) return '';
+  return prefix + clampSingleLine(text, contentBudget) + suffix;
 }
 
 export function buildDelegateRecentChatContext(messages, options = {}) {
@@ -80,16 +80,26 @@ export function buildDelegateRecentChatContext(messages, options = {}) {
   const maxContentChars = Math.max(40, Number(options.maxContentChars || 500));
   const targetMessageId = String(options.targetMessageId || '').trim();
 
-  const lines = messages
-    .slice()
-    .reverse()
-    .slice(-maxMessages)
-    .map(message => formatRecentMessage(message, targetMessageId, maxContentChars))
-    .filter(Boolean);
+  const heading = '已由 bridge 预读取的当前群最近消息（按时间从旧到新；优先作为本次 @宋一凡 的上下文）：';
+  const maxLineChars = maxChars - heading.length - 1;
+  const lines = new Map();
+  let remaining = maxChars - heading.length;
 
-  if (!lines.length) return '';
-  return clampText([
-    '已由 bridge 预读取的当前群最近消息（按时间从旧到新；优先作为本次 @宋一凡 的上下文）：',
-    ...lines,
-  ].join('\n'), maxChars);
+  function include(index) {
+    const line = formatRecentMessage(messages[index], targetMessageId, maxContentChars, maxLineChars);
+    if (!line || line.length + 1 > remaining) return;
+    lines.set(index, line);
+    remaining -= line.length + 1;
+  }
+
+  // The poll returns newest first. Reserve room for the triggering message,
+  // then add recent messages that fit without cutting their metadata.
+  const targetIndex = targetMessageId ? messages.findIndex(message => messageId(message) === targetMessageId) : -1;
+  if (targetIndex !== -1) include(targetIndex);
+  for (let index = 0; index < messages.length && lines.size < maxMessages; index++) {
+    if (index !== targetIndex) include(index);
+  }
+  if (!lines.size) return '';
+  const chronological = [...lines].sort(([a], [b]) => b - a).map(([, line]) => line);
+  return [heading, ...chronological].join('\n');
 }

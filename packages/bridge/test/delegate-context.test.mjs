@@ -57,3 +57,27 @@ test('delegate recent chat context skips deleted messages and clamps long conten
   assert.match(context, /B: x+/);
   assert.match(context, /\.\.\./);
 });
+
+test('delegate context keeps the target and newest readable context within its budget', () => {
+  const context = buildDelegateRecentChatContext([
+    { id: 'removed', content: 'removed', deleted: true },
+    { id: 'recent', content: 'follow-up' },
+    ...Array.from({ length: 5 }, (_, index) => ({ id: `older-${index}`, content: 'x'.repeat(160) })),
+    { id: 'target', content: 'original request' },
+  ], { targetMessageId: 'target', maxMessages: 3, maxChars: 400 });
+
+  assert.ok(context.length <= 400);
+  assert.match(context, /original request \(message_id=target, target=true\)/);
+  assert.match(context, /follow-up \(message_id=recent\)/);
+  assert.ok(context.indexOf('original request') < context.indexOf('follow-up'));
+  assert.doesNotMatch(context, /removed/);
+});
+
+test('delegate context does not cut off the newest message when older lines fill the budget', () => {
+  const context = buildDelegateRecentChatContext([
+    { id: 'newest', content: 'latest details' },
+    ...Array.from({ length: 4 }, (_, index) => ({ id: `old-${index}`, content: 'x'.repeat(140) })),
+  ], { maxChars: 400 });
+  assert.ok(context.length <= 400);
+  assert.match(context, /latest details \(message_id=newest\)$/);
+});

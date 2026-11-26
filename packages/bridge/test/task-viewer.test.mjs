@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -50,6 +50,28 @@ test('task recorder persists safe bridge task timelines', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('scoped export reads event logs only for tasks within the final result', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'task-viewer-scoped-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  const recorder = createTaskRecorder({ storeDir: dir, maxTasks: 5 });
+  recorder.startTask({ id: 'older-match', chatId: 'target' });
+  t.mock.timers.tick(1000);
+  recorder.startTask({ id: 'newest-match', chatId: 'target' });
+  t.mock.timers.tick(1000);
+  recorder.startTask({ id: 'other', chatId: 'other' });
+  // A directory is deliberately unreadable as an event file. Neither record
+  // can appear in the result, so the recorder must never try reading it.
+  for (const id of ['older-match', 'other']) {
+    const path = join(dir, 'tasks', id + '.jsonl');
+    rmSync(path);
+    mkdirSync(path);
+  }
+  const results = recorder.exportTasks({ limit: 1, scanLimit: 5, scope: { chatId: 'target' } });
+  assert.deepEqual(results.map(task => task.id), ['newest-match']);
+  assert.equal(results[0].events[0].type, 'task_started');
 });
 
 test('task recorder keeps running tasks after history reaches the retention limit', t => {

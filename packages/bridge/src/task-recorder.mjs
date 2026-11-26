@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { filterTaskViewerTasks } from './task-viewer.mjs';
 
 const DEFAULT_MAX_TASKS = 200;
 const DEFAULT_MAX_EVENTS = 240;
@@ -248,8 +249,10 @@ export function createTaskRecorder(options = {}) {
     return { ...task, events: readEvents(id) };
   }
 
-  function exportTasks({ limit = maxTasks } = {}) {
-    return listTasks({ limit }).map(task => ({ ...task, events: readEvents(task.id) }));
+  function exportTasks({ limit = maxTasks, scanLimit = limit, scope } = {}) {
+    return filterTaskViewerTasks(listTasks({ limit: scanLimit }), scope)
+      .slice(0, Math.max(1, Number(limit || maxTasks)))
+      .map(task => ({ ...task, events: readEvents(task.id) }));
   }
 
   loadIndex();

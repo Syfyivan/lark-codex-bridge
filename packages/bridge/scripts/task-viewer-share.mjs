@@ -5,7 +5,6 @@ import { spawn } from 'node:child_process';
 
 import { createTaskRecorder, defaultTaskViewerStoreDir } from '../src/task-recorder.mjs';
 import {
-  filterTaskViewerTasks,
   normalizeTaskViewerScope,
   taskViewerTitleForScope,
   writeTaskViewerSite,
@@ -67,8 +66,7 @@ async function main() {
   const title = process.env.TASK_VIEWER_TITLE || taskViewerTitleForScope(scope);
   const limit = Math.max(1, Number(process.env.TASK_VIEWER_SHARE_LIMIT || process.env.TASK_VIEWER_MAX_TASKS || 200));
   const recorder = createTaskRecorder({ storeDir, maxTasks: Math.max(limit, 200) });
-  const tasks = filterTaskViewerTasks(recorder.exportTasks({ limit: Math.max(limit, 200) }), scope)
-    .slice(0, limit);
+  const tasks = recorder.exportTasks({ limit, scanLimit: Math.max(limit, 200), scope });
   const indexFile = writeTaskViewerSite({ tasks, outDir, title });
   const result = { ok: true, outDir, indexFile, tasks: tasks.length, scope, title };
 

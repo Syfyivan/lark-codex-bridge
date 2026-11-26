@@ -142,7 +142,6 @@ import {
   defaultTaskViewerStoreDir,
 } from './src/task-recorder.mjs';
 import {
-  filterTaskViewerTasks,
   normalizeTaskViewerScope,
   renderTaskViewerHtml,
   taskViewerTitleForScope,
@@ -2896,11 +2895,10 @@ async function deploySessionShareGoofyPreview(currentShareFile) {
 function taskViewerTasks(limit = config.taskViewerMaxTasks, scope = {}) {
   if (!taskRecorder) return [];
   const normalizedScope = normalizeTaskViewerScope(scope);
-  const readLimit = Object.keys(normalizedScope).length
+  const scanLimit = Object.keys(normalizedScope).length
     ? config.taskViewerMaxTasks
     : limit;
-  return filterTaskViewerTasks(taskRecorder.exportTasks({ limit: readLimit }), normalizedScope)
-    .slice(0, Math.max(1, Number(limit || config.taskViewerMaxTasks)));
+  return taskRecorder.exportTasks({ limit, scanLimit, scope: normalizedScope });
 }
 
 function taskViewerHtml(limit = config.taskViewerMaxTasks, scope = {}) {

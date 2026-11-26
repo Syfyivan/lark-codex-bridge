@@ -56,8 +56,16 @@ export function createTaskRecorder(options = {}) {
 
   function trimMemory() {
     const sorted = [...tasks.values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    // Active tasks must remain writable even when history is full.
+    let slots = maxTasks - sorted.filter(task => task.status === 'running').length;
     tasks.clear();
-    for (const task of sorted.slice(0, maxTasks)) tasks.set(task.id, task);
+    for (const task of sorted) {
+      if (task.status === 'running') tasks.set(task.id, task);
+      else if (slots > 0) {
+        tasks.set(task.id, task);
+        slots--;
+      }
+    }
   }
 
   function pruneFiles() {

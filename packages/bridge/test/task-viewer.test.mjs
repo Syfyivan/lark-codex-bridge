@@ -52,6 +52,24 @@ test('task recorder persists safe bridge task timelines', () => {
   }
 });
 
+test('task recorder keeps running tasks after history reaches the retention limit', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'task-viewer-retention-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  const recorder = createTaskRecorder({ storeDir: dir, maxTasks: 1 });
+  const first = recorder.startTask({ id: 'first' });
+  t.mock.timers.tick(1000);
+  const second = recorder.startTask({ id: 'second' });
+  recorder.finishTask(second.id);
+
+  const restored = createTaskRecorder({ storeDir: dir, maxTasks: 1 });
+  assert.ok(restored.getTask(first.id).events.some(event => event.type === 'task_started'));
+  assert.equal(restored.addEvent(first.id, 'task_progress', { text: 'still running' }).text, 'still running');
+  t.mock.timers.tick(1000);
+  assert.equal(restored.finishTask(first.id).status, 'done');
+  assert.deepEqual(restored.listTasks().map(task => task.id), [first.id]);
+});
+
 test('task recorder marks stale running tasks interrupted on startup', () => {
   const dir = mkdtempSync(join(tmpdir(), 'task-viewer-stale-'));
   try {

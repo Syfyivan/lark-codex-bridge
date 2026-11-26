@@ -189,15 +189,10 @@ export function createContextQueueRuntime(deps = {}) {
   const queuedTasks = new Map();
   const readyContexts = [];
   const readyContextSet = new Set();
+  let activeTasks = 0;
+  let waitingTasks = 0;
 
   const activeCount = contextKey => activeCounts.get(contextKey) || 0;
-  const activeTotal = () =>
-    Array.from(activeCounts.values()).reduce((sum, count) => sum + count, 0);
-  const queueForContext = contextKey => {
-    const queue = queuedTasks.get(contextKey) || [];
-    queuedTasks.set(contextKey, queue);
-    return queue;
-  };
   const createTask = (item, contextKey) => {
     let finish = () => {};
     const done = new Promise(resolve => {
@@ -226,17 +221,20 @@ export function createContextQueueRuntime(deps = {}) {
       return null;
     }
     const next = queue.shift();
+    waitingTasks -= 1;
     if (!queue.length) queuedTasks.delete(contextKey);
     return next;
   };
 
   let schedule = () => {};
   const start = task => {
+    activeTasks += 1;
     activeCounts.set(task.contextKey, activeCount(task.contextKey) + 1);
     Promise.resolve()
       .then(() => runItem(task.item))
       .catch(error => onError(task.item, error))
       .finally(() => {
+        activeTasks -= 1;
         const nextCount = activeCount(task.contextKey) - 1;
         if (nextCount > 0) activeCounts.set(task.contextKey, nextCount);
         else activeCounts.delete(task.contextKey);
@@ -247,7 +245,7 @@ export function createContextQueueRuntime(deps = {}) {
   };
 
   schedule = () => {
-    while (activeTotal() < maxConcurrent && readyContexts.length > 0) {
+    while (activeTasks < maxConcurrent && readyContexts.length > 0) {
       const contextKey = readyContexts.shift();
       readyContextSet.delete(contextKey);
       if (activeCount(contextKey) > 0) continue;
@@ -261,18 +259,21 @@ export function createContextQueueRuntime(deps = {}) {
     dispatch(item, options = {}) {
       const contextKey = contextKeyForItem(item);
       const task = createTask(item, contextKey);
-      const queue = queueForContext(contextKey);
       if (options.bypassQueue) {
         start(task);
         return { status: 'started', contextKey, position: 0, done: task.done };
       }
+      const existing = queuedTasks.get(contextKey);
       if (
         activeCount(contextKey) > 0 ||
-        activeTotal() >= maxConcurrent ||
-        (queue.length > 0 && !options.front)
+        activeTasks >= maxConcurrent ||
+        (existing?.length > 0 && !options.front)
       ) {
+        const queue = existing || [];
+        if (!existing) queuedTasks.set(contextKey, queue);
         if (options.front) queue.unshift(task);
         else queue.push(task);
+        waitingTasks += 1;
         markReady(contextKey, options.front);
         schedule();
         return {
@@ -283,14 +284,15 @@ export function createContextQueueRuntime(deps = {}) {
         };
       }
 
-      if (!queue.length) queuedTasks.delete(contextKey);
       start(task);
       return { status: 'started', contextKey, position: 0, done: task.done };
     },
 
     activeCount,
 
-    activeTotal,
+    activeTotal() {
+      return activeTasks;
+    },
 
     maxConcurrent,
 
@@ -299,13 +301,14 @@ export function createContextQueueRuntime(deps = {}) {
     },
 
     queuedTotal() {
-      return Array.from(queuedTasks.values()).reduce((sum, queue) => sum + queue.length, 0);
+      return waitingTasks;
     },
 
     clearQueued(contextKey) {
       const queue = queuedTasks.get(contextKey);
       if (!queue?.length) return 0;
       queuedTasks.delete(contextKey);
+      waitingTasks -= queue.length;
       readyContextSet.delete(contextKey);
       const readyIndex = readyContexts.indexOf(contextKey);
       if (readyIndex >= 0) readyContexts.splice(readyIndex, 1);

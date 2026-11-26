@@ -310,6 +310,34 @@ test('createContextQueueRuntime runs independent task contexts up to the global 
   await Promise.all([second.done, third.done]);
 });
 
+test('queue totals track bypassed, cleared, and failed tasks', async () => {
+  const gate = Promise.withResolvers();
+  const errors = [];
+  const runtime = createContextQueueRuntime({
+    maxConcurrent: 1,
+    contextKeyForItem: item => item.context,
+    runItem: ({ id }) => {
+      if (id === 'fail') throw new Error(id);
+      return gate.promise;
+    },
+    onError: (_, error) => errors.push(error.message),
+  });
+  const running = runtime.dispatch({ id: 'running', context: 'same' });
+  const cleared = runtime.dispatch({ id: 'cleared', context: 'same' });
+  const next = runtime.dispatch({ id: 'fail', context: 'other' });
+  const bypassed = runtime.dispatch({ id: 'bypass', context: 'same' }, { bypassQueue: true });
+  assert.equal(runtime.activeTotal(), 2);
+  assert.equal(runtime.queuedTotal(), 2);
+  assert.equal(runtime.clearQueued('same'), 1);
+  await cleared.done;
+  assert.equal(runtime.queuedTotal(), 1);
+  gate.resolve();
+  await Promise.all([running.done, bypassed.done, next.done]);
+  assert.deepEqual(errors, ['fail']);
+  assert.equal(runtime.activeTotal(), 0);
+  assert.equal(runtime.queuedTotal(), 0);
+});
+
 test('queue concurrency remains a positive integer for fractional or invalid configuration', () => {
   for (const [value, expected] of [
     [undefined, 4], ['', 4], ['  ', 4], ['invalid', 4], [NaN, 4], [Infinity, 4],
